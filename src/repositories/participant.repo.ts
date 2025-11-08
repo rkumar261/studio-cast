@@ -27,3 +27,11 @@ export async function findRecordingOwner(recordingId: string) {
         select: { userId: true },
     });
 }
+
+// list participants for a recording
+export async function listParticipantsByRecording(recordingId: string) {
+  return prisma.participant.findMany({
+    where: { recording_id: recordingId },
+    orderBy: { display_name: 'asc' }, // optional sorting
+  });
+}

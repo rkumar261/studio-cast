@@ -1,20 +1,22 @@
 import { randomBytes, createHash } from 'crypto';
 import type { CreateParticipantRequestBody, CreateParticipantResponse } from '../dto/participants/create.dto.js';
 import { findRecordingById } from '../repositories/recording.repo.js';
-import { createParticipant,  } from '../repositories/participant.repo.js';
+import { createParticipant, } from '../repositories/participant.repo.js';
+import type { GetParticipantsResponse } from '../dto/participants/get.dto.js';
+import { findRecordingOwner, listParticipantsByRecording } from '../repositories/participant.repo.js';
 
 export async function createParticipantService(
-  recordingId: string,
-  requesterId: string | null,
-  body: CreateParticipantRequestBody
+    recordingId: string,
+    requesterId: string | null,
+    body: CreateParticipantRequestBody
 ): Promise<{
-        code: 'ok';
-        data: CreateParticipantResponse
-    } | {
-        code: 'forbidden'
-    } | {
-        code: 'not_found'
-    }> {
+    code: 'ok';
+    data: CreateParticipantResponse
+} | {
+    code: 'forbidden'
+} | {
+    code: 'not_found'
+}> {
 
     const rec = await findRecordingById(recordingId);
     if (!rec) {
@@ -55,4 +57,28 @@ export async function createParticipantService(
     };
 
     return { code: 'ok', data: response };
+}
+
+export async function listParticipantsService(
+    recordingId: string,
+    requesterId: string | null
+): Promise<{ code: 'ok'; data: GetParticipantsResponse } | { code: 'forbidden' } | { code: 'not_found' }> {
+    const rec = await findRecordingOwner(recordingId);
+    if (!rec) return { code: 'not_found' };
+    if (rec.userId && rec.userId !== requesterId) return { code: 'forbidden' };
+
+    const participants = await listParticipantsByRecording(recordingId);
+
+    return {
+        code: 'ok',
+        data: {
+            participants: participants.map(p => ({
+                id: p.id,
+                recordingId: p.recording_id,
+                role: p.role as 'host' | 'guest',
+                displayName: p.display_name ?? undefined,
+                email: p.email ?? undefined,
+            })),
+        },
+    };
 }

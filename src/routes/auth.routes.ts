@@ -75,7 +75,7 @@ const routes: FastifyPluginAsync = async (app) => {
     reply.clearCookie('oauth_state', { path: '/', domain: COOKIE_DOMAIN });
     reply.clearCookie('pkce_verifier', { path: '/', domain: COOKIE_DOMAIN });
 
-    // ⬇️ IMPORTANT: update your handleGoogleCallback to accept the PKCE verifier
+    // IMPORTANT: update your handleGoogleCallback to accept the PKCE verifier
     // and include it in the token exchange POST to Google (`code_verifier`).
     const { user, access, refresh } = await handleGoogleCallback(
       code,
@@ -89,18 +89,25 @@ const routes: FastifyPluginAsync = async (app) => {
       httpOnly: true,
       sameSite: 'lax',
       secure: COOKIE_SECURE,
-      domain: COOKIE_DOMAIN,
+      // domain: COOKIE_DOMAIN,
     });
     reply.setCookie('refresh_token', refresh, {
       path: '/',
       httpOnly: true,
       sameSite: 'lax',
       secure: COOKIE_SECURE,
-      domain: COOKIE_DOMAIN,
+      // domain: COOKIE_DOMAIN,
     });
 
     // For now, return JSON (your UI can redirect client-side)
-    return reply.send({ ok: true, user: { id: user.id, email: user.email, name: user.name } });
+    // reply.redirect(`${process.env.FRONTEND_URL}/`);
+    // return reply.code(200).send({
+    //   ok: true,
+    //   user,
+    // });
+
+    const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:3000';
+    return reply.redirect(`${FRONTEND_URL}/`, 303);
   });
 
   /**

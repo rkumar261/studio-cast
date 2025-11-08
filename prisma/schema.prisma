@@ -10,9 +10,11 @@ datasource db {
   shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
-/* =========================
-   DOMAIN ENUMS (PG enums)
-   ========================= */
+/**
+ * =========================
+ * DOMAIN ENUMS (PG enums)
+ * =========================
+ */
 
 enum job_state {
   queued
@@ -39,6 +41,7 @@ enum recording_status {
 enum track_kind {
   audio
   video
+  screen
 }
 
 enum track_state {
@@ -58,8 +61,8 @@ model User {
   accounts      OAuthAccount[]
   refreshTokens RefreshToken[]
 
-  recordings    recording[]     // owns these recordings
-  participants  participant[]   // optional: rows where the user is a participant
+  recordings   recording[] // owns these recordings
+  participants participant[] // optional: rows where the user is a participant
 
   @@map("user_account")
 }
@@ -67,8 +70,8 @@ model User {
 model OAuthAccount {
   id             String   @id @default(uuid()) @db.Uuid
   userId         String   @db.Uuid
-  provider       String   @db.Text           // "google" | "github" | etc
-  providerUserId String   @db.Text           // external subject/user id
+  provider       String   @db.Text // "google" | "github" | etc
+  providerUserId String   @db.Text // external subject/user id
   email          String?  @db.Text
   profileJson    Json?    @map("profile_json")
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -83,7 +86,7 @@ model OAuthAccount {
 model RefreshToken {
   id          String    @id @default(uuid()) @db.Uuid
   userId      String    @db.Uuid
-  jti         String    @unique @db.Text       // token id
+  jti         String    @unique @db.Text // token id
   hashedToken String    @map("hashed_token") @db.Text
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   expiresAt   DateTime  @map("expires_at") @db.Timestamptz(6)
@@ -97,19 +100,21 @@ model RefreshToken {
   @@map("refresh_token")
 }
 
-/* =========================
-   RECORDING MODELS
-   ========================= */
+/**
+ * =========================
+ * RECORDING MODELS
+ * =========================
+ */
 
 model recording {
-  id                 String               @id @default(uuid()) @db.Uuid
-  title              String?
-  status             recording_status     @default(draft)
-  created_at         DateTime             @default(now()) @db.Timestamptz(6)
+  id         String           @id @default(uuid()) @db.Uuid
+  title      String?
+  status     recording_status @default(draft)
+  created_at DateTime         @default(now()) @db.Timestamptz(6)
 
   // Owner is OPTIONAL: null = guest-created
-  userId             String?              @db.Uuid
-  user               User?                @relation(fields: [userId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  userId String? @db.Uuid
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
   clip               clip[]
   job                job[]
@@ -117,23 +122,23 @@ model recording {
   track              track[]
   transcript_segment transcript_segment[]
 
-  @@index([userId], map: "idx_recording_user")  // helpful for "my recordings"
+  @@index([userId], map: "idx_recording_user") // helpful for "my recordings"
 }
 
 model participant {
-  id              String    @id @default(uuid()) @db.Uuid
-  recording_id    String    @db.Uuid
-  role            String    @db.Text                // 'host' | 'guest' (DB CHECK)
-  display_name    String?   @db.Text
-  email           String?   @db.Text
-  magic_link_hash String?   @db.Text               // for guest invite/claim
+  id              String  @id @default(uuid()) @db.Uuid
+  recording_id    String  @db.Uuid
+  role            String  @db.Text // 'host' | 'guest' (DB CHECK)
+  display_name    String? @db.Text
+  email           String? @db.Text
+  magic_link_hash String? @db.Text // for guest invite/claim
 
   // OPTIONAL link to a registered user (if they signed in)
-  userId          String?   @db.Uuid
-  user            User?     @relation(fields: [userId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  userId String? @db.Uuid
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
-  recording       recording @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  track           track[]
+  recording recording @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  track     track[]
 
   @@index([recording_id])
   @@index([userId], map: "idx_participant_user")
@@ -162,15 +167,25 @@ model track {
 model upload {
   id             String   @id @default(uuid()) @db.Uuid
   track_id       String   @db.Uuid
-  protocol       String   @db.Text          // DB has CHECK ('tus'|'multipart')
+  protocol       String   @db.Text
   bytes_received BigInt   @default(0)
   parts_json     Json?
   etag           String?  @db.Text
-  state          String   @db.Text          // DB has CHECK ('in_progress'|'completed'|'failed')
+  state          String   @db.Text
   updated_at     DateTime @default(now()) @db.Timestamptz(6)
 
-  track track @relation(fields: [track_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  // ✨ multipart additions
+  storage_bucket String? @db.Text
+  object_key     String? @db.Text
+  multipart_id   String? @db.Text
+  part_size      Int?
+  expected_size  BigInt?
+  completion_sig String? @db.Text
 
+  track  track         @relation(fields: [track_id], references: [id], onDelete: Cascade)
+  tusMap UploadTusMap?
+
+  @@index([state, updated_at], map: "idx_upload_state_updated") // handy for cleanup/scans
   @@map("upload")
 }
 
@@ -191,13 +206,13 @@ model job {
 }
 
 model transcript_segment {
-  id           String    @id @default(uuid()) @db.Uuid
-  recording_id String    @db.Uuid
-  speaker      String?   @db.Text
+  id           String   @id @default(uuid()) @db.Uuid
+  recording_id String   @db.Uuid
+  speaker      String?  @db.Text
   start_ms     Int
   end_ms       Int
-  text         String    @db.Text
-  confidence   Decimal?  @db.Decimal
+  text         String   @db.Text
+  confidence   Decimal? @db.Decimal
 
   recording recording @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
@@ -206,14 +221,25 @@ model transcript_segment {
 }
 
 model clip {
-  id           String    @id @default(uuid()) @db.Uuid
-  recording_id String    @db.Uuid
+  id           String   @id @default(uuid()) @db.Uuid
+  recording_id String   @db.Uuid
   start_ms     Int
   end_ms       Int
-  title        String?   @db.Text
-  keywords     String[]  @db.Text
+  title        String?  @db.Text
+  keywords     String[] @db.Text
 
   recording recording @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@map("clip")
+}
+
+model UploadTusMap {
+  uploadId  String   @id @map("upload_id") @db.Uuid
+  tusId     String   @unique @map("tus_id")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  upload upload @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+
+  @@map("upload_tus_map")
 }
