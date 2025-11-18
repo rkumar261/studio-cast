@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:api": "tsx src/index.ts",
+    "dev:worker:transcode": "tsx src/workers/transcode.worker.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "prisma:gen": "prisma generate",

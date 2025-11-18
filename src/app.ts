@@ -10,6 +10,7 @@ import uploadsRoutes from './routes/uploads.routes.js';
 import participantRoutes from './routes/participants.routes.js';
 import proxyTus from './routes/proxy-tus.routes.js';
 import tusdHooksRoutes from './routes/tusd-hooks.routes.js';
+import tracksRoutes from './routes/tracks.routes.js';
 
 export async function buildApp() {
   const app = Fastify({ logger: true });
@@ -50,6 +51,7 @@ export async function buildApp() {
   await app.register(recordingRoutes);
   await app.register(uploadsRoutes);
   await app.register(participantRoutes);
+  await app.register(tracksRoutes);
 
   // 6) tusd HTTP hooks (pre-create / post-create)
   await app.register(tusdHooksRoutes);

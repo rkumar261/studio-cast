@@ -1,4 +1,3 @@
-// src/routes/auth.routes.ts
 import { FastifyPluginAsync } from 'fastify';
 import '@fastify/cookie';
 import crypto from 'node:crypto';

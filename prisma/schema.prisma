@@ -16,6 +16,19 @@ datasource db {
  * =========================
  */
 
+enum export_type {
+  wav
+  mp4
+  mp4_captions
+}
+
+enum export_state {
+  queued
+  running
+  succeeded
+  failed
+}
+
 enum job_state {
   queued
   running
@@ -112,7 +125,6 @@ model recording {
   status     recording_status @default(draft)
   created_at DateTime         @default(now()) @db.Timestamptz(6)
 
-  // Owner is OPTIONAL: null = guest-created
   userId String? @db.Uuid
   user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
@@ -121,8 +133,9 @@ model recording {
   participant        participant[]
   track              track[]
   transcript_segment transcript_segment[]
+  export_artifact    export_artifact[] // 🔹 NEW back-relation
 
-  @@index([userId], map: "idx_recording_user") // helpful for "my recordings"
+  @@index([userId], map: "idx_recording_user")
 }
 
 model participant {
@@ -155,10 +168,12 @@ model track {
   storage_key_raw   String?     @db.Text
   storage_key_final String?     @db.Text
   state             track_state @default(recording)
+  created_at        DateTime    @default(now()) @db.Timestamptz(6)
 
-  participant participant @relation(fields: [participant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  recording   recording   @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  upload      upload[]
+  participant        participant          @relation(fields: [participant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  recording          recording            @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  upload             upload[]
+  transcript_segment transcript_segment[] // 🔹 NEW back-relation
 
   @@index([recording_id], map: "idx_track_recording")
   @@map("track")
@@ -208,6 +223,7 @@ model job {
 model transcript_segment {
   id           String   @id @default(uuid()) @db.Uuid
   recording_id String   @db.Uuid
+  track_id     String?  @db.Uuid // 🔹 NEW: ties segment to a specific track
   speaker      String?  @db.Text
   start_ms     Int
   end_ms       Int
@@ -215,8 +231,10 @@ model transcript_segment {
   confidence   Decimal? @db.Decimal
 
   recording recording @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  track     track?    @relation(fields: [track_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
   @@index([recording_id], map: "idx_transcript_recording")
+  @@index([track_id], map: "idx_transcript_track") // 🔹 helpful for per-track queries
   @@map("transcript_segment")
 }
 
@@ -242,4 +260,20 @@ model UploadTusMap {
   upload upload @relation(fields: [uploadId], references: [id], onDelete: Cascade)
 
   @@map("upload_tus_map")
+}
+
+model export_artifact {
+  id           String       @id @default(uuid()) @db.Uuid
+  recording_id String       @db.Uuid
+  type         export_type
+  state        export_state @default(queued)
+  storage_key  String?      @db.Text
+  last_error   String?      @db.Text
+  created_at   DateTime     @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime     @updatedAt @db.Timestamptz(6)
+
+  recording recording @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([recording_id], map: "idx_export_recording")
+  @@map("export_artifact")
 }

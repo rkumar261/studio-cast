@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import fssync from 'node:fs';
 import path from 'node:path';
+import { prisma } from '../lib/prisma.js';
 
 import {
   createTrackAndUpload,
@@ -14,8 +15,8 @@ import type { InitiateUploadBody, InitiateUploadResponse } from '../dto/uploads/
 import { getR2Client, R2_BUCKET } from '../lib/r2.js';
 import { CreateMultipartUploadCommand, UploadPartCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-
-
+import { track_state } from '@prisma/client';
+import { enqueueTranscodeJob } from '../repositories/job.repo.js';
 /** Error & env utilities */
 
 class AppError extends Error {
@@ -454,6 +455,16 @@ export async function completeUploadService(
       });
     });
 
+    await prisma.track.update({
+      where: { id: track.id },
+      data: {
+        state: track_state.uploaded,
+        storage_key_raw: relKey,
+      }
+    });
+
+    await enqueueTranscodeJob(track.recording_id, track.id);
+
     if ((result as any).code && (result as any).code !== 'ok') {
       throw new AppError({
         code: (result as any).code ?? 'db_update_failed',
@@ -586,7 +597,7 @@ export async function completeMultipartUploadService(input: {
           details: { result, error: String(e) },
         });
       }
-      
+
       await createJob(track.recording_id, 'transcode', { trackId: track.id });
       return { bytes: Number(totalBytes ?? 0), storageKeyRaw: objectKey };
     }

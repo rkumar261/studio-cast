@@ -1,4 +1,3 @@
-// src/services/recordings.service.ts
 import { createRecording } from '../repositories/recording.repo.js';
 import type { CreateRecordingResponse } from '../dto/recordings/create.dto.js';
 import type { GetRecordingResponse } from '../dto/recordings/get.dto.js';
