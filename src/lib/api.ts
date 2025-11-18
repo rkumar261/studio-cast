@@ -150,4 +150,28 @@ export const UploadsAPI = {
   },
 };
 
+export const TracksAPI = {
+  // Unwraps `{ finalUrl: { url, key } }` into `{ url, key }`
+  // and also works if backend is changed to return `{ url, key }` directly.
+  finalUrl: async (trackId: string): Promise<{ url: string; key: string }> => {
+    const r = await fetch(`${API_BASE}/v1/tracks/${trackId}/final-url`, {
+      method: 'GET',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+    });
+
+    if (!r.ok) throw new Error(await r.text());
+
+    const data = (await r.json()) as
+      | { finalUrl: { url: string; key: string } }
+      | { url: string; key: string };
+
+    // Support both possible shapes from the backend
+    if ('finalUrl' in data) {
+      return data.finalUrl;
+    }
+    return data;
+  },
+};
+
 export { api, API_BASE };
