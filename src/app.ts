@@ -1,4 +1,3 @@
-// src/app.ts
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
@@ -11,20 +10,21 @@ import participantRoutes from './routes/participants.routes.js';
 import proxyTus from './routes/proxy-tus.routes.js';
 import tusdHooksRoutes from './routes/tusd-hooks.routes.js';
 import tracksRoutes from './routes/tracks.routes.js';
+import exportsRoutes from './routes/exports.routes.js';
 
 export async function buildApp() {
   const app = Fastify({ logger: true });
 
-  // 1) ⛳ Register the TUS reverse proxy FIRST so /tus/* goes straight to tusd
+  // Register the TUS reverse proxy FIRST so /tus/* goes straight to tusd
   await app.register(proxyTus);
 
-  // 2) (Optional safety) Skip any global validation/parsing for /tus/*
+  // Skip any global validation/parsing for /tus/*
   app.addHook('preValidation', (req, _res, next) => {
     if (req.url.startsWith('/tus/')) return next();
     next();
   });
 
-  // 3) CORS after the proxy; include all TUS headers
+  // CORS after the proxy; include all TUS headers
   await app.register(cors, {
     origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
     credentials: true,
@@ -32,7 +32,7 @@ export async function buildApp() {
     allowedHeaders: [
       'Tus-Resumable',
       'Upload-Length',
-      'Upload-Defer-Length', // <— add
+      'Upload-Defer-Length',
       'Upload-Offset',
       'Upload-Metadata',
       'Content-Type',
@@ -40,23 +40,24 @@ export async function buildApp() {
     ],
   });
 
-  // 4) Cookies
+  // Cookies
   await app.register(cookie, {
     secret: process.env.COOKIE_SECRET || 'riverside-dev-secret',
   });
 
-  // 5) Your routes
+  // Your routes
   await app.register(healthRoutes);
   await app.register(authRoutes);
   await app.register(recordingRoutes);
   await app.register(uploadsRoutes);
   await app.register(participantRoutes);
   await app.register(tracksRoutes);
+  await app.register(exportsRoutes);
 
-  // 6) tusd HTTP hooks (pre-create / post-create)
+  // tusd HTTP hooks (pre-create / post-create)
   await app.register(tusdHooksRoutes);
 
-  // 7) Centralized Error Handler
+  // Centralized Error Handler
   app.setErrorHandler((err, _req, reply) => {
     const status = (err as any)?.status ?? 500;
     app.log.error(err);
