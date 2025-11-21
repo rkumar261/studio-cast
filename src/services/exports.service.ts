@@ -17,6 +17,8 @@ import {
 } from '../repositories/export.repo.js';
 import { getRecordingService } from './recordings.service.js';
 import { createJob } from '../repositories/job.repo.js';
+import { R2_PUBLIC_BASE_URL } from '../lib/config.js';
+import { isLikelyR2Key } from '../lib/storage.js';
 
 type CreateExportArgs = {
     recordingId: string;
@@ -100,9 +102,13 @@ export async function listExportsService(
 
 function buildExportDownloadUrl(storageKey?: string | null): string | undefined {
     if (!storageKey) return undefined;
-    const base = process.env.R2_PUBLIC_BASE_URL; // or whatever env you use
-    if (!base) return undefined;
-    return `${base.replace(/\/$/, '')}/${storageKey}`;
+
+    if (isLikelyR2Key(storageKey)) {
+        if (!R2_PUBLIC_BASE_URL) return undefined;
+        return `${R2_PUBLIC_BASE_URL.replace(/\/$/, '')}/${storageKey}`;
+    }
+
+    return undefined;
 }
 
 type GetExportArgs = {

@@ -1,6 +1,6 @@
 import type { GetTranscriptResponse, TranscriptSegmentDto } from '../dto/transcripts/get.dto.js';
 import { listTranscriptSegmentsByRecordingId } from '../repositories/transcript.repo.js';
-import { getRecordingService } from '../services/recordings.service.js';
+import { getRecordingService } from './recordings.service.js';
 
 type GetTranscriptArgs = {
     recordingId: string;
@@ -9,22 +9,19 @@ type GetTranscriptArgs = {
 
 export type GetTranscriptResult =
     | { code: 'ok'; data: GetTranscriptResponse }
-    | { code: 'not_found' | 'forbidden' };
+    | { code: 'not_found', data: null }
+    | {code: 'forbidden', data: null }; 
 
 export async function getTranscriptByRecordingIdService(
     args: GetTranscriptArgs,
 ): Promise<GetTranscriptResult> {
     const { recordingId, requesterId } = args;
 
-    // Reuse existing ACL logic
+    // reuse recording ACL
     const recResult = await getRecordingService({ id: recordingId, requesterId });
 
-    if (recResult.code === 'not_found') {
-        return { code: 'not_found' };
-    }
-
-    if (recResult.code === 'forbidden') {
-        return { code: 'forbidden' };
+    if (recResult.code !== 'ok') {
+        return { code: recResult.code, data: null }; // 'not_found' | 'forbidden'
     }
 
     const rows = await listTranscriptSegmentsByRecordingId(recordingId);
@@ -37,7 +34,7 @@ export async function getTranscriptByRecordingIdService(
         endMs: s.end_ms,
         text: s.text,
         speaker: s.speaker,
-        confidence: s.confidence ? Number(s.confidence) : null,
+        confidence: s.confidence != null ? Number(s.confidence) : null,
     }));
 
     const data: GetTranscriptResponse = {

@@ -16,3 +16,11 @@ export const R2 = (() => {
 
     return { accountId, accessKeyId, secretAccessKey, bucket, endpoint };
 })();
+
+
+// Public base URL used for browser downloads
+export const R2_PUBLIC_BASE_URL =
+    process.env.R2_PUBLIC_BASE_URL ||
+    (R2.endpoint && R2.bucket
+        ? `${R2.endpoint.replace(/\/$/, '')}/${R2.bucket}`
+        : '');
