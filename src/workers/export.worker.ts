@@ -5,6 +5,7 @@ import {
     export_state,
     export_type,
     track_kind,
+    track_state, // 🔹 added
 } from '@prisma/client';
 import { pathToFileURL } from 'node:url';
 import { renderCaptionsExportForRecording } from '../services/captions.service.js';
@@ -85,11 +86,12 @@ async function runJob(job: JobRow) {
         },
     });
 
-    // Pick a source track for this export (temporary/simple logic)
+    // Pick a source track for this export
     const tracks = await prisma.track.findMany({
         where: {
             recording_id: artifact.recording_id,
-            state: 'processed',
+            state: track_state.processed,              // use enum
+            storage_key_final: { not: null },          // ensure we only pick tracks with a final key
         },
         orderBy: { created_at: 'asc' },
     });
@@ -115,7 +117,7 @@ async function runJob(job: JobRow) {
 
     // Decide how to build the export based on type
     if (artifact.type === export_type.mp4_captions) {
-        // 🔹 For captions exports, go through the captions service
+        // For captions exports, go through the captions service
         const result = await renderCaptionsExportForRecording({
             recordingId: artifact.recording_id,
             exportType: artifact.type,
@@ -123,7 +125,7 @@ async function runJob(job: JobRow) {
         });
         finalKey = result.finalKey;
     } else {
-        // 🔹 For wav/mp4 (for now), just reuse the processed track key
+        // For wav/mp4 (for now), just reuse the processed track key
         finalKey = sourceTrack.storage_key_final;
     }
 

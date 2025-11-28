@@ -9,8 +9,7 @@ type GetTranscriptArgs = {
 
 export type GetTranscriptResult =
     | { code: 'ok'; data: GetTranscriptResponse }
-    | { code: 'not_found', data: null }
-    | {code: 'forbidden', data: null }; 
+    | { code: 'not_found' | 'forbidden' };
 
 export async function getTranscriptByRecordingIdService(
     args: GetTranscriptArgs,
@@ -18,15 +17,34 @@ export async function getTranscriptByRecordingIdService(
     const { recordingId, requesterId } = args;
 
     // reuse recording ACL
-    const recResult = await getRecordingService({ id: recordingId, requesterId });
+   const recResult = await getRecordingService({ id: recordingId, requesterId });
 
-    if (recResult.code !== 'ok') {
-        return { code: recResult.code, data: null }; // 'not_found' | 'forbidden'
+    if (recResult.code === 'not_found') {
+        return { code: 'not_found' };
     }
+
+    if (recResult.code === 'forbidden') {
+        return { code: 'forbidden' };
+    } 
 
     const rows = await listTranscriptSegmentsByRecordingId(recordingId);
 
-    const segments: TranscriptSegmentDto[] = rows.map((s) => ({
+    // if there are segments from multiple tracks, only keep the first track’s segments
+    if (rows.length === 0) {
+        return {
+            code: 'ok',
+            data: {
+                recordingId,
+                segments: [],
+            },
+        };
+    }
+
+    const primaryTrackId = rows[0].track_id; // rows are already ordered by track_id, start_ms
+
+    const filteredRows = rows.filter((r) => r.track_id === primaryTrackId);
+
+    const segments: TranscriptSegmentDto[] = filteredRows.map((s) => ({
         id: s.id,
         recordingId: s.recording_id,
         trackId: s.track_id,
@@ -34,7 +52,7 @@ export async function getTranscriptByRecordingIdService(
         endMs: s.end_ms,
         text: s.text,
         speaker: s.speaker,
-        confidence: s.confidence != null ? Number(s.confidence) : null,
+        confidence: s.confidence ? Number(s.confidence) : null,
     }));
 
     const data: GetTranscriptResponse = {

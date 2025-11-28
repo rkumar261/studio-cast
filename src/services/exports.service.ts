@@ -17,8 +17,11 @@ import {
 } from '../repositories/export.repo.js';
 import { getRecordingService } from './recordings.service.js';
 import { createJob } from '../repositories/job.repo.js';
-import { R2_PUBLIC_BASE_URL } from '../lib/config.js';
-import { isLikelyR2Key } from '../lib/storage.js';
+
+// NEW imports for signed R2 download URLs
+import { GetObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { getR2Client, R2_BUCKET } from '../lib/r2.js';
 
 type CreateExportArgs = {
     recordingId: string;
@@ -47,6 +50,38 @@ function mapExportRowToDto(row: any): ExportDto {
         createdAt: row.created_at.toISOString(),
         updatedAt: row.updated_at.toISOString(),
     };
+}
+
+// Derive a nice filename based on export type/ids
+function filenameForExport(row: any): string {
+    const base = `export-${row.recording_id}-${row.id}`;
+
+    switch (row.type as export_type) {
+        case 'wav':
+            return `${base}.wav`;
+        case 'mp4':
+        case 'mp4_captions':
+            return `${base}.mp4`;
+        default:
+            return base;
+    }
+}
+
+// Build a signed R2 URL that forces the browser to download (attachment)
+async function buildExportDownloadUrl(row: any): Promise<string | undefined> {
+    if (!row.storage_key) return undefined;
+
+    const r2 = getR2Client();
+
+    const cmd = new GetObjectCommand({
+        Bucket: R2_BUCKET,
+        Key: row.storage_key,
+        // This header is what makes it show in the browser's download bar
+        ResponseContentDisposition: `attachment; filename="${filenameForExport(row)}"`,
+    });
+
+    // 10 minutes expiry is usually plenty for a download link
+    return getSignedUrl(r2, cmd, { expiresIn: 600 });
 }
 
 export async function createExportService(
@@ -100,22 +135,10 @@ export async function listExportsService(
     };
 }
 
-function buildExportDownloadUrl(storageKey?: string | null): string | undefined {
-    if (!storageKey) return undefined;
-
-    if (isLikelyR2Key(storageKey)) {
-        if (!R2_PUBLIC_BASE_URL) return undefined;
-        return `${R2_PUBLIC_BASE_URL.replace(/\/$/, '')}/${storageKey}`;
-    }
-
-    return undefined;
-}
-
 type GetExportArgs = {
     exportId: string;
     requesterId: string;
 };
-
 
 export async function getExportService(
     args: GetExportArgs,
@@ -137,7 +160,7 @@ export async function getExportService(
     if (recResult.code === 'forbidden') return { code: 'forbidden' };
 
     const dto = mapExportRowToDto(artifact);
-    const downloadUrl = buildExportDownloadUrl(artifact.storage_key);
+    const downloadUrl = await buildExportDownloadUrl(artifact);
 
     return {
         code: 'ok',
