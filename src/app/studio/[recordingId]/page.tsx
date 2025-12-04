@@ -1,8 +1,10 @@
+// src/app/studio/[recordingId]/page.tsx
 'use client';
 
 import React, { use, useEffect, useRef, useState } from 'react';
 import { useWebSocketConnection } from '@/lib/studio/useWebSocketConnection';
 import { useLocalMedia } from '@/lib/studio/useLocalMedia';
+import { usePeerConnection } from '@/lib/studio/usePeerConnection';
 
 type Role = 'host' | 'guest';
 
@@ -84,7 +86,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         setPeerId(id);
     }, [peerId]);
 
-    // --- Local media hook (real camera + mic) ---
+    // --- Local media (camera + mic) ---
     const {
         stream: localStream,
         status: mediaStatus,
@@ -98,8 +100,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     } = useLocalMedia();
 
     const localVideoRef = useRef<HTMLVideoElement | null>(null);
+    const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
-    // Attach MediaStream to <video> element when stream changes
     useEffect(() => {
         const videoEl = localVideoRef.current;
         if (!videoEl) return;
@@ -115,11 +117,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     const { status: wsStatus, connect, disconnect, sendJson } =
         useWebSocketConnection('/v1/studio/signaling', {
             onOpen: () => {
-                // When WS opens, send join message
                 setConnectionStatus('connecting');
                 setErrorMessage(null);
 
-                if (!peerId) return; // safety; shouldn't happen because we gate join
+                if (!peerId) return;
 
                 sendJson({
                     type: 'join',
@@ -135,6 +136,13 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                         setConnectionStatus('connected');
                         setErrorMessage(null);
                         setPeers(msg.peers);
+
+                        // If I'm Host and someone is already there, start call to first peer
+                        if (role === 'host' && msg.peers.length > 0 && peerId) {
+                            const firstPeer = msg.peers[0];
+                            console.log('[studio] host starting call to', firstPeer.peerId);
+                            startCall(firstPeer.peerId);
+                        }
                         break;
                     }
                     case 'peer-joined': {
@@ -142,6 +150,20 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                             if (prev.some((p) => p.peerId === msg.peerId)) return prev;
                             return [...prev, { peerId: msg.peerId, role: msg.role }];
                         });
+
+                        // If I'm Host and I see a new peer join, start call if not already connected
+                        if (
+                            role === 'host' &&
+                            !remotePeerId &&
+                            peerId &&
+                            msg.peerId !== peerId
+                        ) {
+                            console.log(
+                                '[studio] host starting call to newly joined peer',
+                                msg.peerId,
+                            );
+                            startCall(msg.peerId);
+                        }
                         break;
                     }
                     case 'peer-left': {
@@ -149,8 +171,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                         break;
                     }
                     case 'signal': {
-                        // Later: handle offer/answer/ice, markers, etc.
                         console.debug('Received signal payload', msg.payload);
+                        handleRemoteSignal(msg.fromPeerId, msg.payload);
                         break;
                     }
                     case 'error': {
@@ -168,20 +190,54 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
             onClose: () => {
                 setConnectionStatus('idle');
                 setPeers([]);
+                closeConnection();
             },
         });
+
+    // --- WebRTC peer connection (1:1) ---
+    const {
+        remoteStream,
+        remotePeerId,
+        startCall,
+        handleRemoteSignal,
+        closeConnection,
+        isScreenSharing,
+        startScreenShare,
+        stopScreenShare,
+    } = usePeerConnection({
+        localStream,
+        sendSignal: (payload, targetPeerId) => {
+            if (!peerId) return;
+            sendJson({
+                type: 'signal',
+                roomId: recordingId,
+                peerId,
+                targetPeerId,
+                payload,
+            });
+        },
+    });
+
+    useEffect(() => {
+        const videoEl = remoteVideoRef.current;
+        if (!videoEl) return;
+
+        if (remoteStream) {
+            videoEl.srcObject = remoteStream;
+        } else {
+            videoEl.srcObject = null;
+        }
+    }, [remoteStream]);
 
     const isConnected = connectionStatus === 'connected';
 
     async function handleJoinRoom() {
-        if (!peerId) return; // wait until client has generated ID
+        if (!peerId) return;
         setErrorMessage(null);
 
-        // Start camera + mic first (uses Tech Check prefs if present)
+        // start camera + mic first
         await startLocalMedia();
 
-        // Even if media fails, we still try to connect so signaling works;
-        // you can change this behaviour later if you want to require media.
         connect();
     }
 
@@ -195,6 +251,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         }
         disconnect();
         stopLocalMedia();
+        closeConnection();
         setConnectionStatus('idle');
         setPeers([]);
     }
@@ -206,9 +263,9 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 <header className="space-y-2">
                     <h1 className="text-2xl font-semibold">Studio</h1>
                     <p className="text-sm text-slate-400 max-w-2xl">
-                        Minimal WebRTC studio tied to this recording. You&apos;ll be able to join as host or
-                        guest, see your local preview, and later add remote participants, markers, and screen
-                        share.
+                        Minimal WebRTC studio tied to this recording. Join as host or guest,
+                        see your own preview, and when another peer joins you&apos;ll see a
+                        live 1:1 video feed.
                     </p>
                 </header>
 
@@ -297,7 +354,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                                 You
                             </h2>
                             <span className="text-[11px] text-slate-500">
-                                In later steps this will use your Tech Check devices.
+                                Uses your Tech Check devices (once wired).
                             </span>
                         </div>
 
@@ -328,8 +385,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                                 onClick={toggleMic}
                                 disabled={!localStream}
                                 className={`inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-xs border ${isMicMuted
-                                    ? 'border-slate-700 bg-slate-950 text-slate-400'
-                                    : 'border-slate-600 bg-slate-800 text-slate-50'
+                                        ? 'border-slate-700 bg-slate-950 text-slate-400'
+                                        : 'border-slate-600 bg-slate-800 text-slate-50'
                                     } disabled:opacity-50`}
                             >
                                 <span>{isMicMuted ? '🔇 Mic off' : '🎙️ Mic on'}</span>
@@ -339,21 +396,26 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                                 onClick={toggleCamera}
                                 disabled={!localStream}
                                 className={`inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-xs border ${isCameraOff
-                                    ? 'border-slate-700 bg-slate-950 text-slate-400'
-                                    : 'border-slate-600 bg-slate-800 text-slate-50'
+                                        ? 'border-slate-700 bg-slate-950 text-slate-400'
+                                        : 'border-slate-600 bg-slate-800 text-slate-50'
                                     } disabled:opacity-50`}
                             >
                                 <span>{isCameraOff ? '🚫 Camera off' : '📷 Camera on'}</span>
                             </button>
                             <button
                                 type="button"
-                                disabled
-                                className="inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-xs border border-slate-700 bg-slate-950 text-slate-500 opacity-70 cursor-not-allowed"
+                                onClick={isScreenSharing ? stopScreenShare : startScreenShare}
+                                disabled={!isConnected}
+                                className={`inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-xs border ${isScreenSharing
+                                        ? 'border-amber-400 bg-amber-500/10 text-amber-200'
+                                        : 'border-slate-700 bg-slate-950 text-slate-400'
+                                    } disabled:opacity-50`}
                             >
-                                🖥️ Screen share (soon)
+                                {isScreenSharing ? '🛑 Stop sharing' : '🖥️ Screen share'}
                             </button>
                             <span className="text-[11px] text-slate-500">
-                                Mic / camera buttons now control real media tracks.
+                                Screen share changes what remote participants see; your local
+                                preview above still shows your camera.
                             </span>
                         </div>
                     </div>
@@ -365,38 +427,49 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                                 Guests / Remote
                             </h2>
                             <span className="text-[11px] text-slate-500">
-                                Open this studio URL in another tab to see peers join and leave.
+                                Open this studio URL in another tab to see remote video.
                             </span>
                         </div>
 
-                        <div className="space-y-3">
-                            <div className="h-28 rounded-xl border border-dashed border-slate-700 bg-slate-950 flex items-center justify-center text-xs text-slate-500">
-                                Remote video thumbnail placeholder
-                            </div>
-                            <div className="h-24 rounded-xl border border-dashed border-slate-700 bg-slate-950 p-2 text-[11px] text-slate-400">
-                                <p className="mb-1 font-medium text-slate-300">Peers in room</p>
-                                {peers.length === 0 ? (
-                                    <p className="text-slate-500">
-                                        No other peers connected yet. Join from another tab or device.
-                                    </p>
-                                ) : (
-                                    <ul className="space-y-1">
-                                        {peers.map((p) => (
-                                            <li
-                                                key={p.peerId}
-                                                className="flex items-center justify-between rounded bg-slate-900 px-2 py-1"
-                                            >
-                                                <span className="font-mono text-[10px] text-slate-300">
-                                                    {p.peerId}
-                                                </span>
-                                                <span className="text-[10px] text-slate-400">
-                                                    {p.role === 'host' ? 'Host' : 'Guest'}
-                                                </span>
-                                            </li>
-                                        ))}
-                                    </ul>
-                                )}
-                            </div>
+                        <div className="relative h-40 rounded-xl border border-dashed border-slate-700 bg-slate-950 flex items-center justify-center overflow-hidden">
+                            <video
+                                ref={remoteVideoRef}
+                                autoPlay
+                                playsInline
+                                className={`h-full w-full object-cover transition-opacity ${remoteStream ? 'opacity-100' : 'opacity-30'
+                                    }`}
+                            />
+                            {!remoteStream && (
+                                <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-500 text-center px-4">
+                                    When another peer joins and WebRTC connects, their video will
+                                    appear here.
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="h-24 rounded-xl border border-dashed border-slate-700 bg-slate-950 p-2 text-[11px] text-slate-400">
+                            <p className="mb-1 font-medium text-slate-300">Peers in room</p>
+                            {peers.length === 0 ? (
+                                <p className="text-slate-500">
+                                    No other peers connected yet. Join from another tab or device.
+                                </p>
+                            ) : (
+                                <ul className="space-y-1">
+                                    {peers.map((p) => (
+                                        <li
+                                            key={p.peerId}
+                                            className="flex items-center justify-between rounded bg-slate-900 px-2 py-1"
+                                        >
+                                            <span className="font-mono text-[10px] text-slate-300">
+                                                {p.peerId}
+                                            </span>
+                                            <span className="text-[10px] text-slate-400">
+                                                {p.role === 'host' ? 'Host' : 'Guest'}
+                                            </span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
                         </div>
                     </div>
                 </section>
