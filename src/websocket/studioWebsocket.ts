@@ -1,4 +1,3 @@
-// src/websocket/studioWebsocket.ts
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 export type Role = 'host' | 'guest';
