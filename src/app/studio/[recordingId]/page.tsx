@@ -1,4 +1,3 @@
-// src/app/studio/[recordingId]/page.tsx
 'use client';
 
 import React, { use, useEffect, useRef, useState } from 'react';
@@ -86,7 +85,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         setPeerId(id);
     }, [peerId]);
 
-    // --- Local media (camera + mic) ---
+    // Local media (camera + mic)
     const {
         stream: localStream,
         status: mediaStatus,
@@ -101,6 +100,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
     const localVideoRef = useRef<HTMLVideoElement | null>(null);
     const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+    const screenPreviewRef = useRef<HTMLVideoElement | null>(null);
 
     useEffect(() => {
         const videoEl = localVideoRef.current;
@@ -113,7 +113,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         }
     }, [localStream]);
 
-    // --- WebSocket signaling ---
+    // WebSocket signaling
     const { status: wsStatus, connect, disconnect, sendJson } =
         useWebSocketConnection('/v1/studio/signaling', {
             onOpen: () => {
@@ -171,10 +171,14 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                         break;
                     }
                     case 'signal': {
-                        console.debug('Received signal payload', msg.payload);
+                        if (msg.fromPeerId === peerId) {
+                            // This is a signal we originated; ignore if the server echoes it back
+                            return;
+                        }
                         handleRemoteSignal(msg.fromPeerId, msg.payload);
                         break;
                     }
+
                     case 'error': {
                         setErrorMessage(msg.message);
                         break;
@@ -194,7 +198,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
             },
         });
 
-    // --- WebRTC peer connection (1:1) ---
+    // WebRTC peer connection (1:1) 
     const {
         remoteStream,
         remotePeerId,
@@ -202,6 +206,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         handleRemoteSignal,
         closeConnection,
         isScreenSharing,
+        screenPreviewStream,
         startScreenShare,
         stopScreenShare,
     } = usePeerConnection({
@@ -229,7 +234,19 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         }
     }, [remoteStream]);
 
+    useEffect(() => {
+        const el = screenPreviewRef.current;
+        if (!el) return;
+
+        if (screenPreviewStream) {
+            el.srcObject = screenPreviewStream;
+        } else {
+            el.srcObject = null;
+        }
+    }, [screenPreviewStream]);
+
     const isConnected = connectionStatus === 'connected';
+    const canShareScreen = isConnected && !!localStream && !!remotePeerId;
 
     async function handleJoinRoom() {
         if (!peerId) return;
@@ -358,22 +375,45 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                             </span>
                         </div>
 
-                        <div className="relative aspect-video w-full rounded-xl bg-slate-950 border border-slate-800 overflow-hidden">
-                            <video
-                                ref={localVideoRef}
-                                autoPlay
-                                playsInline
-                                muted
-                                className={`h-full w-full object-cover transition-opacity ${localStream ? 'opacity-100' : 'opacity-30'
-                                    }`}
-                            />
-                            {!localStream && (
-                                <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-500 text-center px-4">
-                                    Click <span className="mx-1 font-semibold">Join room</span> to
-                                    start your camera and microphone preview.
+                        <section>
+                            <h2 className="text-lg font-semibold mb-2">YOU</h2>
+
+                            {/* Camera preview */}
+                            <div className="relative aspect-video w-full rounded-xl bg-slate-950 border border-slate-800 overflow-hidden">
+                                <video
+                                    ref={localVideoRef}
+                                    autoPlay
+                                    playsInline
+                                    muted
+                                    className={`h-full w-full object-cover transition-opacity ${localStream ? 'opacity-100' : 'opacity-30'
+                                        }`}
+                                />
+                                {!localStream && (
+                                    <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-500 text-center px-4">
+                                        Click <span className="mx-1 font-semibold">Join room</span> to
+                                        start your camera and microphone preview.
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Screen preview while sharing */}
+                            {isScreenSharing && (
+                                <div className="mt-4">
+                                    <p className="text-sm text-slate-400 mb-1">
+                                        You’re sharing this screen
+                                    </p>
+                                    <div className="relative aspect-video w-full rounded-lg bg-black border border-dashed border-slate-600 overflow-hidden">
+                                        <video
+                                            ref={screenPreviewRef}
+                                            autoPlay
+                                            muted
+                                            playsInline
+                                            className="h-full w-full object-cover"
+                                        />
+                                    </div>
                                 </div>
                             )}
-                        </div>
+                        </section>
 
                         {mediaError && (
                             <p className="text-xs text-red-400">{mediaError}</p>
@@ -385,8 +425,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                                 onClick={toggleMic}
                                 disabled={!localStream}
                                 className={`inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-xs border ${isMicMuted
-                                        ? 'border-slate-700 bg-slate-950 text-slate-400'
-                                        : 'border-slate-600 bg-slate-800 text-slate-50'
+                                    ? 'border-slate-700 bg-slate-950 text-slate-400'
+                                    : 'border-slate-600 bg-slate-800 text-slate-50'
                                     } disabled:opacity-50`}
                             >
                                 <span>{isMicMuted ? '🔇 Mic off' : '🎙️ Mic on'}</span>
@@ -396,8 +436,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                                 onClick={toggleCamera}
                                 disabled={!localStream}
                                 className={`inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-xs border ${isCameraOff
-                                        ? 'border-slate-700 bg-slate-950 text-slate-400'
-                                        : 'border-slate-600 bg-slate-800 text-slate-50'
+                                    ? 'border-slate-700 bg-slate-950 text-slate-400'
+                                    : 'border-slate-600 bg-slate-800 text-slate-50'
                                     } disabled:opacity-50`}
                             >
                                 <span>{isCameraOff ? '🚫 Camera off' : '📷 Camera on'}</span>
@@ -405,14 +445,15 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                             <button
                                 type="button"
                                 onClick={isScreenSharing ? stopScreenShare : startScreenShare}
-                                disabled={!isConnected}
+                                disabled={!canShareScreen}
                                 className={`inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-xs border ${isScreenSharing
-                                        ? 'border-amber-400 bg-amber-500/10 text-amber-200'
-                                        : 'border-slate-700 bg-slate-950 text-slate-400'
+                                    ? 'border-amber-400 bg-amber-500/10 text-amber-200'
+                                    : 'border-slate-700 bg-slate-950 text-slate-400'
                                     } disabled:opacity-50`}
                             >
                                 {isScreenSharing ? '🛑 Stop sharing' : '🖥️ Screen share'}
                             </button>
+
                             <span className="text-[11px] text-slate-500">
                                 Screen share changes what remote participants see; your local
                                 preview above still shows your camera.

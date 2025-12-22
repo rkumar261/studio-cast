@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { API_BASE } from '@/lib/api'; 
+import { API_BASE } from '@/lib/api';
 
 export type WebSocketStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
 
@@ -32,15 +32,18 @@ export function useWebSocketConnection(
 ) {
   const [status, setStatus] = useState<WebSocketStatus>('idle');
   const wsRef = useRef<WebSocket | null>(null);
+  const manualCloseRef = useRef(false);
 
   const { onOpen, onClose, onError, onMessage } = handlers;
 
   useEffect(() => {
     // cleanup on unmount
     return () => {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
         try {
-          wsRef.current.close();
+          manualCloseRef.current = true;
+          ws.close(1000, 'unmount');
         } catch {
           /* ignore */
         }
@@ -50,8 +53,8 @@ export function useWebSocketConnection(
   }, []);
 
   function connect() {
+    // if already open, do nothing
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      // already open
       return;
     }
 
@@ -61,9 +64,11 @@ export function useWebSocketConnection(
     try {
       const socket = new WebSocket(url);
       wsRef.current = socket;
+      manualCloseRef.current = false;
       setStatus('connecting');
 
       socket.onopen = (event) => {
+        console.log('[WS] open');
         setStatus('open');
         onOpen?.(event, socket);
       };
@@ -79,15 +84,33 @@ export function useWebSocketConnection(
       };
 
       socket.onerror = (event) => {
-        console.error('[WS] error', event);
+        const ws = event.target as WebSocket;
+
+        // If we're in the middle of a manual close, treat this as noise
+        if (manualCloseRef.current && (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED)) {
+          console.log('[WS] error during manual close, ignoring');
+          return;
+        }
+
+        console.error('[WS] error', {
+          readyState: ws.readyState,
+          url: ws.url,
+        });
+
         setStatus('error');
         onError?.(event);
       };
 
       socket.onclose = (event) => {
-        console.log('[WS] closed', event.code, event.reason);
+        console.log('[WS] closed', {
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+        });
+
         setStatus('closed');
         wsRef.current = null;
+        manualCloseRef.current = false;
         onClose?.(event);
       };
     } catch (err) {
@@ -100,7 +123,8 @@ export function useWebSocketConnection(
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       try {
-        ws.close();
+        manualCloseRef.current = true;
+        ws.close(1000, 'client disconnect');
       } catch {
         /* ignore */
       }
