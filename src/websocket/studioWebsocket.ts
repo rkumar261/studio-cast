@@ -5,7 +5,7 @@ export type Role = 'host' | 'guest';
 type StudioPeer = {
   peerId: string;
   role: Role;
-  socket: any; // keep as any to avoid extra ws typings drama
+  socket: any;
 };
 
 // roomId -> peerId -> peer
@@ -13,23 +13,23 @@ const rooms = new Map<string, Map<string, StudioPeer>>();
 
 type ClientToServerMessage =
   | {
-      type: 'join';
-      roomId: string;
-      peerId: string;
-      role: Role;
-    }
+    type: 'join';
+    roomId: string;
+    peerId: string;
+    role: Role;
+  }
   | {
-      type: 'signal';
-      roomId: string;
-      peerId: string; // sender
-      targetPeerId?: string;
-      payload: any;
-    }
+    type: 'signal';
+    roomId: string;
+    peerId: string;
+    targetPeerId?: string;
+    payload: any;
+  }
   | {
-      type: 'leave';
-      roomId: string;
-      peerId: string;
-    };
+    type: 'leave';
+    roomId: string;
+    peerId: string;
+  };
 
 // NOTE: second arg can be either { socket } or the raw ws,
 // we normalize it inside.
