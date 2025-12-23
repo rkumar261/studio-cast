@@ -1,0 +1,45 @@
+{
+  "name": "riverside-lite",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "dev:api": "tsx src/index.ts",
+    "dev:worker:transcode": "tsx src/workers/transcode.worker.ts",
+    "dev:worker:asr": "tsx src/workers/asr.worker.ts",
+    "dev:worker:export": "tsx src/workers/export.worker.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "prisma:gen": "prisma generate",
+    "openapi:types": "openapi-typescript openapi.yaml -o src/types/openapi.ts",
+    "openapi:watch": "openapi-typescript -w openapi.yaml -o src/types/openapi.ts",
+    "openapi:lint": "openapi-cli lint openapi.yaml"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@types/node": "^24.6.1",
+    "openapi-typescript": "^7.9.1",
+    "prisma": "^6.16.3",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.922.0",
+    "@aws-sdk/s3-request-presigner": "^3.922.0",
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/cors": "^11.1.0",
+    "@fastify/http-proxy": "^11.3.0",
+    "@fastify/websocket": "^11.2.0",
+    "@prisma/client": "^6.16.3",
+    "fastify": "^5.6.1",
+    "fastify-type-provider-zod": "^6.0.0",
+    "jose": "^6.1.0",
+    "openid-client": "^6.8.1",
+    "undici": "^7.16.0",
+    "zod": "^4.1.12"
+  }
+}

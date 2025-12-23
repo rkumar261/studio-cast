@@ -1,0 +1,179 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model clip {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  recording_id String    @db.Uuid
+  start_ms     Int
+  end_ms       Int
+  title        String?
+  keywords     String[]
+  recording    recording @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model job {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  recording_id String    @db.Uuid
+  type         job_type
+  payload_json Json?
+  state        job_state @default(queued)
+  attempts     Int       @default(0)
+  last_error   String?
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  recording    recording @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([state], map: "idx_job_state")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model participant {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  recording_id    String    @db.Uuid
+  role            String
+  display_name    String?
+  email           String?
+  magic_link_hash String?
+  recording       recording @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  track           track[]
+}
+
+model recording {
+  id                 String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title              String?
+  status             recording_status     @default(draft)
+  created_at         DateTime             @default(now()) @db.Timestamptz(6)
+  clip               clip[]
+  job                job[]
+  participant        participant[]
+  track              track[]
+  transcript_segment transcript_segment[]
+}
+
+model track {
+  id                String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  recording_id      String      @db.Uuid
+  participant_id    String      @db.Uuid
+  kind              track_kind
+  codec             String?
+  duration_ms       Int?
+  storage_key_raw   String?
+  storage_key_final String?
+  state             track_state @default(recording)
+  participant       participant @relation(fields: [participant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  recording         recording   @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  upload            upload[]
+
+  @@index([recording_id], map: "idx_track_recording")
+}
+
+model transcript_segment {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  recording_id String    @db.Uuid
+  speaker      String?
+  start_ms     Int
+  end_ms       Int
+  text         String
+  confidence   Decimal?  @db.Decimal
+  recording    recording @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([recording_id], map: "idx_transcript_recording")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model upload {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  track_id       String   @db.Uuid
+  protocol       String
+  bytes_received BigInt   @default(0)
+  parts_json     Json?
+  etag           String?
+  state          String
+  updated_at     DateTime @default(now()) @db.Timestamptz(6)
+  track          track    @relation(fields: [track_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model User {
+  id            String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email         String           @unique @db.Text
+  name          String?          @db.Text
+  imageUrl      String?          @db.Text
+  createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  accounts      OAuthAccount[]
+  refreshTokens RefreshToken[]
+
+  @@map("user_account")
+}
+
+model OAuthAccount {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId          String   @db.Uuid
+  provider        String   @db.Text           // "google" | "github"
+  providerUserId  String   @db.Text          // sub from ID token
+  email           String?  @db.Text
+  profileJson     Json?    @map("profile_json")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId], map: "uq_oauth_provider_user")
+  @@index([userId])
+  @@map("oauth_account")
+}
+
+model RefreshToken {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId      String    @db.Uuid
+  jti         String    @unique @db.Text         // token id
+  hashedToken String    @map("hashed_token") @db.Text
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt   DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt   DateTime? @map("revoked_at") @db.Timestamptz(6)
+  userAgent   String?   @map("user_agent") @db.Text
+  ip          String?   @db.Text
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_token")
+}
+
+enum job_state {
+  queued
+  running
+  succeeded
+  failed
+  dead
+}
+
+enum job_type {
+  transcode
+  asr
+  export
+}
+
+enum recording_status {
+  draft
+  uploading
+  processing
+  ready
+  error
+}
+
+enum track_kind {
+  audio
+  video
+}
+
+enum track_state {
+  recording
+  uploaded
+  processed
+}

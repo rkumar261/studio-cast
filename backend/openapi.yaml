@@ -1,0 +1,377 @@
+openapi: 3.0.3
+info:
+  title: riverside-lite API
+  version: 0.1.0
+servers:
+  - url: http://localhost:8080
+    description: Local dev
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      properties:
+        message: { type: string }
+        code: { type: string }
+    Recording:
+      type: object
+      required: [id, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        status:
+          type: string
+          enum: [draft, uploading, processing, ready, error]
+        createdAt: { type: string, format: date-time }
+    Participant:
+      type: object
+      required: [id, recordingId, role]
+      properties:
+        id: { type: string, format: uuid }
+        recordingId: { type: string, format: uuid }
+        role: { type: string, enum: [host, guest] }
+        displayName: { type: string }
+        email: { type: string, format: email }
+    Track:
+      type: object
+      required: [id, recordingId, participantId, kind, state]
+      properties:
+        id: { type: string, format: uuid }
+        recordingId: { type: string, format: uuid }
+        participantId: { type: string, format: uuid }
+        kind: { type: string, enum: [audio, video] }
+        codec: { type: string }
+        durationMs: { type: integer }
+        storageKeyRaw: { type: string }
+        storageKeyFinal: { type: string }
+        state: { type: string, enum: [recording, uploaded, processed] }
+    TranscriptSegment:
+      type: object
+      required: [id, startMs, endMs, text]
+      properties:
+        id: { type: string, format: uuid }
+        recordingId: { type: string, format: uuid }
+        speaker: { type: string }
+        startMs: { type: integer }
+        endMs: { type: integer }
+        text: { type: string }
+        confidence: { type: number }
+    CreateRecordingRequest:
+      type: object
+      properties:
+        title: { type: string }
+    CreateRecordingResponse:
+      type: object
+      properties:
+        recording: { $ref: '#/components/schemas/Recording' }
+    AddParticipantRequest:
+      type: object
+      required: [displayName, role]
+      properties:
+        displayName: { type: string }
+        email: { type: string, format: email }
+        role: { type: string, enum: [host, guest] }
+    AddParticipantResponse:
+      type: object
+      properties:
+        participant: { $ref: '#/components/schemas/Participant' }
+        magicLink: { type: string, description: 'One-time link for guest' }
+    UploadInitiateRequest:
+      type: object
+      required: [recordingId, participantId, kind, protocol]
+      properties:
+        recordingId: { type: string, format: uuid }
+        participantId: { type: string, format: uuid }
+        kind: { type: string, enum: [audio, video] }
+        protocol: { type: string, enum: [tus, multipart] }
+        mimeType: { type: string }
+        codec: { type: string }
+    UploadInitiateResponse:
+      type: object
+      required: [uploadId, protocol]
+      properties:
+        uploadId: { type: string }
+        protocol: { type: string, enum: [tus, multipart] }
+        tus:
+          type: object
+          properties:
+            uploadUrl: { type: string, description: 'tus creation URL (POST) or resource URL' }
+        multipart:
+          type: object
+          properties:
+            sasUrl: { type: string, description: 'SAS base URL for Put Block (Azure) or presigned URL (AWS S3 part)' }
+            partSize: { type: integer }
+    UploadCompleteRequest:
+      type: object
+      required: [uploadId]
+      properties:
+        uploadId: { type: string }
+        sizeBytes: { type: integer }
+        etag: { type: string }
+    ExportCreateRequest:
+      type: object
+      required: [recordingId]
+      properties:
+        recordingId: { type: string, format: uuid }
+        format: { type: string, enum: [mp4, wav], default: mp4 }
+        ranges:
+          type: array
+          items:
+            type: object
+            required: [startMs, endMs]
+            properties:
+              startMs: { type: integer }
+              endMs: { type: integer }
+    ExportCreateResponse:
+      type: object
+      properties:
+        exportId: { type: string }
+        status: { type: string, enum: [queued, running, succeeded, failed] }
+    ExportGetResponse:
+      type: object
+      properties:
+        exportId: { type: string }
+        status: { type: string, enum: [queued, running, succeeded, failed] }
+        url: { type: string }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        imageUrl: { type: string }
+    LogoutRequest:
+      type: object
+      properties:
+        allDevices:
+          type: boolean
+          description: Revoke all refresh tokens for the user (logout all devices)
+          default: false
+    
+paths:
+  /healthz:
+    get:
+      security: []  # public for dev
+      summary: Health check
+      responses:
+        '200':
+            description: OK
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    ok: { type: boolean }
+  /v1/recordings:
+    post:
+      summary: Create a recording session
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateRecordingRequest' }
+      responses:
+        '200':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateRecordingResponse' }
+        '400':
+          description: Bad Request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /v1/recordings/{id}:
+    get:
+      summary: Get recording with tracks & status
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  recording: { $ref: '#/components/schemas/Recording' }
+                  tracks:
+                    type: array
+                    items: { $ref: '#/components/schemas/Track' }
+        '404': { description: Not Found }
+  /v1/recordings/{id}/participants:
+    post:
+      summary: Add participant (returns magic link for guests)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddParticipantRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AddParticipantResponse' }
+  /v1/uploads/initiate:
+    post:
+      summary: Start resumable upload (tus or multipart)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UploadInitiateRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UploadInitiateResponse' }
+  /v1/uploads/{id}/complete:
+    post:
+      summary: Commit uploaded track and trigger processing
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UploadCompleteRequest' }
+      responses:
+        '202': { description: Accepted }
+  /v1/recordings/{id}/process:
+    post:
+      summary: Manually trigger processing for a recording
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '202': { description: Accepted }
+  /v1/recordings/{id}/transcript:
+    get:
+      summary: Get transcript segments
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  segments:
+                    type: array
+                    items: { $ref: '#/components/schemas/TranscriptSegment' }
+  /v1/exports:
+    post:
+      summary: Create an export job (combine ranges)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExportCreateRequest' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExportCreateResponse' }
+  /v1/exports/{id}:
+    get:
+      summary: Get export job status
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExportGetResponse' }
+  /auth/oauth/google/start:
+    get:
+      summary: Start Google OAuth (redirect)
+      tags: [auth]
+      responses:
+        '302':
+          description: Redirect to Google Accounts
+  /auth/oauth/google/callback:
+    get:
+      summary: Google OAuth callback
+      tags: [auth]
+      parameters:
+        - in: query
+          name: code
+          schema: { type: string }
+        - in: query
+          name: state
+          schema: { type: string }
+      responses:
+        '200':
+          description: Login completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user:
+                    $ref: '#/components/schemas/User'
+        '400': { description: Invalid code/state }
+  /auth/me:
+    get:
+      summary: Get current user (requires auth)
+      tags: [auth]
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401': { description: Not authenticated }
+  /auth/logout:
+    post:
+      summary: Logout (revoke refresh token and clear cookies)
+      tags: [auth]
+      parameters:
+        - name: x-csrf-token
+          in: header
+          required: false   # set to true if you enforce CSRF
+          description: CSRF token matching the XSRF-TOKEN cookie (double-submit pattern)
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+      responses:
+        '204': { description: Logged out (cookies cleared) }
+        '401': { description: Not authenticated }
+        '429': { description: Too many requests }
