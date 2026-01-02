@@ -7,8 +7,6 @@ export type AsrSegment = {
 };
 
 /**
- * Core ASR entry point.
- *
  * Later we'll:
  *  - download the audio file for storageKeyFinal
  *  - normalize/convert to 16k mono wav if needed

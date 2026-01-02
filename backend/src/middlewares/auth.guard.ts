@@ -2,6 +2,8 @@ import { FastifyRequest, FastifyReply } from 'fastify';
 import { verifyAccessJwt } from '../lib/jwt.js';
 import { prisma } from '../lib/prisma.js';  // or your repo wrapper
 
+/*************  ✨ Windsurf Command ⭐  *************/
+/*******  a75e7a4a-724a-43b5-a7b6-5844ff659e4a  *******/
 export async function authGuard(req: FastifyRequest, reply: FastifyReply) {
   try {
     const bearer = req.headers.authorization?.split(' ')[1];

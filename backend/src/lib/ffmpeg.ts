@@ -1,4 +1,3 @@
-// src/lib/ffmpeg.ts
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 

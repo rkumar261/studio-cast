@@ -1,4 +1,3 @@
-// src/routes/studio-websocket.routes.ts
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import websocketPlugin from '@fastify/websocket';
 import { authGuard } from '../middlewares/auth.guard.js';

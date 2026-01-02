@@ -1,4 +1,3 @@
-// scripts/gen-jwt-keys.ts (ESM)
 import { writeFileSync, mkdirSync } from 'fs';
 import { generateKeyPairSync } from 'crypto';
 
@@ -13,4 +12,4 @@ const { privateKey, publicKey } = generateKeyPairSync('rsa', {
 writeFileSync('certs/jwtRS256.key', privateKey);
 writeFileSync('certs/jwtRS256.key.pub', publicKey);
 
-console.log('✅ Keys written to certs/jwtRS256.key (+ .pub)');
+console.log('Keys written to certs/jwtRS256.key (+ .pub)');

@@ -1,4 +1,3 @@
-// src/schemas/recordings.ts
 import { z } from 'zod';
 
 export const CreateRecordingSchema = z.object({
