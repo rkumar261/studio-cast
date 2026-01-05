@@ -75,6 +75,71 @@ export function useLocalMedia() {
             setError(err?.message ?? 'Unable to access camera or microphone.');
             setStatus('error');
         }
+
+        try {
+            const prefs = loadTechCheckPrefs();
+
+            const audioConstraints: MediaTrackConstraints | true = prefs.audioInputId
+                ? { deviceId: { exact: prefs.audioInputId } }
+                : true;
+
+            const videoConstraints: MediaTrackConstraints | true = prefs.videoInputId
+                ? {
+                    deviceId: { exact: prefs.videoInputId },
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                }
+                : {
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                };
+
+            async function tryGet(constraints: MediaStreamConstraints) {
+                return await navigator.mediaDevices.getUserMedia(constraints);
+            }
+
+            try {
+
+                // Best case: request both
+                const mediaStream = await tryGet({ audio: audioConstraints, video: videoConstraints });
+                setStream(mediaStream);
+                setStatus('live');
+                setIsMicMuted(false);
+                setIsCameraOff(false);
+                setError(null);
+            } catch (errBoth: any) {
+
+                // Fallback: video-only
+                try {
+                    const mediaStream = await tryGet({ audio: false, video: videoConstraints });
+                    setStream(mediaStream);
+                    setStatus('live');
+                    setIsMicMuted(true);
+                    setIsCameraOff(false);
+                    setError('Unable to access microphone. Microphone has been muted.');
+                } catch {
+
+                    // Fallback: audio-only
+                    try {
+                        const mediaStream = await tryGet({ audio: audioConstraints, video: false });
+                        setStream(mediaStream);
+                        setStatus('live');
+                        setIsMicMuted(false);
+                        setIsCameraOff(true);
+                        setError('Camera blocked; joined with microphone only.');
+                        return;
+                    } catch (errFinal: any) {
+                        console.error('[studio] getUserMedia failed', errFinal);
+                        setError(errFinal?.message ?? errBoth?.message ?? 'Unable to access camera or microphone.');
+                        setStatus('error');
+                    }
+                }
+            }
+        } catch (err: any) {
+            console.error('[studio] getUserMedia failed', err);
+            setError(err?.message ?? 'Unable to access camera or microphone.');
+            setStatus('error');
+        }
     }, []);
 
     /** Stop and release all tracks. */

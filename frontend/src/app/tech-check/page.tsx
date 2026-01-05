@@ -115,10 +115,22 @@ export default function TechCheckPage() {
       }
 
       // Request combined audio + video permission
-      const newStream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: true,
-      });
+      // const newStream = await navigator.mediaDevices.getUserMedia({
+      //   audio: true,
+      //   video: true,
+      // });
+
+      let newStream: MediaStream | null = null;
+
+      try {
+        newStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: true });
+      } catch {
+        try {
+          newStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        } catch {
+          newStream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
+        }
+      }
 
       streamRef.current = newStream;
       setStream(newStream);
