@@ -15,6 +15,11 @@ type UsePeerConnectionArgs = {
 export function usePeerConnection({ localStream, sendSignal }: UsePeerConnectionArgs) {
     const pcRef = useRef<RTCPeerConnection | null>(null);
 
+    // If an offer arrives before local media is ready, we stash it and answer later.
+    const pendingOfferRef = useRef<{ fromPeerId: string; payload: WebRtcSignalPayload } | null>(
+        null
+    );
+
     // Remote media
     const remoteStreamRef = useRef<MediaStream | null>(null);
     const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -32,7 +37,12 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
     const [screenPreviewStream, setScreenPreviewStream] = useState<MediaStream | null>(null);
     const screenStreamRef = useRef<MediaStream | null>(null);
     const screenSenderRef = useRef<RTCRtpSender | null>(null);
+
+    // If we replaced the camera track, we store it here to restore on stop.
     const originalVideoTrackRef = useRef<MediaStreamTrack | null>(null);
+
+    // If we had to ADD a new sender (because no video sender existed), we’ll remove it on stop.
+    const addedScreenSenderRef = useRef<boolean>(false);
 
     const ensurePeerConnection = useCallback(() => {
         if (pcRef.current) return pcRef.current;
@@ -69,6 +79,21 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
         return pc;
     }, [sendSignal]);
 
+    const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
+
+    const flushPendingIce = useCallback(async (pc: RTCPeerConnection) => {
+        const queued = pendingIceRef.current;
+        pendingIceRef.current = [];
+        for (const c of queued) {
+            try {
+                await pc.addIceCandidate(new RTCIceCandidate(c));
+            } catch (e) {
+                console.error('[webrtc] failed to add queued ICE', e);
+            }
+        }
+    }, []);
+
+
     const addLocalTracks = useCallback(
         (pc: RTCPeerConnection) => {
             if (!localStream) return;
@@ -94,10 +119,21 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
 
     const startCall = useCallback(
         async (targetPeerId: string) => {
+            if (!localStream) {
+                console.warn('[webrtc] startCall called but localStream is null; not creating offer');
+                return;
+            }
+
             setRemotePeerId(targetPeerId);
 
             const pc = ensurePeerConnection();
             addLocalTracks(pc);
+
+            const senders = pc
+                .getSenders()
+                .map((s) => s.track?.kind)
+                .filter(Boolean);
+            console.log('[webrtc] senders after addLocalTracks:', senders);
 
             console.log('[webrtc] creating offer to', targetPeerId);
             const offer = await pc.createOffer();
@@ -105,7 +141,7 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
 
             sendSignal({ kind: 'offer', sdp: offer }, targetPeerId);
         },
-        [addLocalTracks, ensurePeerConnection, sendSignal]
+        [localStream, addLocalTracks, ensurePeerConnection, sendSignal]
     );
 
     const handleRemoteSignal = useCallback(
@@ -115,11 +151,20 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
             switch (payload.kind) {
                 case 'offer': {
                     console.log('[webrtc] received offer from', fromPeerId);
-                    setRemotePeerId(fromPeerId);
 
+                    // If local media not ready, defer answering (this is key for “host can’t see guest” issues)
+                    if (!localStream) {
+                        console.warn('[webrtc] offer received before localStream ready; deferring');
+                        pendingOfferRef.current = { fromPeerId, payload };
+                        setRemotePeerId(fromPeerId);
+                        return;
+                    }
+
+                    setRemotePeerId(fromPeerId);
                     addLocalTracks(pc);
 
                     await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+                    await flushPendingIce(pc);
                     const answer = await pc.createAnswer();
                     await pc.setLocalDescription(answer);
 
@@ -131,18 +176,34 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
                     console.log('[webrtc] received answer from', fromPeerId);
                     // Only apply answer when we have a local offer outstanding
                     if (pc.signalingState !== 'have-local-offer') {
-                        console.warn(
-                            '[webrtc] ignoring answer because signalingState is',
-                            pc.signalingState
-                        );
+                        console.warn('[webrtc] ignoring answer because signalingState is', pc.signalingState);
                         return;
                     }
                     await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+                    await flushPendingIce(pc);
+
                     break;
                 }
 
+                // case 'ice': {
+                //     if (!payload.candidate) return;
+                //     try {
+                //         await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+                //     } catch (err) {
+                //         console.error('[webrtc] failed to add ICE candidate', err);
+                //     }
+                //     break;
+                // }
+
                 case 'ice': {
                     if (!payload.candidate) return;
+
+                    // If we don't yet have a remoteDescription, queue ICE.
+                    if (!pc.remoteDescription) {
+                        pendingIceRef.current.push(payload.candidate);
+                        return;
+                    }
+
                     try {
                         await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
                     } catch (err) {
@@ -151,28 +212,65 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
                     break;
                 }
 
+
                 default: {
                     console.warn('[webrtc] unknown signal kind', payload);
                 }
             }
         },
-        [addLocalTracks, ensurePeerConnection, sendSignal]
+        [addLocalTracks, ensurePeerConnection, sendSignal, localStream]
     );
 
-    // --- Screen share: replaceTrack-only implementation ---
+    // When localStream becomes ready, answer any offer that came in earlier.
+    useEffect(() => {
+        if (!localStream) return;
+        const pending = pendingOfferRef.current;
+        if (!pending) return;
 
-    const stopScreenShare = useCallback(() => {
+        pendingOfferRef.current = null;
+        handleRemoteSignal(pending.fromPeerId, pending.payload);
+    }, [localStream, handleRemoteSignal]);
+
+    // --- Screen share ---
+
+    const renegotiate = useCallback(async () => {
+        const pc = pcRef.current;
+        const targetPeerId = remotePeerIdRef.current;
+
+        if (!pc || !targetPeerId) {
+            console.warn('[webrtc] renegotiate skipped (pc or targetPeerId missing)');
+            return;
+        }
+
+        try {
+            // createOffer() here is used when we ADD/REMOVE tracks (not for replaceTrack)
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            sendSignal({ kind: 'offer', sdp: offer }, targetPeerId);
+        } catch (e) {
+            console.error('[webrtc] renegotiate failed', e);
+        }
+    }, [sendSignal]);
+
+    const stopScreenShare = useCallback(async () => {
         const pc = pcRef.current;
         const sender = screenSenderRef.current;
         const originalTrack = originalVideoTrackRef.current;
         const screenStream = screenStreamRef.current;
 
-        if (pc && sender && originalTrack) {
-            sender
-                .replaceTrack(originalTrack)
-                .catch((err) =>
-                    console.error('[webrtc] failed to restore camera track', err)
-                );
+        try {
+            if (pc && sender) {
+                if (originalTrack) {
+                    // We replaced camera → restore camera
+                    await sender.replaceTrack(originalTrack);
+                } else if (addedScreenSenderRef.current) {
+                    // We added a new sender for screen → remove it
+                    pc.removeTrack(sender);
+                    await renegotiate();
+                }
+            }
+        } catch (err) {
+            console.error('[webrtc] stopScreenShare failed', err);
         }
 
         if (screenStream) {
@@ -182,9 +280,11 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
 
         screenSenderRef.current = null;
         originalVideoTrackRef.current = null;
+        addedScreenSenderRef.current = false;
+
         setScreenPreviewStream(null);
         setIsScreenSharing(false);
-    }, []);
+    }, [renegotiate]);
 
     const startScreenShare = useCallback(async () => {
         if (isScreenSharing) return;
@@ -204,28 +304,36 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
 
             const pc = ensurePeerConnection();
 
-            // Find existing video sender (camera)
-            const sender =
-                pc
-                    .getSenders()
-                    .find((s) => s.track && s.track.kind === 'video') || null;
+            // Ensure local tracks exist first (so getSenders has a camera sender in the common case)
+            addLocalTracks(pc);
 
-            if (!sender || !sender.track) {
-                console.warn('[webrtc] no video sender to replace for screen share');
-                stream.getTracks().forEach((t) => t.stop());
-                return;
+            // Prefer replacing an existing video sender (camera)
+            const existingVideoSender =
+                pc.getSenders().find((s) => s.track && s.track.kind === 'video') || null;
+
+            if (existingVideoSender && existingVideoSender.track) {
+                console.log('[webrtc] screenShare using replaceTrack');
+                originalVideoTrackRef.current = existingVideoSender.track;
+                screenSenderRef.current = existingVideoSender;
+                addedScreenSenderRef.current = false;
+
+                await existingVideoSender.replaceTrack(screenTrack);
+            } else {
+                // Fallback: no video sender exists yet. Add screen track and renegotiate.
+                console.warn('[webrtc] no video sender; adding screen track and renegotiating');
+                const sender = pc.addTrack(screenTrack, stream);
+                screenSenderRef.current = sender;
+                originalVideoTrackRef.current = null;
+                addedScreenSenderRef.current = true;
+
+                await renegotiate();
             }
-
-            console.log('[webrtc] screenShare using replaceTrack');
-            originalVideoTrackRef.current = sender.track;
-            screenSenderRef.current = sender;
-
-            await sender.replaceTrack(screenTrack);
 
             screenStreamRef.current = stream;
             setScreenPreviewStream(stream);
             setIsScreenSharing(true);
 
+            // When user stops sharing from browser UI, auto-restore
             screenTrack.onended = () => {
                 console.log('[webrtc] displayMedia track ended');
                 setTimeout(() => {
@@ -235,11 +343,25 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
         } catch (err) {
             console.error('[webrtc] startScreenShare error', err);
         }
-    }, [ensurePeerConnection, isScreenSharing, stopScreenShare]);
+    }, [addLocalTracks, ensurePeerConnection, isScreenSharing, renegotiate, stopScreenShare]);
 
     const closeConnection = useCallback(() => {
+        // stop screen share cleanly
+        if (screenStreamRef.current) {
+            screenStreamRef.current.getTracks().forEach((t) => t.stop());
+            screenStreamRef.current = null;
+        }
+        screenSenderRef.current = null;
+        originalVideoTrackRef.current = null;
+        addedScreenSenderRef.current = false;
+        setScreenPreviewStream(null);
+        setIsScreenSharing(false);
+
         if (pcRef.current) {
             try {
+                pcRef.current.onicecandidate = null;
+                pcRef.current.ontrack = null;
+                pcRef.current.onconnectionstatechange = null;
                 pcRef.current.close();
             } catch {
                 // ignore
@@ -252,18 +374,9 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
             remoteStreamRef.current = null;
         }
 
-        if (screenStreamRef.current) {
-            screenStreamRef.current.getTracks().forEach((t) => t.stop());
-            screenStreamRef.current = null;
-        }
-
-        screenSenderRef.current = null;
-        originalVideoTrackRef.current = null;
-        setScreenPreviewStream(null);
-        setIsScreenSharing(false);
-
         setRemoteStream(null);
         setRemotePeerId(null);
+        pendingOfferRef.current = null;
     }, []);
 
     return {
@@ -273,6 +386,7 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
         startCall,
         handleRemoteSignal,
         closeConnection,
+
         isScreenSharing,
         screenPreviewStream,
         startScreenShare,

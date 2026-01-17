@@ -1,14 +1,18 @@
 'use client';
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 type TechCheckPrefs = {
     audioInputId?: string;
     videoInputId?: string;
 };
 
-// If your Tech Check page uses a different key, change this string:
-const TECH_CHECK_PREFS_KEY = 'riverside-tech-check-prefs';
+/**
+ * IMPORTANT:
+ * Your Tech Check page uses: const PREFS_KEY = 'techCheckPrefs';
+ * So Studio MUST read the same key, otherwise device preferences won't apply.
+ */
+const TECH_CHECK_PREFS_KEY = 'techCheckPrefs';
 
 function loadTechCheckPrefs(): TechCheckPrefs {
     if (typeof window === 'undefined') return {};
@@ -29,150 +33,136 @@ function loadTechCheckPrefs(): TechCheckPrefs {
 export type LocalMediaStatus = 'idle' | 'starting' | 'live' | 'error';
 
 export function useLocalMedia() {
+    const streamRef = useRef<MediaStream | null>(null);
+
     const [stream, setStream] = useState<MediaStream | null>(null);
     const [status, setStatus] = useState<LocalMediaStatus>('idle');
     const [error, setError] = useState<string | null>(null);
+
     const [isMicMuted, setIsMicMuted] = useState(false);
     const [isCameraOff, setIsCameraOff] = useState(false);
 
+    // Keep ref in sync with state for reliable cleanup.
+    useEffect(() => {
+        streamRef.current = stream;
+    }, [stream]);
+
+    const stop = useCallback(() => {
+        const s = streamRef.current;
+        if (s) {
+            s.getTracks().forEach((t) => t.stop());
+        }
+        streamRef.current = null;
+
+        setStream(null);
+        setStatus('idle');
+        setIsMicMuted(false);
+        setIsCameraOff(false);
+        setError(null);
+    }, []);
+
     /** Start camera + mic using Tech Check device prefs if available. */
     const start = useCallback(async () => {
-        if (typeof navigator === 'undefined' || !navigator.mediaDevices) {
+        if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
             setError('Media devices are not available in this environment.');
             setStatus('error');
             return;
         }
+
+        // If we already have a stream, don't start again.
+        if (streamRef.current) return;
 
         setStatus('starting');
         setError(null);
 
         const prefs = loadTechCheckPrefs();
 
-        const constraints: MediaStreamConstraints = {
-            audio: prefs.audioInputId
-                ? { deviceId: { exact: prefs.audioInputId } }
-                : true,
-            video: prefs.videoInputId
-                ? {
-                    deviceId: { exact: prefs.videoInputId },
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 },
-                }
-                : {
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 },
-                },
-        };
+        const audioConstraints: MediaTrackConstraints | true = prefs.audioInputId
+            ? { deviceId: { exact: prefs.audioInputId } }
+            : true;
+
+        const videoConstraints: MediaTrackConstraints | true = prefs.videoInputId
+            ? {
+                deviceId: { exact: prefs.videoInputId },
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+            }
+            : {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+            };
+
+        // Helper to attempt getUserMedia with constraints.
+        const tryGet = async (constraints: MediaStreamConstraints) =>
+            navigator.mediaDevices.getUserMedia(constraints);
 
         try {
-            const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+            // 1) Best case: audio + video
+            const mediaStream = await tryGet({ audio: audioConstraints, video: videoConstraints });
+
+            streamRef.current = mediaStream;
             setStream(mediaStream);
             setStatus('live');
             setIsMicMuted(false);
             setIsCameraOff(false);
-        } catch (err: any) {
-            console.error('[studio] getUserMedia failed', err);
-            setError(err?.message ?? 'Unable to access camera or microphone.');
-            setStatus('error');
-        }
-
-        try {
-            const prefs = loadTechCheckPrefs();
-
-            const audioConstraints: MediaTrackConstraints | true = prefs.audioInputId
-                ? { deviceId: { exact: prefs.audioInputId } }
-                : true;
-
-            const videoConstraints: MediaTrackConstraints | true = prefs.videoInputId
-                ? {
-                    deviceId: { exact: prefs.videoInputId },
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 },
-                }
-                : {
-                    width: { ideal: 1280 },
-                    height: { ideal: 720 },
-                };
-
-            async function tryGet(constraints: MediaStreamConstraints) {
-                return await navigator.mediaDevices.getUserMedia(constraints);
-            }
-
+            setError(null);
+            return;
+        } catch (errBoth: any) {
+            // 2) Fallback: video-only
             try {
+                const mediaStream = await tryGet({ audio: false, video: videoConstraints });
 
-                // Best case: request both
-                const mediaStream = await tryGet({ audio: audioConstraints, video: videoConstraints });
+                streamRef.current = mediaStream;
                 setStream(mediaStream);
                 setStatus('live');
-                setIsMicMuted(false);
+                setIsMicMuted(true); // no audio track
                 setIsCameraOff(false);
-                setError(null);
-            } catch (errBoth: any) {
-
-                // Fallback: video-only
+                setError('Microphone not available. Joined with camera only.');
+                return;
+            } catch {
+                // 3) Fallback: audio-only
                 try {
-                    const mediaStream = await tryGet({ audio: false, video: videoConstraints });
+                    const mediaStream = await tryGet({ audio: audioConstraints, video: false });
+
+                    streamRef.current = mediaStream;
                     setStream(mediaStream);
                     setStatus('live');
-                    setIsMicMuted(true);
-                    setIsCameraOff(false);
-                    setError('Unable to access microphone. Microphone has been muted.');
-                } catch {
-
-                    // Fallback: audio-only
-                    try {
-                        const mediaStream = await tryGet({ audio: audioConstraints, video: false });
-                        setStream(mediaStream);
-                        setStatus('live');
-                        setIsMicMuted(false);
-                        setIsCameraOff(true);
-                        setError('Camera blocked; joined with microphone only.');
-                        return;
-                    } catch (errFinal: any) {
-                        console.error('[studio] getUserMedia failed', errFinal);
-                        setError(errFinal?.message ?? errBoth?.message ?? 'Unable to access camera or microphone.');
-                        setStatus('error');
-                    }
+                    setIsMicMuted(false);
+                    setIsCameraOff(true); // no video track
+                    setError('Camera not available. Joined with microphone only.');
+                    return;
+                } catch (errFinal: any) {
+                    console.error('[studio] getUserMedia failed', errFinal);
+                    setError(errFinal?.message ?? errBoth?.message ?? 'Unable to access camera or microphone.');
+                    setStatus('error');
                 }
             }
-        } catch (err: any) {
-            console.error('[studio] getUserMedia failed', err);
-            setError(err?.message ?? 'Unable to access camera or microphone.');
-            setStatus('error');
         }
     }, []);
 
-    /** Stop and release all tracks. */
-    const stop = useCallback(() => {
-        if (stream) {
-            stream.getTracks().forEach((t) => t.stop());
-        }
-        setStream(null);
-        setStatus('idle');
-        setIsMicMuted(false);
-        setIsCameraOff(false);
-        setError(null);
-    }, [stream]);
-
     const toggleMic = useCallback(() => {
-        if (!stream) return;
-        const audioTracks = stream.getAudioTracks();
+        const s = streamRef.current;
+        if (!s) return;
+
+        const audioTracks = s.getAudioTracks();
         if (!audioTracks.length) return;
 
         const nextEnabled = !audioTracks[0].enabled;
         audioTracks.forEach((t) => (t.enabled = nextEnabled));
         setIsMicMuted(!nextEnabled);
-    }, [stream]);
+    }, []);
 
     const toggleCamera = useCallback(() => {
-        if (!stream) return;
-        const videoTracks = stream.getVideoTracks();
+        const s = streamRef.current;
+        if (!s) return;
+
+        const videoTracks = s.getVideoTracks();
         if (!videoTracks.length) return;
 
         const nextEnabled = !videoTracks[0].enabled;
         videoTracks.forEach((t) => (t.enabled = nextEnabled));
         setIsCameraOff(!nextEnabled);
-    }, [stream]);
+    }, []);
 
     return {
         stream,

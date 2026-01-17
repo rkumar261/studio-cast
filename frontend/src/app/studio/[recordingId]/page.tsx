@@ -138,11 +138,17 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                         setPeers(msg.peers);
 
                         // If I'm Host and someone is already there, start call to first peer
+                        // if (role === 'host' && msg.peers.length > 0 && peerId) {
+                        //     const firstPeer = msg.peers[0];
+                        //     console.log('[studio] host starting call to', firstPeer.peerId);
+                        //     startCall(firstPeer.peerId);
+                        // }
                         if (role === 'host' && msg.peers.length > 0 && peerId) {
                             const firstPeer = msg.peers[0];
-                            console.log('[studio] host starting call to', firstPeer.peerId);
-                            startCall(firstPeer.peerId);
+                            console.log('[studio] host will start call to', firstPeer.peerId, '(pending)');
+                            setPendingCallPeerId(firstPeer.peerId);
                         }
+
                         break;
                     }
                     case 'peer-joined': {
@@ -152,22 +158,32 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                         });
 
                         // If I'm Host and I see a new peer join, start call if not already connected
-                        if (
-                            role === 'host' &&
-                            !remotePeerId &&
-                            peerId &&
-                            msg.peerId !== peerId
-                        ) {
-                            console.log(
-                                '[studio] host starting call to newly joined peer',
-                                msg.peerId,
-                            );
-                            startCall(msg.peerId);
+                        // if (
+                        //     role === 'host' &&
+                        //     !remotePeerId &&
+                        //     peerId &&
+                        //     msg.peerId !== peerId
+                        // ) {
+                        //     console.log(
+                        //         '[studio] host starting call to newly joined peer',
+                        //         msg.peerId,
+                        //     );
+                        //     startCall(msg.peerId);
+                        // }
+
+                        if (role === 'host' && !remotePeerId && peerId && msg.peerId !== peerId) {
+                            console.log('[studio] host will start call to newly joined peer', msg.peerId, '(pending)');
+                            setPendingCallPeerId(msg.peerId);
                         }
+
                         break;
                     }
                     case 'peer-left': {
                         setPeers((prev) => prev.filter((p) => p.peerId !== msg.peerId));
+                        if (msg.peerId === remotePeerId) {
+                            console.log('[studio] remote peer left; closing webrtc', msg.peerId);
+                            closeConnection(); // clears remoteStream + remotePeerId + closes PC
+                        }
                         break;
                     }
                     case 'signal': {
@@ -248,6 +264,20 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     const isConnected = connectionStatus === 'connected';
     const canShareScreen = isConnected && !!localStream && !!remotePeerId;
 
+    const [pendingCallPeerId, setPendingCallPeerId] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (role !== 'host') return;
+        if (!pendingCallPeerId) return;
+        if (!localStream) return;          // critical: wait for camera/mic stream
+        if (!peerId) return;
+        if (remotePeerId) return;          // already connected
+
+        console.log('[studio] starting call (gated) to', pendingCallPeerId);
+        startCall(pendingCallPeerId);
+        setPendingCallPeerId(null);
+    }, [role, pendingCallPeerId, localStream, peerId, remotePeerId, startCall]);
+
     async function handleJoinRoom() {
         if (!peerId) return;
         setErrorMessage(null);
@@ -272,6 +302,13 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         setConnectionStatus('idle');
         setPeers([]);
     }
+
+    useEffect(() => {
+        return () => {
+            // Stop camera/mic when leaving the page
+            localStream?.getTracks().forEach((t) => t.stop());
+        };
+    }, [localStream]);
 
     return (
         <main className="min-h-[calc(100vh-56px)] bg-slate-950 text-slate-50">
@@ -477,6 +514,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                                 ref={remoteVideoRef}
                                 autoPlay
                                 playsInline
+                                muted
                                 className={`h-full w-full object-cover transition-opacity ${remoteStream ? 'opacity-100' : 'opacity-30'
                                     }`}
                             />
