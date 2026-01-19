@@ -61,6 +61,8 @@ type ServerMessage =
     | SignalMessage
     | ErrorMessage;
 
+type StageMode = 'remote-screen' | 'remote-camera';
+
 export default function StudioRecordingPage({ params }: StudioPageProps) {
     const { recordingId } = use(params);
 
@@ -70,6 +72,9 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     const [connectionStatus, setConnectionStatus] = useState<
         'idle' | 'connecting' | 'connected'
     >('idle');
+
+    const [stageMode, setStageMode] = useState<StageMode>('remote-camera');
+    const [userPinned, setUserPinned] = useState(false);
 
     // peerId is only created on the client
     const [peerId, setPeerId] = useState<string | null>(null);
@@ -99,7 +104,9 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     } = useLocalMedia();
 
     const localVideoRef = useRef<HTMLVideoElement | null>(null);
-    const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+    const stageVideoRef = useRef<HTMLVideoElement | null>(null);
+    const thumbVideoRef = useRef<HTMLVideoElement | null>(null);
+
     const screenPreviewRef = useRef<HTMLVideoElement | null>(null);
 
     useEffect(() => {
@@ -171,7 +178,12 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                         //     startCall(msg.peerId);
                         // }
 
-                        if (role === 'host' && !remotePeerId && peerId && msg.peerId !== peerId) {
+                        // if (role === 'host' && !remotePeerId && peerId && msg.peerId !== peerId) {
+                        //     console.log('[studio] host will start call to newly joined peer', msg.peerId, '(pending)');
+                        //     setPendingCallPeerId(msg.peerId);
+                        // }
+
+                        if (role === 'host' && peerId && msg.peerId !== peerId) {
                             console.log('[studio] host will start call to newly joined peer', msg.peerId, '(pending)');
                             setPendingCallPeerId(msg.peerId);
                         }
@@ -216,7 +228,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
     // WebRTC peer connection (1:1) 
     const {
-        remoteStream,
+        remoteCameraStream,
+        remoteScreenStream,
         remotePeerId,
         startCall,
         handleRemoteSignal,
@@ -239,27 +252,36 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         },
     });
 
-    useEffect(() => {
-        const videoEl = remoteVideoRef.current;
-        if (!videoEl) return;
 
-        if (remoteStream) {
-            videoEl.srcObject = remoteStream;
-        } else {
-            videoEl.srcObject = null;
-        }
-    }, [remoteStream]);
+    const stageIsScreen = stageMode === 'remote-screen';
+    const stageStream = stageIsScreen ? remoteScreenStream : remoteCameraStream;
+    const thumbStream = stageIsScreen ? remoteCameraStream : remoteScreenStream;
+
+    useEffect(() => {
+        const el = stageVideoRef.current;
+        if (!el) return;
+        el.srcObject = stageStream ?? null;
+        el.play?.().catch(() => { });
+    }, [stageStream]);
+
+
+    useEffect(() => {
+        const el = thumbVideoRef.current;
+        if (!el) return;
+        el.srcObject = thumbStream ?? null;
+        el.play?.().catch(() => { });
+    }, [thumbStream]);
 
     useEffect(() => {
         const el = screenPreviewRef.current;
         if (!el) return;
 
-        if (screenPreviewStream) {
-            el.srcObject = screenPreviewStream;
-        } else {
-            el.srcObject = null;
-        }
+        el.srcObject = screenPreviewStream ?? null;
+
+        // Helps avoid a paused/black preview in some browsers
+        el.play?.().catch(() => { });
     }, [screenPreviewStream]);
+
 
     const isConnected = connectionStatus === 'connected';
     const canShareScreen = isConnected && !!localStream && !!remotePeerId;
@@ -303,12 +325,40 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         setPeers([]);
     }
 
+    // useEffect(() => {
+    //     return () => {
+    //         // Stop camera/mic when leaving the page
+    //         localStream?.getTracks().forEach((t) => t.stop());
+    //     };
+    // }, [localStream]);
+
     useEffect(() => {
         return () => {
-            // Stop camera/mic when leaving the page
-            localStream?.getTracks().forEach((t) => t.stop());
+            stopLocalMedia();
+            closeConnection();
         };
-    }, [localStream]);
+    }, [stopLocalMedia, closeConnection]);
+
+
+    // Add pin/swap
+    const hadRemoteScreenRef = useRef(false);
+
+    useEffect(() => {
+        if (userPinned) return;
+
+        if (remoteScreenStream && !hadRemoteScreenRef.current) {
+            hadRemoteScreenRef.current = true;
+            setStageMode('remote-screen');
+        }
+        if (!remoteScreenStream) {
+            hadRemoteScreenRef.current = false;
+            setStageMode('remote-camera');
+        }
+    }, [remoteScreenStream, userPinned]);
+
+    useEffect(() => {
+        if (!remoteScreenStream) setUserPinned(false);
+    }, [remoteScreenStream]);
 
     return (
         <main className="min-h-[calc(100vh-56px)] bg-slate-950 text-slate-50">
@@ -509,21 +559,66 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                             </span>
                         </div>
 
-                        <div className="relative h-40 rounded-xl border border-dashed border-slate-700 bg-slate-950 flex items-center justify-center overflow-hidden">
-                            <video
-                                ref={remoteVideoRef}
-                                autoPlay
-                                playsInline
-                                muted
-                                className={`h-full w-full object-cover transition-opacity ${remoteStream ? 'opacity-100' : 'opacity-30'
-                                    }`}
-                            />
-                            {!remoteStream && (
-                                <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-500 text-center px-4">
-                                    When another peer joins and WebRTC connects, their video will
-                                    appear here.
-                                </div>
-                            )}
+                        <div className="space-y-3">
+                            {/* Stage: screen if present, otherwise camera */}
+                            <div className="relative aspect-video w-full rounded-xl border border-dashed border-slate-700 bg-slate-950 overflow-hidden">
+                                <video
+                                    ref={stageVideoRef}
+                                    autoPlay
+                                    playsInline
+                                    disablePictureInPicture
+                                    controls={false}
+
+                                    className="h-full w-full object-cover"
+                                />
+
+                                {!stageStream && (
+                                    <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-500 text-center px-4">
+                                        When another peer joins and WebRTC connects, their video will appear here.
+                                    </div>
+                                )}
+                                {stageIsScreen && remoteScreenStream && (
+                                    <div className="absolute left-2 top-2 rounded bg-black/60 px-2 py-1 text-[11px] text-slate-100">
+                                        Screen share
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Thumbnail row */}
+                            <div className="flex gap-3">
+                                {thumbStream && (
+                                    <div className="relative h-24 w-40 rounded-lg border border-slate-800 bg-slate-950 overflow-hidden">
+                                        <video
+                                            ref={thumbVideoRef}
+                                            autoPlay
+                                            playsInline
+                                            muted
+                                            disablePictureInPicture
+                                            controls={false}
+
+                                            className="h-full w-full object-cover"
+                                        />
+
+                                        <div className="absolute left-2 top-2 rounded bg-black/60 px-2 py-1 text-[10px]">
+                                            {stageIsScreen ? 'Camera' : 'Screen'}
+                                        </div>
+
+                                        {/* Pin/Swap button */}
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setUserPinned(true);
+                                                setStageMode(stageIsScreen ? 'remote-camera' : 'remote-screen');
+                                            }}
+                                            className="absolute bottom-2 right-2 rounded bg-black/60 px-2 py-1 text-[10px] text-white"
+                                        >
+                                            Pin
+                                        </button>
+
+                                    </div>
+                                )}
+
+                            </div>
                         </div>
 
                         <div className="h-24 rounded-xl border border-dashed border-slate-700 bg-slate-950 p-2 text-[11px] text-slate-400">

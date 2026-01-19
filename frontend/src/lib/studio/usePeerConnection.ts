@@ -21,8 +21,18 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
     );
 
     // Remote media
-    const remoteStreamRef = useRef<MediaStream | null>(null);
-    const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+    // const remoteStreamRef = useRef<MediaStream | null>(null);
+    // const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+
+    // Remote camera stream (video+audio) and remote screen stream (video)
+    const remoteCameraStreamRef = useRef<MediaStream | null>(null);
+    const remoteScreenStreamRef = useRef<MediaStream | null>(null);
+
+    const [remoteCameraStream, setRemoteCameraStream] = useState<MediaStream | null>(null);
+    const [remoteScreenStream, setRemoteScreenStream] = useState<MediaStream | null>(null);
+
+    // video track counter
+    const remoteVideoTrackCountRef = useRef<number>(0);
 
     // Remote peer id (state + ref)
     const [remotePeerId, setRemotePeerIdState] = useState<string | null>(null);
@@ -39,10 +49,10 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
     const screenSenderRef = useRef<RTCRtpSender | null>(null);
 
     // If we replaced the camera track, we store it here to restore on stop.
-    const originalVideoTrackRef = useRef<MediaStreamTrack | null>(null);
+    // const originalVideoTrackRef = useRef<MediaStreamTrack | null>(null);
 
     // If we had to ADD a new sender (because no video sender existed), we’ll remove it on stop.
-    const addedScreenSenderRef = useRef<boolean>(false);
+    // const addedScreenSenderRef = useRef<boolean>(false);
 
     const ensurePeerConnection = useCallback(() => {
         if (pcRef.current) return pcRef.current;
@@ -59,17 +69,65 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
             sendSignal({ kind: 'ice', candidate: event.candidate }, targetPeerId);
         };
 
+        // pc.ontrack = (event) => {
+        //     let rs = remoteStreamRef.current;
+        //     if (!rs) {
+        //         rs = new MediaStream();
+        //         remoteStreamRef.current = rs;
+        //     }
+        //     if (!rs.getTracks().includes(event.track)) {
+        //         rs.addTrack(event.track);
+        //     }
+        //     setRemoteStream(rs);
+        // };
+
         pc.ontrack = (event) => {
-            let rs = remoteStreamRef.current;
-            if (!rs) {
-                rs = new MediaStream();
-                remoteStreamRef.current = rs;
+            const track = event.track;
+
+            // Audio always belongs to camera stream
+            if (track.kind === 'audio') {
+                let cam = remoteCameraStreamRef.current;
+                if (!cam) {
+                    cam = new MediaStream();
+                    remoteCameraStreamRef.current = cam;
+                }
+                if (!cam.getTracks().includes(track)) {
+                    cam.addTrack(track);
+                }
+                setRemoteCameraStream(cam);
+                return;
             }
-            if (!rs.getTracks().includes(event.track)) {
-                rs.addTrack(event.track);
+
+            // Video: first video track -> camera, second video track -> screen
+            if (track.kind === 'video') {
+                remoteVideoTrackCountRef.current += 1;
+                const isFirstVideo = remoteVideoTrackCountRef.current === 1;
+
+                if (isFirstVideo) {
+                    let cam = remoteCameraStreamRef.current;
+                    if (!cam) {
+                        cam = new MediaStream();
+                        remoteCameraStreamRef.current = cam;
+                    }
+                    if (!cam.getTracks().includes(track)) {
+                        cam.addTrack(track);
+                    }
+                    setRemoteCameraStream(cam);
+                } else {
+                    let screen = remoteScreenStreamRef.current;
+                    if (!screen) {
+                        screen = new MediaStream();
+                        remoteScreenStreamRef.current = screen;
+                    }
+                    if (!screen.getTracks().includes(track)) {
+                        screen.addTrack(track);
+                    }
+                    setRemoteScreenStream(screen);
+                }
+                return;
             }
-            setRemoteStream(rs);
         };
+
 
         pc.onconnectionstatechange = () => {
             console.log('[webrtc] connection state', pc.connectionState);
@@ -252,22 +310,51 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
         }
     }, [sendSignal]);
 
+    // const stopScreenShare = useCallback(async () => {
+    //     const pc = pcRef.current;
+    //     const sender = screenSenderRef.current;
+    //     const originalTrack = originalVideoTrackRef.current;
+    //     const screenStream = screenStreamRef.current;
+
+    //     try {
+    //         if (pc && sender) {
+    //             if (originalTrack) {
+    //                 // We replaced camera → restore camera
+    //                 await sender.replaceTrack(originalTrack);
+    //             } else if (addedScreenSenderRef.current) {
+    //                 // We added a new sender for screen → remove it
+    //                 pc.removeTrack(sender);
+    //                 await renegotiate();
+    //             }
+    //         }
+    //     } catch (err) {
+    //         console.error('[webrtc] stopScreenShare failed', err);
+    //     }
+
+    //     if (screenStream) {
+    //         screenStream.getTracks().forEach((t) => t.stop());
+    //         screenStreamRef.current = null;
+    //     }
+
+    //     screenSenderRef.current = null;
+    //     originalVideoTrackRef.current = null;
+    //     addedScreenSenderRef.current = false;
+
+    //     setScreenPreviewStream(null);
+    //     setIsScreenSharing(false);
+    // }, [renegotiate]);
+
     const stopScreenShare = useCallback(async () => {
+
         const pc = pcRef.current;
         const sender = screenSenderRef.current;
-        const originalTrack = originalVideoTrackRef.current;
         const screenStream = screenStreamRef.current;
 
         try {
             if (pc && sender) {
-                if (originalTrack) {
-                    // We replaced camera → restore camera
-                    await sender.replaceTrack(originalTrack);
-                } else if (addedScreenSenderRef.current) {
-                    // We added a new sender for screen → remove it
-                    pc.removeTrack(sender);
-                    await renegotiate();
-                }
+                pc.removeTrack(sender);
+                screenSenderRef.current = null;
+                await renegotiate();
             }
         } catch (err) {
             console.error('[webrtc] stopScreenShare failed', err);
@@ -278,13 +365,68 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
             screenStreamRef.current = null;
         }
 
-        screenSenderRef.current = null;
-        originalVideoTrackRef.current = null;
-        addedScreenSenderRef.current = false;
-
         setScreenPreviewStream(null);
         setIsScreenSharing(false);
     }, [renegotiate]);
+
+    // const startScreenShare = useCallback(async () => {
+    //     if (isScreenSharing) return;
+
+    //     try {
+    //         const stream = await navigator.mediaDevices.getDisplayMedia({
+    //             video: true,
+    //             audio: false,
+    //         });
+
+    //         const screenTrack = stream.getVideoTracks()[0];
+    //         if (!screenTrack) {
+    //             console.warn('[webrtc] displayMedia returned no video track');
+    //             stream.getTracks().forEach((t) => t.stop());
+    //             return;
+    //         }
+
+    //         const pc = ensurePeerConnection();
+
+    //         // Ensure local tracks exist first (so getSenders has a camera sender in the common case)
+    //         addLocalTracks(pc);
+
+    //         // Prefer replacing an existing video sender (camera)
+    //         const existingVideoSender =
+    //             pc.getSenders().find((s) => s.track && s.track.kind === 'video') || null;
+
+    //         if (existingVideoSender && existingVideoSender.track) {
+    //             console.log('[webrtc] screenShare using replaceTrack');
+    //             originalVideoTrackRef.current = existingVideoSender.track;
+    //             screenSenderRef.current = existingVideoSender;
+    //             addedScreenSenderRef.current = false;
+
+    //             await existingVideoSender.replaceTrack(screenTrack);
+    //         } else {
+    //             // Fallback: no video sender exists yet. Add screen track and renegotiate.
+    //             console.warn('[webrtc] no video sender; adding screen track and renegotiating');
+    //             const sender = pc.addTrack(screenTrack, stream);
+    //             screenSenderRef.current = sender;
+    //             originalVideoTrackRef.current = null;
+    //             addedScreenSenderRef.current = true;
+
+    //             await renegotiate();
+    //         }
+
+    //         screenStreamRef.current = stream;
+    //         setScreenPreviewStream(stream);
+    //         setIsScreenSharing(true);
+
+    //         // When user stops sharing from browser UI, auto-restore
+    //         screenTrack.onended = () => {
+    //             console.log('[webrtc] displayMedia track ended');
+    //             setTimeout(() => {
+    //                 stopScreenShare();
+    //             }, 0);
+    //         };
+    //     } catch (err) {
+    //         console.error('[webrtc] startScreenShare error', err);
+    //     }
+    // }, [addLocalTracks, ensurePeerConnection, isScreenSharing, renegotiate, stopScreenShare]);
 
     const startScreenShare = useCallback(async () => {
         if (isScreenSharing) return;
@@ -297,53 +439,34 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
 
             const screenTrack = stream.getVideoTracks()[0];
             if (!screenTrack) {
-                console.warn('[webrtc] displayMedia returned no video track');
                 stream.getTracks().forEach((t) => t.stop());
                 return;
             }
 
             const pc = ensurePeerConnection();
 
-            // Ensure local tracks exist first (so getSenders has a camera sender in the common case)
+            // Ensure camera/mic tracks are present FIRST (so we keep camera + screen together)
             addLocalTracks(pc);
 
-            // Prefer replacing an existing video sender (camera)
-            const existingVideoSender =
-                pc.getSenders().find((s) => s.track && s.track.kind === 'video') || null;
-
-            if (existingVideoSender && existingVideoSender.track) {
-                console.log('[webrtc] screenShare using replaceTrack');
-                originalVideoTrackRef.current = existingVideoSender.track;
-                screenSenderRef.current = existingVideoSender;
-                addedScreenSenderRef.current = false;
-
-                await existingVideoSender.replaceTrack(screenTrack);
-            } else {
-                // Fallback: no video sender exists yet. Add screen track and renegotiate.
-                console.warn('[webrtc] no video sender; adding screen track and renegotiating');
-                const sender = pc.addTrack(screenTrack, stream);
-                screenSenderRef.current = sender;
-                originalVideoTrackRef.current = null;
-                addedScreenSenderRef.current = true;
-
-                await renegotiate();
-            }
+            // ADD screen as a second track (Meet style)
+            const sender = pc.addTrack(screenTrack, stream);
+            screenSenderRef.current = sender;
 
             screenStreamRef.current = stream;
             setScreenPreviewStream(stream);
             setIsScreenSharing(true);
 
-            // When user stops sharing from browser UI, auto-restore
+            // renegotiate so the remote gets the new track
+            await renegotiate();
+
             screenTrack.onended = () => {
-                console.log('[webrtc] displayMedia track ended');
-                setTimeout(() => {
-                    stopScreenShare();
-                }, 0);
+                setTimeout(() => stopScreenShare(), 0);
             };
         } catch (err) {
             console.error('[webrtc] startScreenShare error', err);
         }
     }, [addLocalTracks, ensurePeerConnection, isScreenSharing, renegotiate, stopScreenShare]);
+
 
     const closeConnection = useCallback(() => {
         // stop screen share cleanly
@@ -352,8 +475,8 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
             screenStreamRef.current = null;
         }
         screenSenderRef.current = null;
-        originalVideoTrackRef.current = null;
-        addedScreenSenderRef.current = false;
+        // originalVideoTrackRef.current = null;
+        // addedScreenSenderRef.current = false;
         setScreenPreviewStream(null);
         setIsScreenSharing(false);
 
@@ -369,27 +492,35 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
             pcRef.current = null;
         }
 
-        if (remoteStreamRef.current) {
-            remoteStreamRef.current.getTracks().forEach((t) => t.stop());
-            remoteStreamRef.current = null;
+        if (remoteCameraStreamRef.current) {
+            remoteCameraStreamRef.current.getTracks().forEach((t) => t.stop());
+            remoteCameraStreamRef.current = null;
+        }
+        if (remoteScreenStreamRef.current) {
+            remoteScreenStreamRef.current.getTracks().forEach((t) => t.stop());
+            remoteScreenStreamRef.current = null;
         }
 
-        setRemoteStream(null);
+        remoteVideoTrackCountRef.current = 0;
+
+        setRemoteCameraStream(null);
+        setRemoteScreenStream(null);
+
         setRemotePeerId(null);
         pendingOfferRef.current = null;
     }, []);
 
     return {
-        remoteStream,
+        remoteCameraStream,
+        remoteScreenStream,
         remotePeerId,
-
         startCall,
         handleRemoteSignal,
         closeConnection,
-
         isScreenSharing,
         screenPreviewStream,
         startScreenShare,
         stopScreenShare,
     };
+
 }
