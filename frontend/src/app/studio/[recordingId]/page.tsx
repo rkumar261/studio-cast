@@ -298,7 +298,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     }, [screenPreviewStream]);
 
     const isConnected = connectionStatus === 'connected';
-    const canShareScreen = isConnected && !!localStream && !!remotePeerId;
+    const canShareScreen = isConnected && !!localStream;
+
+    // It will enable screen share without being connected to web socket
+    // const canShareScreen = !!localStream;
 
     // ===== Host: gated startCall (ONLY place where we auto-call) =====
     useEffect(() => {

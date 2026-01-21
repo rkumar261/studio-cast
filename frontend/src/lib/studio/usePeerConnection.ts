@@ -15,22 +15,22 @@ type UsePeerConnectionArgs = {
 export function usePeerConnection({ localStream, sendSignal }: UsePeerConnectionArgs) {
     const pcRef = useRef<RTCPeerConnection | null>(null);
 
-    // If an offer arrives before local media is ready, stash and answer later.
+    // If an offer arrives before local media is ready, we stash it and answer later.
     const pendingOfferRef = useRef<{ fromPeerId: string; payload: WebRtcSignalPayload } | null>(
         null
     );
 
-    // Remote streams (camera+audio) and (screen video)
+    const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
+
+    // Remote camera stream (video+audio) and remote screen stream (video)
     const remoteCameraStreamRef = useRef<MediaStream | null>(null);
     const remoteScreenStreamRef = useRef<MediaStream | null>(null);
 
     const [remoteCameraStream, setRemoteCameraStream] = useState<MediaStream | null>(null);
     const [remoteScreenStream, setRemoteScreenStream] = useState<MediaStream | null>(null);
 
-    // We classify by “which incoming stream is the camera stream”
-    // We choose the stream that carries the remote audio track as the camera stream.
+    // NEW: stream-id based routing (no ordering assumptions)
     const remoteCameraStreamIdRef = useRef<string | null>(null);
-    const firstVideoSeenRef = useRef<boolean>(false);
 
     // Remote peer id (state + ref)
     const [remotePeerId, setRemotePeerIdState] = useState<string | null>(null);
@@ -40,13 +40,11 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
         setRemotePeerIdState(id);
     };
 
-    // Screen sharing state (local)
+    // Screen sharing state
     const [isScreenSharing, setIsScreenSharing] = useState(false);
     const [screenPreviewStream, setScreenPreviewStream] = useState<MediaStream | null>(null);
     const screenStreamRef = useRef<MediaStream | null>(null);
     const screenSenderRef = useRef<RTCRtpSender | null>(null);
-
-    const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
 
     const flushPendingIce = useCallback(async (pc: RTCPeerConnection) => {
         const queued = pendingIceRef.current;
@@ -71,112 +69,68 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
             if (!event.candidate) return;
             const targetPeerId = remotePeerIdRef.current;
             if (!targetPeerId) return;
+
             sendSignal({ kind: 'ice', candidate: event.candidate }, targetPeerId);
-        };
-
-        const removeTrackFromStream = (
-            streamRef: React.MutableRefObject<MediaStream | null>,
-            setStream: (s: MediaStream | null) => void,
-            track: MediaStreamTrack
-        ) => {
-            const s = streamRef.current;
-            if (!s) return;
-
-            try {
-                if (s.getTracks().includes(track)) {
-                    s.removeTrack(track);
-                }
-            } catch {
-                // ignore
-            }
-
-            if (s.getTracks().length === 0) {
-                streamRef.current = null;
-                setStream(null);
-            } else {
-                // new object reference not required; but set state to keep UI consistent
-                setStream(s);
-            }
         };
 
         pc.ontrack = (event) => {
             const track = event.track;
-            const inboundStream = event.streams?.[0] ?? null;
-            const inboundStreamId = inboundStream?.id ?? null;
+            const stream = event.streams?.[0] ?? null; // should exist because you addTrack(track, stream)
 
-            // When a track ends (remote stops screen share / leaves), clear it from state.
-            track.onended = () => {
-                // Decide which stream it belonged to at render time:
-                const camId = remoteCameraStreamIdRef.current;
-
-                if (track.kind === 'audio') {
-                    removeTrackFromStream(remoteCameraStreamRef, setRemoteCameraStream, track);
-                    return;
-                }
-
-                if (track.kind === 'video') {
-                    if (camId && inboundStreamId === camId) {
-                        removeTrackFromStream(remoteCameraStreamRef, setRemoteCameraStream, track);
-                    } else {
-                        removeTrackFromStream(remoteScreenStreamRef, setRemoteScreenStream, track);
-                    }
-                }
-            };
-
-            // AUDIO: always camera stream; also sets cameraStreamId for robust video classification
-            if (track.kind === 'audio') {
-                let cam = remoteCameraStreamRef.current;
-                if (!cam) {
-                    cam = new MediaStream();
-                    remoteCameraStreamRef.current = cam;
-                }
-
-                if (!cam.getTracks().includes(track)) {
-                    cam.addTrack(track);
-                }
-
-                if (inboundStreamId) {
-                    remoteCameraStreamIdRef.current = inboundStreamId;
-                }
-
-                setRemoteCameraStream(cam);
+            // If for any reason stream is missing, fall back to a safe behavior
+            // (but you should not hit this in your current code).
+            if (!stream) {
+                console.warn('[webrtc] ontrack missing event.streams[0]; track kind=', track.kind);
                 return;
             }
 
-            // VIDEO: classify by inbound stream id (preferred), with a safe fallback
+            // AUDIO => defines "camera stream"
+            if (track.kind === 'audio') {
+                remoteCameraStreamIdRef.current = stream.id;
+
+                remoteCameraStreamRef.current = stream;
+                setRemoteCameraStream(stream);
+
+                // cleanup when remote stops audio
+                track.onended = () => {
+                    // If audio ends, we still keep the camera stream if video remains.
+                    // But camera stream id is still the best identifier.
+                };
+
+                return;
+            }
+
+            // VIDEO => classify by which stream id it belongs to
             if (track.kind === 'video') {
-                const camId = remoteCameraStreamIdRef.current;
+                const cameraStreamId = remoteCameraStreamIdRef.current;
 
-                const shouldTreatAsCamera =
-                    (camId && inboundStreamId === camId) ||
-                    // fallback if audio never shows up: first video becomes camera
-                    (!camId && !firstVideoSeenRef.current);
+                // If this video belongs to the stream that has audio => camera video
+                if (cameraStreamId && stream.id === cameraStreamId) {
+                    remoteCameraStreamRef.current = stream;
+                    setRemoteCameraStream(stream);
 
-                if (!camId && !firstVideoSeenRef.current) {
-                    firstVideoSeenRef.current = true;
+                    track.onended = () => {
+                        // If camera video ends, we keep stream object but UI will show black.
+                        // Optionally you can setRemoteCameraStream(null) if no video tracks remain.
+                    };
+
+                    return;
                 }
 
-                if (shouldTreatAsCamera) {
-                    let cam = remoteCameraStreamRef.current;
-                    if (!cam) {
-                        cam = new MediaStream();
-                        remoteCameraStreamRef.current = cam;
+                // Otherwise => screen share stream
+                remoteScreenStreamRef.current = stream;
+                setRemoteScreenStream(stream);
+
+                track.onended = () => {
+                    // When screen share stops remotely, clear the screen stream for UI
+                    // (If stream still has other live tracks, keep it)
+                    const hasLiveVideo = stream.getVideoTracks().some((t) => t.readyState === 'live');
+                    if (!hasLiveVideo) {
+                        remoteScreenStreamRef.current = null;
+                        setRemoteScreenStream(null);
                     }
-                    if (!cam.getTracks().includes(track)) {
-                        cam.addTrack(track);
-                    }
-                    setRemoteCameraStream(cam);
-                } else {
-                    let screen = remoteScreenStreamRef.current;
-                    if (!screen) {
-                        screen = new MediaStream();
-                        remoteScreenStreamRef.current = screen;
-                    }
-                    if (!screen.getTracks().includes(track)) {
-                        screen.addTrack(track);
-                    }
-                    setRemoteScreenStream(screen);
-                }
+                };
+
                 return;
             }
         };
@@ -192,6 +146,7 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
     const addLocalTracks = useCallback(
         (pc: RTCPeerConnection) => {
             if (!localStream) return;
+
             const senders = pc.getSenders();
 
             localStream.getTracks().forEach((track) => {
@@ -204,7 +159,7 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
         [localStream]
     );
 
-    // Whenever localStream changes, ensure tracks are on the PC
+    // Whenever localStream changes, make sure tracks are on the PC
     useEffect(() => {
         if (!localStream) return;
         const pc = pcRef.current;
@@ -256,13 +211,13 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
 
                     const answer = await pc.createAnswer();
                     await pc.setLocalDescription(answer);
+
                     sendSignal({ kind: 'answer', sdp: answer }, fromPeerId);
                     break;
                 }
 
                 case 'answer': {
                     console.log('[webrtc] received answer from', fromPeerId);
-
                     if (pc.signalingState !== 'have-local-offer') {
                         console.warn('[webrtc] ignoring answer because signalingState is', pc.signalingState);
                         return;
@@ -307,7 +262,6 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
         handleRemoteSignal(pending.fromPeerId, pending.payload);
     }, [localStream, handleRemoteSignal]);
 
-    // Renegotiate when we add/remove tracks (screen share)
     const renegotiate = useCallback(async () => {
         const pc = pcRef.current;
         const targetPeerId = remotePeerIdRef.current;
@@ -367,10 +321,10 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
 
             const pc = ensurePeerConnection();
 
-            // Keep camera+mic intact
+            // keep camera/mic senders
             addLocalTracks(pc);
 
-            // Add screen as second outgoing video track
+            // add screen as second sender
             const sender = pc.addTrack(screenTrack, stream);
             screenSenderRef.current = sender;
 
@@ -378,7 +332,6 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
             setScreenPreviewStream(stream);
             setIsScreenSharing(true);
 
-            // Remote must learn about new track
             await renegotiate();
 
             screenTrack.onended = () => {
@@ -390,7 +343,7 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
     }, [addLocalTracks, ensurePeerConnection, isScreenSharing, renegotiate, stopScreenShare]);
 
     const closeConnection = useCallback(() => {
-        // Local screen share cleanup
+        // stop local screen share
         if (screenStreamRef.current) {
             screenStreamRef.current.getTracks().forEach((t) => t.stop());
             screenStreamRef.current = null;
@@ -399,7 +352,6 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
         setScreenPreviewStream(null);
         setIsScreenSharing(false);
 
-        // Close PC
         if (pcRef.current) {
             try {
                 pcRef.current.onicecandidate = null;
@@ -407,16 +359,15 @@ export function usePeerConnection({ localStream, sendSignal }: UsePeerConnection
                 pcRef.current.onconnectionstatechange = null;
                 pcRef.current.close();
             } catch {
-                // ignore
+                /* ignore */
             }
             pcRef.current = null;
         }
 
-        // Clear remote streams (do NOT rely on track order next time)
+        // do NOT stop remote tracks here (they are owned by remote). Just clear UI state.
         remoteCameraStreamRef.current = null;
         remoteScreenStreamRef.current = null;
         remoteCameraStreamIdRef.current = null;
-        firstVideoSeenRef.current = false;
 
         setRemoteCameraStream(null);
         setRemoteScreenStream(null);
