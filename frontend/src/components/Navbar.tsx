@@ -1,20 +1,21 @@
 'use client';
 
-import { useEffect } from 'react';
 import Link from 'next/link';
-import LoginButton from '@/components/LoginButton';
+import { useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import { AuthAPI } from '@/lib/api';
 import { useSession } from '@/lib/useSession';
+import { createRoomId } from '@/lib/studio/roomId';
 
 export default function Navbar() {
-  const { profile, setProfile } = useSession();
+  const router = useRouter();
+  const pathname = usePathname();
+  const { profile, isLoading, setProfile } = useSession();
   const isLoggedIn = !!profile;
 
-  useEffect(() => {
-    AuthAPI.me()
-      .then(setProfile)
-      .catch(() => setProfile(null));
-  }, [setProfile]);
+  if (pathname?.startsWith('/studio/')) {
+    return null;
+  }
 
   async function handleLogout() {
     try {
@@ -24,6 +25,15 @@ export default function Navbar() {
     } finally {
       setProfile(null);
     }
+  }
+
+  function handleStartMeet() {
+    if (!isLoggedIn) {
+      router.push('/start');
+      return;
+    }
+    const roomId = createRoomId('meet');
+    router.push(`/studio/${roomId}?mode=meet`);
   }
 
   return (
@@ -41,34 +51,52 @@ export default function Navbar() {
             </span>
           </Link>
 
-          {/* Primary nav – always visible */}
-          <nav className="flex items-center gap-4 pl-4 border-l border-slate-200">
-            <Link
-              href="/recordings"
-              className={`text-sm font-semibold px-2 py-1 rounded-md ${
-                isLoggedIn
-                  ? 'text-slate-900 hover:bg-slate-100'
-                  : 'text-slate-400 hover:text-slate-500'
-              }`}
-            >
-              My recordings
-            </Link>
-            <Link
-              href="/tech-check"
-              className={`text-sm font-semibold px-2 py-1 rounded-md ${
-                isLoggedIn
-                  ? 'text-slate-900 hover:bg-slate-100'
-                  : 'text-slate-400 hover:text-slate-500'
-              }`}
-            >
-              Tech check
-            </Link>
-          </nav>
+          {!isLoading && (
+            <nav className="flex items-center gap-4 pl-4 border-l border-slate-200">
+              {isLoggedIn ? (
+                <>
+                  <Link
+                    href="/recordings"
+                    className="text-sm font-semibold px-2 py-1 rounded-md text-slate-900 hover:bg-slate-100"
+                  >
+                    Recording studio
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={handleStartMeet}
+                    className="text-sm font-semibold px-2 py-1 rounded-md text-slate-900 hover:bg-slate-100"
+                  >
+                    Meet
+                  </button>
+                  <Link
+                    href="/tech-check"
+                    className="text-sm font-semibold px-2 py-1 rounded-md text-slate-900 hover:bg-slate-100"
+                  >
+                    Tech check
+                  </Link>
+                </>
+              ) : (
+                <>
+                  <Link href="/" className="text-sm font-semibold px-2 py-1 rounded-md text-slate-700 hover:bg-slate-100">
+                    Product
+                  </Link>
+                  <Link href="/" className="text-sm font-semibold px-2 py-1 rounded-md text-slate-700 hover:bg-slate-100">
+                    Solutions
+                  </Link>
+                  <Link href="/" className="text-sm font-semibold px-2 py-1 rounded-md text-slate-700 hover:bg-slate-100">
+                    Pricing
+                  </Link>
+                </>
+              )}
+            </nav>
+          )}
         </div>
 
         {/* Right: auth / profile */}
         <div className="flex items-center gap-3">
-          {isLoggedIn ? (
+          {isLoading ? (
+            <span className="text-sm text-slate-400">Loading...</span>
+          ) : isLoggedIn ? (
             <>
               <span className="text-sm text-gray-700">{profile!.email}</span>
               <button
@@ -79,7 +107,14 @@ export default function Navbar() {
               </button>
             </>
           ) : (
-            <LoginButton className="px-3 py-1.5 rounded bg-gray-900 text-white text-sm" />
+            <>
+              <Link href="/start?mode=login" className="px-3 py-1.5 rounded text-sm text-slate-700 hover:bg-slate-100">
+                Login
+              </Link>
+              <Link href="/start" className="px-3 py-1.5 rounded bg-gray-900 text-white text-sm">
+                Start for free
+              </Link>
+            </>
           )}
         </div>
       </div>

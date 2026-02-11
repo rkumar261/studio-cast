@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { API_BASE } from '@/lib/api';
 
 export type WebSocketStatus = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
@@ -33,8 +33,11 @@ export function useWebSocketConnection(
   const [status, setStatus] = useState<WebSocketStatus>('idle');
   const wsRef = useRef<WebSocket | null>(null);
   const manualCloseRef = useRef(false);
+  const handlersRef = useRef<WebSocketHandlers>(handlers);
 
-  const { onOpen, onClose, onError, onMessage } = handlers;
+  useEffect(() => {
+    handlersRef.current = handlers;
+  }, [handlers]);
 
   useEffect(() => {
     // cleanup on unmount
@@ -52,7 +55,7 @@ export function useWebSocketConnection(
     };
   }, []);
 
-  function connect() {
+  const connect = useCallback(() => {
     // if already open, do nothing
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       return;
@@ -70,10 +73,11 @@ export function useWebSocketConnection(
       socket.onopen = (event) => {
         console.log('[WS] open');
         setStatus('open');
-        onOpen?.(event, socket);
+        handlersRef.current.onOpen?.(event, socket);
       };
 
       socket.onmessage = (event) => {
+        const onMessage = handlersRef.current.onMessage;
         if (!onMessage) return;
         try {
           const data = JSON.parse(event.data);
@@ -98,7 +102,7 @@ export function useWebSocketConnection(
         });
 
         setStatus('error');
-        onError?.(event);
+        handlersRef.current.onError?.(event);
       };
 
       socket.onclose = (event) => {
@@ -111,15 +115,15 @@ export function useWebSocketConnection(
         setStatus('closed');
         wsRef.current = null;
         manualCloseRef.current = false;
-        onClose?.(event);
+        handlersRef.current.onClose?.(event);
       };
     } catch (err) {
       console.error('[WS] failed to open connection', err);
       setStatus('error');
     }
-  }
+  }, [path]);
 
-  function disconnect() {
+  const disconnect = useCallback(() => {
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       try {
@@ -131,9 +135,9 @@ export function useWebSocketConnection(
     }
     wsRef.current = null;
     setStatus('closed');
-  }
+  }, []);
 
-  function sendJson(payload: any) {
+  const sendJson = useCallback((payload: any) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       console.warn('[WS] not open, cannot send');
@@ -144,7 +148,7 @@ export function useWebSocketConnection(
     } catch (err) {
       console.error('[WS] send failed', err);
     }
-  }
+  }, []);
 
   return {
     status,

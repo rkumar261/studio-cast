@@ -1,50 +1,135 @@
 'use client';
+
 import { useEffect, useState } from 'react';
-import { RecordingsAPI, type ListRecordingsResponse } from '@/lib/api';
-import CreateRecordingForm from '@/components/CreateRecordingForm';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { RecordingsAPI, type ListRecordingsResponse } from '@/lib/api';
 
 export default function RecordingsPage() {
+  const router = useRouter();
   const [data, setData] = useState<ListRecordingsResponse | null>(null);
+  const [title, setTitle] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function load(cursor?: string) {
     const res = await RecordingsAPI.listMine(20, cursor);
     setData(res);
   }
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function createRecording() {
+    setError(null);
+    setCreating(true);
+    try {
+      const { recording } = await RecordingsAPI.create(title.trim() || undefined);
+      setTitle('');
+      router.push(`/recordings/${recording.id}`);
+    } catch (err) {
+      setError((err as Error).message || 'Failed to create recording.');
+    } finally {
+      setCreating(false);
+    }
+  }
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-xl font-semibold">My Recordings</h1>
-      <CreateRecordingForm />
-      <div className="border rounded bg-white">
-        <table className="w-full text-sm">
-          <thead><tr className="bg-gray-50 text-left">
-            <th className="px-4 py-2">Title</th>
-            <th className="px-4 py-2">Status</th>
-            <th className="px-4 py-2">Created</th>
-          </tr></thead>
-          <tbody>
-            {data?.items.map(r => (
-              <tr key={r.id} className="border-t">
-                <td className="px-4 py-2">
-                  <Link href={`/recordings/${r.id}`} className="text-indigo-600 hover:underline">
-                    {r.title || '(untitled)'}
-                  </Link>
-                </td>
-                <td className="px-4 py-2">{r.status}</td>
-                <td className="px-4 py-2">{new Date(r.createdAt).toLocaleString()}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <div className="min-h-[calc(100vh-56px)] bg-slate-950 text-slate-100">
+      <div className="mx-auto max-w-6xl px-4 py-8 space-y-6">
+        <header className="space-y-2">
+          <h1 className="text-3xl font-semibold">Recordings</h1>
+          <p className="text-sm text-slate-400">
+            Create a new session or open any recording detail page.
+          </p>
+        </header>
+
+        <section className="grid gap-3 rounded-2xl border border-slate-800 bg-slate-900/70 p-4 md:grid-cols-[1fr_auto] md:items-end">
+          <div className="space-y-1">
+            <label className="text-xs uppercase tracking-wide text-slate-400">
+              Session title (optional)
+            </label>
+            <input
+              className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-cyan-400 focus:outline-none"
+              placeholder="Weekly interview with guest"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+            />
+          </div>
+
+          <button
+            type="button"
+            onClick={createRecording}
+            disabled={creating}
+            className="rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-200 hover:border-cyan-400 disabled:opacity-60"
+          >
+            {creating ? 'Creating...' : 'Record new'}
+          </button>
+        </section>
+
+        {error && (
+          <p className="rounded-xl border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+            {error}
+          </p>
+        )}
+
+        <section className="space-y-3">
+          {data?.items.length ? (
+            <div className="space-y-3">
+              {data.items.map((r) => (
+                <article
+                  key={r.id}
+                  className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <Link
+                        href={`/recordings/${r.id}`}
+                        className="text-base font-semibold text-slate-100 hover:text-cyan-300"
+                      >
+                        {r.title || '(untitled recording)'}
+                      </Link>
+                      <p className="text-xs text-slate-400">ID: {r.id}</p>
+                      <p className="text-xs text-slate-500">
+                        Created {new Date(r.createdAt).toLocaleString()}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className="rounded-full border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-300">
+                        {r.status}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                    <Link
+                      href={`/recordings/${r.id}`}
+                      className="rounded-md border border-slate-600 px-3 py-1.5 text-slate-200 hover:border-cyan-400"
+                    >
+                      Open details
+                    </Link>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/40 p-6 text-sm text-slate-400">
+              No recordings yet. Create one from the panel above.
+            </div>
+          )}
+        </section>
+
+        {data?.nextCursor && (
+          <button
+            className="rounded-lg border border-slate-700 bg-slate-900 px-4 py-2 text-sm text-slate-200 hover:border-slate-500"
+            onClick={() => load(data.nextCursor)}
+          >
+            Load more
+          </button>
+        )}
       </div>
-      {data?.nextCursor && (
-        <button className="px-4 py-2 rounded bg-gray-200" onClick={() => load(data.nextCursor)}>
-          Load more
-        </button>
-      )}
     </div>
   );
 }

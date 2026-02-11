@@ -264,4 +264,18 @@ export const ExportsAPI = {
     api<GetExportResponse>(`/v1/exports/${exportId}`),
 };
 
+// --- LiveKit token ---
+export type LivekitTokenResponse = {
+  token: string;
+  wsUrl: string;
+};
+
+export const LiveKitAPI = {
+  getToken: (roomName: string) =>
+    api<LivekitTokenResponse>('/v1/livekit/token', {
+      method: 'POST',
+      body: JSON.stringify({ roomName }),
+    }),
+};
+
 export { api, API_BASE };

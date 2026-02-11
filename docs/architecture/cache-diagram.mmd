@@ -1,0 +1,45 @@
+flowchart LR
+  subgraph CLIENT
+    B[Browser / Next.js Client]
+  end
+
+  B -->|HTTP(S)| CDN[CDN (Cloudflare / CloudFront)]
+  CDN -->|Cache static files & blobs| ObjectStore[R2 / S3]
+  CDN -->|Edge SSR & API cache| NextEdge[Next.js Edge / Static]
+
+  NextEdge -->|API / SSR requests| APIGW[API Gateway / Load Balancer]
+  APIGW --> Backend[Backend API (Express / Fastify)]
+
+  subgraph BACKEND_LAYER
+    Backend --> Redis[Redis (primary cache) - GET/SET/EX|LRU]
+    Backend --> InProc[In-process LRU cache (per instance) - short TTL]
+    Backend --> DB[(Postgres via Prisma)]
+    Backend --> R2[R2 / Object Storage (blobs, exports, segments)]
+    Backend --> Workers[Workers / Queues (transcode, asr, export)]
+    Backend --> WS[Studio WebSocket]
+  end
+
+  Workers --> Redis
+  Workers --> R2
+  Workers --> DB
+
+  Redis -. PubSub .-> Workers
+  Redis -. PubSub .-> Backend
+  Redis -. Invalidate .-> CDN
+
+  CDN -->|Logs & metrics| Observability
+  Backend -->|metrics| Observability
+  Workers -->|metrics| Observability
+
+  subgraph Observability
+    Observability[Prometheus / Grafana / Logging]
+  end
+
+  style CDN fill:#f9f,stroke:#333,stroke-width:1px
+  style Redis fill:#ffdead,stroke:#333
+  style R2 fill:#d0f0c0,stroke:#333
+  style DB fill:#f0d0d0,stroke:#333
+  style Workers fill:#e6f0ff,stroke:#333
+  style InProc fill:#fff2cc,stroke:#333
+  style NextEdge fill:#efeaff,stroke:#333
+  style Backend fill:#f7f7f7,stroke:#333

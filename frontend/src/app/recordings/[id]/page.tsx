@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useParams } from 'next/navigation';
+import Link from 'next/link';
 import {
   RecordingsAPI,
   ParticipantsAPI,
@@ -157,8 +158,33 @@ export default function RecordingDetailPage() {
         Status: <b>{r.status}</b> · Created: {new Date(r.createdAt).toLocaleString()}
       </div>
 
-      {/* Participants */}
       <section className="space-y-3">
+        <h2 className="font-semibold">Session mode</h2>
+        <div className="grid gap-3 md:grid-cols-2">
+          <Link
+            href={`/studio/${r.id}?mode=meet`}
+            className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 hover:border-slate-500"
+          >
+            <p className="text-sm font-semibold text-slate-100">Meet</p>
+            <p className="mt-1 text-xs text-slate-400">
+              Fast call flow for collaboration and interviews.
+            </p>
+          </Link>
+
+          <Link
+            href={`/studio/${r.id}?mode=studio`}
+            className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 hover:border-slate-500"
+          >
+            <p className="text-sm font-semibold text-slate-100">Recording Studio</p>
+            <p className="mt-1 text-xs text-slate-400">
+              Creator-focused layout for high-quality recording sessions.
+            </p>
+          </Link>
+        </div>
+      </section>
+
+      {/* Participants */}
+      <section id="participants" className="space-y-3">
         <h2 className="font-semibold">Participants</h2>
         <div className="grid md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-4">
           <div className="border rounded bg-white p-4 text-sm text-gray-900">
@@ -174,7 +200,7 @@ export default function RecordingDetailPage() {
       </section>
 
       {/* Uploads + Tracks */}
-      <section className="space-y-3">
+      <section id="uploads" className="space-y-3">
         <h2 className="font-semibold">Uploads</h2>
         <div className="grid md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-4">
           {/* Upload controls */}
@@ -254,7 +280,7 @@ export default function RecordingDetailPage() {
       </section>
 
       {/* Transcript */}
-      <section className="space-y-3">
+      <section id="transcript" className="space-y-3">
         <h2 className="font-semibold">Transcript</h2>
         {!transcript || transcript.segments.length === 0 ? (
           <div className="text-sm text-gray-400">
@@ -275,7 +301,7 @@ export default function RecordingDetailPage() {
       </section>
 
       {/* Exports */}
-      <section className="space-y-3">
+      <section id="exports" className="space-y-3">
         <h2 className="font-semibold">Exports</h2>
 
         <div className="flex gap-2 text-sm">

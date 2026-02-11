@@ -13,6 +13,7 @@ import tracksRoutes from './routes/tracks.routes.js';
 import exportsRoutes from './routes/exports.routes.js';
 import transcriptsRoutes from './routes/transcripts.routes.js';
 import studioWebsocketRoutes from './routes/studio-websocket.routes.js';
+import livekitRoutes from './routes/livekit.routes.js';
 
 
 export async function buildApp() {
@@ -57,7 +58,8 @@ export async function buildApp() {
   await app.register(tracksRoutes);
   await app.register(exportsRoutes);
   await app.register(transcriptsRoutes);
-  await app.register(studioWebsocketRoutes); 
+  await app.register(studioWebsocketRoutes);
+  await app.register(livekitRoutes); 
   
   // tusd HTTP hooks (pre-create / post-create)
   await app.register(tusdHooksRoutes);

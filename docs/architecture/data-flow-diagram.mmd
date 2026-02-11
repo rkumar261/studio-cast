@@ -1,0 +1,72 @@
+sequenceDiagram
+  autonumber
+  participant C as Browser / Next.js
+  participant CDN as CDN
+  participant B as Backend (Fastify)
+  participant P as TUS Proxy
+  participant T as tusd (upload server)
+  participant R as R2 / S3
+  participant Q as Job Queue / Broker
+  participant W as Worker (transcode/asr/export)
+  participant F as FFmpeg
+  participant DB as Postgres (Prisma)
+  participant WS as LiveKit / WebSocket
+  participant RED as Redis (cache)
+
+  Note over C,B: Upload & Live session
+  C->>B: Request presign / start session
+  B->>WS: Issue LiveKit token / join
+  C->>WS: Connect & publish media (LiveKit handles transport)
+  WS-->>B: Recording segments / events (or webhooks)
+
+  Note over C,P,T: Resumable upload flow
+  C->>P: TUS upload (tus-js-client) -> /tus/*
+  P->>T: Proxy bytes to `tusd`
+  T->>R: Persist segments/blobs to R2/S3
+  T->>B: POST /hooks/pre-create (tusd hook)
+  B->>Q: Enqueue transcode job (recording created)
+
+  Note over Q,W: Background processing
+  Q-->>W: Worker picks job
+  W->>R: Download segments/blobs
+  W->>F: Run ffmpeg transcode/merge
+  F-->>W: Emit final MP4/WEBM + thumbnails
+  W->>R: Upload outputs to R2/S3
+  W->>DB: Update recording metadata / status
+  W->>RED: Write/update cache keys (optional)
+  W->>Q: Enqueue ASR job / transcript job
+
+  Note over W,DB,RED: ASR & transcripts
+  W->>W: ASR -> produce transcript chunks
+  W->>R: Store transcript files
+  W->>DB: Persist transcript metadata
+  W->>RED: Cache transcript chunks (optional)
+
+  Note over C,B,CDN: Playback & UI
+  C->>B: GET /recordings (list)
+  alt cache hit
+    B->>RED: GET cache
+    RED-->>B: cached payload
+    B-->>C: 200 JSON (cached)
+  else cache miss
+    B->>DB: Query recordings via Prisma
+    B->>RED: SET cache (stale-while-revalidate)
+    B-->>C: 200 JSON
+  end
+  C->>B: Request presigned URL for blob
+  B->>R: Create presigned URL (short TTL)
+  B-->>C: presigned URL
+  C->>CDN: Fetch via CDN (edge cache)
+  CDN->>R: Origin fetch if cache miss
+  CDN-->>C: Serve content
+
+  Note over RED,B: Invalidation
+  W->>RED: Publish invalidation message (Pub/Sub)
+  RED-->>B: Instances flush in-process caches
+  W->>CDN: Purge or rely on versioned URLs for new blobs
+
+  Note over all: Observability
+  B->>DB: metrics/logs
+  W->>DB: metrics/logs
+  CDN->>B: logs
+  B->>C: metrics endpoints for dashboards
