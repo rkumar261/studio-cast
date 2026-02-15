@@ -66,6 +66,65 @@ export type GetRecordingResponse = {
   tracks: TrackDto[];
 };
 
+export type RecordingSessionDto = {
+  recordingId: string;
+  status: 'draft' | 'uploading' | 'processing' | 'ready' | 'error';
+  startedAt?: string;
+  stoppedAt?: string;
+  hostParticipantId?: string;
+  controlVersion: number;
+};
+
+export type RecordingSessionResponse = {
+  session: RecordingSessionDto;
+  canControl: boolean;
+};
+
+export type RecordingProgressPhase = 'recording' | 'uploading' | 'processing' | 'ready' | 'error';
+
+export type RecordingTrackProgressDto = {
+  trackId: string;
+  kind: 'audio' | 'video' | 'screen';
+  state: string;
+  uploadState: string;
+  protocol?: 'tus' | 'multipart';
+  bytesReceived: number;
+  updatedAt?: string;
+};
+
+export type RecordingParticipantProgressDto = {
+  participantId: string;
+  role: 'host' | 'guest' | string;
+  displayName?: string;
+  trackCount: number;
+  uploadedCount: number;
+  processedCount: number;
+  pendingCount: number;
+  tracks: RecordingTrackProgressDto[];
+};
+
+export type RecordingProgressResponse = {
+  recordingId: string;
+  status: 'draft' | 'uploading' | 'processing' | 'ready' | 'error';
+  phase: RecordingProgressPhase;
+  session: {
+    startedAt?: string;
+    stoppedAt?: string;
+    hostParticipantId?: string;
+    controlVersion: number;
+  };
+  summary: {
+    participantsTotal: number;
+    participantsCompleted: number;
+    tracksTotal: number;
+    tracksUploaded: number;
+    tracksProcessed: number;
+    uploadsInProgress: number;
+    uploadsCompleted: number;
+    bytesReceived: number;
+  };
+  participants: RecordingParticipantProgressDto[];
+};
 
 export const RecordingsAPI = {
   create: (title?: string) =>
@@ -76,6 +135,18 @@ export const RecordingsAPI = {
   listMine: (limit = 20, cursor?: string) =>
     api<ListRecordingsResponse>(`/v1/recordings?owner=me&limit=${limit}${cursor ? `&cursor=${cursor}` : ''}`),
   getById: (id: string) => api<GetRecordingResponse>(`/v1/recordings/${id}`),
+  getSession: (id: string) =>
+    api<RecordingSessionResponse>(`/v1/recordings/${id}/session`),
+  startSession: (id: string) =>
+    api<RecordingSessionResponse>(`/v1/recordings/${id}/session/start`, {
+      method: 'POST',
+    }),
+  stopSession: (id: string) =>
+    api<RecordingSessionResponse>(`/v1/recordings/${id}/session/stop`, {
+      method: 'POST',
+    }),
+  getProgress: (id: string) =>
+    api<RecordingProgressResponse>(`/v1/recordings/${id}/progress`),
 };
 
 // ---- Participants ----

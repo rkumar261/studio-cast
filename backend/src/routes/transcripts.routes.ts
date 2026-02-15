@@ -21,10 +21,10 @@ export default async function transcriptsRoutes(app: FastifyInstance) {
                 requesterId,
             });
 
-            if (result.code === 'not_found') {
-                return res.code(404).send({ code: 'not_found', message: 'Recording not found' });
-            }
-            if (result.code === 'forbidden') {
+            if (result.code !== 'ok') {
+                if (result.code === 'not_found') {
+                    return res.code(404).send({ code: 'not_found', message: 'Recording not found' });
+                }
                 return res.code(403).send({ code: 'forbidden', message: 'Not allowed' });
             }
 

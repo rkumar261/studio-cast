@@ -4,7 +4,7 @@ import React, { use, useCallback, useEffect, useMemo, useRef, useState } from 'r
 import Link from 'next/link';
 import { Space_Grotesk } from 'next/font/google';
 import { useSearchParams } from 'next/navigation';
-import { LiveKitAPI } from '@/lib/api';
+import { LiveKitAPI, RecordingsAPI, type RecordingSessionResponse } from '@/lib/api';
 import { useSession } from '@/lib/useSession';
 import {
   Room,
@@ -218,7 +218,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteNotice, setInviteNotice] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
-  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSession, setRecordingSession] = useState<RecordingSessionResponse['session'] | null>(null);
+  const [canControlRecording, setCanControlRecording] = useState(false);
+  const [sessionBusy, setSessionBusy] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const [showMeetSelfPreview, setShowMeetSelfPreview] = useState(true);
   const [meetSelfPreviewExpanded, setMeetSelfPreviewExpanded] = useState(false);
   const [meetStageFit, setMeetStageFit] = useState<'contain' | 'cover'>('contain');
@@ -243,6 +246,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [isMicEnabled, setIsMicEnabled] = useState(false);
   const [isCameraEnabled, setIsCameraEnabled] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const isRecording = !!recordingSession?.startedAt && !recordingSession?.stoppedAt;
 
   const localCameraTrack =
     room?.localParticipant.getTrackPublication(Track.Source.Camera)?.track ?? null;
@@ -269,6 +273,30 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       cleanupLiveKitRoom();
     };
   }, [cleanupLiveKitRoom]);
+
+  const refreshRecordingSession = useCallback(async () => {
+    if (sessionMode !== 'studio') return;
+
+    try {
+      const res = await RecordingsAPI.getSession(recordingId);
+      setRecordingSession(res.session);
+      setCanControlRecording(res.canControl);
+      setSessionError(null);
+    } catch (err) {
+      setSessionError((err as Error)?.message ?? 'Failed to refresh recording session.');
+    }
+  }, [recordingId, sessionMode]);
+
+  useEffect(() => {
+    if (sessionMode !== 'studio') return;
+    void refreshRecordingSession();
+
+    const timer = window.setInterval(() => {
+      void refreshRecordingSession();
+    }, 5000);
+
+    return () => window.clearInterval(timer);
+  }, [refreshRecordingSession, sessionMode]);
 
   useEffect(() => {
     if (sessionMode === 'studio') {
@@ -840,6 +868,25 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     }
   }
 
+  async function handleToggleRecordingSession() {
+    if (!canControlRecording || sessionBusy) return;
+
+    setSessionBusy(true);
+    setSessionError(null);
+    try {
+      const response = isRecording
+        ? await RecordingsAPI.stopSession(recordingId)
+        : await RecordingsAPI.startSession(recordingId);
+
+      setRecordingSession(response.session);
+      setCanControlRecording(response.canControl);
+    } catch (err) {
+      setSessionError((err as Error)?.message ?? 'Failed to update recording session.');
+    } finally {
+      setSessionBusy(false);
+    }
+  }
+
   function togglePin(tileKey: string) {
     setPinnedTileKey((prev) => (prev === tileKey ? null : tileKey));
   }
@@ -1211,6 +1258,11 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   {fallbackNotice}
                 </p>
               )}
+              {sessionError && (
+                <p className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+                  {sessionError}
+                </p>
+              )}
               {active.error && (
                 <p className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
                   {active.error}
@@ -1242,12 +1294,13 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-800 bg-[#13151a] px-3 py-2">
                   <button
                     type="button"
-                    onClick={() => setIsRecording((prev) => !prev)}
+                    onClick={handleToggleRecordingSession}
+                    disabled={!canControlRecording || sessionBusy}
                     className={`rounded-xl px-4 py-2 text-sm font-semibold ${
                       isRecording ? 'bg-rose-500 text-white' : 'bg-rose-500/90 text-white'
-                    }`}
+                    } disabled:opacity-50`}
                   >
-                    {isRecording ? 'Recording' : 'Record'}
+                    {sessionBusy ? (isRecording ? 'Stopping...' : 'Starting...') : (isRecording ? 'Stop recording' : 'Start recording')}
                   </button>
                   <button
                     type="button"

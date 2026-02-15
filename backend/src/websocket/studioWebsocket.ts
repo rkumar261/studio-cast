@@ -11,6 +11,26 @@ type StudioPeer = {
 // roomId -> peerId -> peer
 const rooms = new Map<string, Map<string, StudioPeer>>();
 
+function safeSendRaw(target: any, msg: unknown) {
+  try {
+    target.send(JSON.stringify(msg));
+  } catch {
+    // ignore send failures for disconnected sockets
+  }
+}
+
+export function broadcastStudioRoomEvent(roomId: string, msg: unknown): { peers: number; sent: number } {
+  const room = rooms.get(roomId);
+  if (!room) return { peers: 0, sent: 0 };
+
+  let sent = 0;
+  for (const peer of room.values()) {
+    safeSendRaw(peer.socket, msg);
+    sent += 1;
+  }
+  return { peers: room.size, sent };
+}
+
 type ClientToServerMessage =
   | {
     type: 'join';

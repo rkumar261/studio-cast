@@ -23,3 +23,6 @@ coverage/
 Thumbs.db
 .idea/
 .vscode/
+
+# Local agent guide (do not commit)
+AGENTS.md
