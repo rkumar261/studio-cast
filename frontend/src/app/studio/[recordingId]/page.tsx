@@ -5,6 +5,12 @@ import Link from 'next/link';
 import { Space_Grotesk } from 'next/font/google';
 import { useSearchParams } from 'next/navigation';
 import { LiveKitAPI, RecordingsAPI, type RecordingSessionResponse } from '@/lib/api';
+import {
+  useRollingChunkRecorder,
+  type RollingRecorderChunk,
+  type RollingRecorderSource,
+} from '@/lib/studio/useRollingChunkRecorder';
+import { useChunkUploadQueue, type ChunkUploadProtocol } from '@/lib/studio/useChunkUploadQueue';
 import { useSession } from '@/lib/useSession';
 import {
   Room,
@@ -42,6 +48,8 @@ type Tile = {
   muted?: boolean;
 };
 
+type RecorderKind = 'audio' | 'video' | 'screen';
+
 const spaceGrotesk = Space_Grotesk({
   subsets: ['latin'],
   weight: ['400', '500', '600', '700'],
@@ -56,6 +64,20 @@ const livekitSource = (track: Track | null): MediaSource => ({
   kind: 'livekit',
   track,
 });
+
+function livekitTrackToStream(track: Track | null): MediaStream | null {
+  const mediaStreamTrack = (track as any)?.mediaStreamTrack as MediaStreamTrack | undefined;
+  if (!mediaStreamTrack) return null;
+  if (mediaStreamTrack.readyState !== 'live') return null;
+  return new MediaStream([mediaStreamTrack]);
+}
+
+function selectTracksAsStream(stream: MediaStream | null, kind: 'audio' | 'video'): MediaStream | null {
+  if (!stream) return null;
+  const tracks = kind === 'audio' ? stream.getAudioTracks() : stream.getVideoTracks();
+  if (tracks.length === 0) return null;
+  return new MediaStream(tracks);
+}
 
 function getTrack(participant: Participant, source: Track.Source): Track | null {
   const pub = participant.getTrackPublication(source);
@@ -222,6 +244,15 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [canControlRecording, setCanControlRecording] = useState(false);
   const [sessionBusy, setSessionBusy] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
+  const [trackIdByKind, setTrackIdByKind] = useState<Partial<Record<RecorderKind, string>>>({});
+  const [chunkStats, setChunkStats] = useState({
+    audio: 0,
+    video: 0,
+    screen: 0,
+    totalBytes: 0,
+  });
+  const [recorderError, setRecorderError] = useState<string | null>(null);
+  const registeringKindsRef = useRef<Set<RecorderKind>>(new Set());
   const [showMeetSelfPreview, setShowMeetSelfPreview] = useState(true);
   const [meetSelfPreviewExpanded, setMeetSelfPreviewExpanded] = useState(false);
   const [meetStageFit, setMeetStageFit] = useState<'contain' | 'cover'>('contain');
@@ -247,9 +278,18 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [isCameraEnabled, setIsCameraEnabled] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const isRecording = !!recordingSession?.startedAt && !recordingSession?.stoppedAt;
+  const chunkUploadProtocol: ChunkUploadProtocol =
+    process.env.NEXT_PUBLIC_CHUNK_UPLOAD_PROTOCOL === 'multipart' ? 'multipart' : 'tus';
+  const chunkUploadQueue = useChunkUploadQueue({
+    enabled: sessionMode === 'studio',
+    concurrency: 2,
+    maxRetries: 8,
+  });
 
   const localCameraTrack =
     room?.localParticipant.getTrackPublication(Track.Source.Camera)?.track ?? null;
+  const localMicTrack =
+    room?.localParticipant.getTrackPublication(Track.Source.Microphone)?.track ?? null;
   const localScreenTrack =
     room?.localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track ?? null;
 
@@ -316,6 +356,18 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       setDisplayName(profile.email.split('@')[0]);
     }
   }, [displayName, profile?.email, profile?.name]);
+
+  useEffect(() => {
+    setTrackIdByKind({});
+    setChunkStats({
+      audio: 0,
+      video: 0,
+      screen: 0,
+      totalBytes: 0,
+    });
+    setRecorderError(null);
+    registeringKindsRef.current.clear();
+  }, [recordingId]);
 
   const stopPreJoinPreview = useCallback(() => {
     if (preJoinStreamRef.current) {
@@ -644,6 +696,155 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     [mesh.remotePeers]
   );
 
+  const livekitCameraStream = useMemo(
+    () => livekitTrackToStream(localCameraTrack),
+    [localCameraTrack]
+  );
+  const livekitMicStream = useMemo(
+    () => livekitTrackToStream(localMicTrack),
+    [localMicTrack]
+  );
+  const livekitScreenStream = useMemo(
+    () => livekitTrackToStream(localScreenTrack),
+    [localScreenTrack]
+  );
+
+  const meshCameraStream = useMemo(
+    () => selectTracksAsStream(mesh.localStream, 'video'),
+    [mesh.localStream]
+  );
+  const meshMicStream = useMemo(
+    () => selectTracksAsStream(mesh.localStream, 'audio'),
+    [mesh.localStream]
+  );
+  const meshScreenStream = useMemo(
+    () => mesh.localScreenStream ?? null,
+    [mesh.localScreenStream]
+  );
+
+  const recordingStreams = useMemo<Record<RecorderKind, MediaStream | null>>(
+    () =>
+      engine === 'livekit'
+        ? {
+            video: livekitCameraStream,
+            audio: livekitMicStream,
+            screen: livekitScreenStream,
+          }
+        : {
+            video: meshCameraStream,
+            audio: meshMicStream,
+            screen: meshScreenStream,
+          },
+    [
+      engine,
+      livekitCameraStream,
+      livekitMicStream,
+      livekitScreenStream,
+      meshCameraStream,
+      meshMicStream,
+      meshScreenStream,
+    ]
+  );
+
+  const recorderParticipantId = recordingSession?.hostParticipantId;
+
+  useEffect(() => {
+    if (sessionMode !== 'studio' || !isRecording || !canControlRecording) return;
+    if (!recorderParticipantId) return;
+
+    const kinds = Object.keys(recordingStreams) as RecorderKind[];
+
+    kinds.forEach((kind) => {
+      const stream = recordingStreams[kind];
+      if (!stream) return;
+      if (trackIdByKind[kind]) return;
+      if (registeringKindsRef.current.has(kind)) return;
+
+      registeringKindsRef.current.add(kind);
+      void RecordingsAPI.registerTrack(recordingId, {
+        participantId: recorderParticipantId,
+        kind,
+      })
+        .then((res) => {
+          setTrackIdByKind((prev) => {
+            if (prev[kind]) return prev;
+            return { ...prev, [kind]: res.track.id };
+          });
+          setRecorderError(null);
+        })
+        .catch((err) => {
+          setRecorderError((err as Error)?.message ?? `Could not register ${kind} track.`);
+        })
+        .finally(() => {
+          registeringKindsRef.current.delete(kind);
+        });
+    });
+  }, [
+    canControlRecording,
+    isRecording,
+    recorderParticipantId,
+    recordingId,
+    recordingStreams,
+    sessionMode,
+    trackIdByKind,
+  ]);
+
+  const rollingRecorderSources = useMemo<RollingRecorderSource[]>(() => {
+    const kinds: RecorderKind[] = ['audio', 'video', 'screen'];
+    const sources: RollingRecorderSource[] = [];
+
+    kinds.forEach((kind) => {
+      const stream = recordingStreams[kind];
+      const trackId = trackIdByKind[kind];
+      if (!stream || !trackId) return;
+      sources.push({
+        kind,
+        trackId,
+        stream,
+      });
+    });
+
+    return sources;
+  }, [recordingStreams, trackIdByKind]);
+
+  const onChunkEmitted = useCallback(
+    (chunk: RollingRecorderChunk) => {
+      setChunkStats((prev) => ({
+        ...prev,
+        [chunk.kind]: prev[chunk.kind] + 1,
+        totalBytes: prev.totalBytes + chunk.bytes,
+      }));
+
+      void chunkUploadQueue
+        .enqueue({
+          recordingId,
+          trackId: chunk.trackId,
+          seq: chunk.seq,
+          kind: chunk.kind,
+          protocol: chunkUploadProtocol,
+          blob: chunk.blob,
+          bytes: chunk.bytes,
+          emittedAt: chunk.emittedAt,
+        })
+        .catch((err) => {
+          setRecorderError((err as Error)?.message ?? 'Failed to enqueue chunk upload.');
+        });
+    },
+    [chunkUploadProtocol, chunkUploadQueue, recordingId]
+  );
+
+  const chunkRecorder = useRollingChunkRecorder({
+    enabled:
+      sessionMode === 'studio' &&
+      isRecording &&
+      canControlRecording &&
+      rollingRecorderSources.length > 0,
+    timesliceMs: 4000,
+    sources: rollingRecorderSources,
+    onChunk: onChunkEmitted,
+    onError: setRecorderError,
+  });
+
   const active = engine === 'livekit'
     ? {
         status: livekitStatus,
@@ -858,7 +1059,21 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     setJoiningFromPreJoin(false);
   }
 
-  function handleLeave() {
+  async function handleLeave() {
+    if (sessionMode === 'studio' && canControlRecording && isRecording && !sessionBusy) {
+      setSessionBusy(true);
+      setSessionError(null);
+      try {
+        const response = await RecordingsAPI.stopSession(recordingId);
+        setRecordingSession(response.session);
+        setCanControlRecording(response.canControl);
+      } catch (err) {
+        setSessionError((err as Error)?.message ?? 'Failed to stop recording session before leaving.');
+      } finally {
+        setSessionBusy(false);
+      }
+    }
+
     setPinnedTileKey(null);
     active.leave();
     setEngine('livekit');
@@ -1263,6 +1478,16 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   {sessionError}
                 </p>
               )}
+              {recorderError && (
+                <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                  {recorderError}
+                </p>
+              )}
+              {chunkUploadQueue.lastError && (
+                <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                  Upload queue: {chunkUploadQueue.lastError}
+                </p>
+              )}
               {active.error && (
                 <p className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
                   {active.error}
@@ -1356,12 +1581,29 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   <button
                     type="button"
                     onClick={handleLeave}
-                    className="rounded-xl bg-[#4b1f2a] px-3 py-2 text-sm text-rose-100 hover:bg-[#5f2735]"
+                    disabled={sessionBusy}
+                    className="rounded-xl bg-[#4b1f2a] px-3 py-2 text-sm text-rose-100 hover:bg-[#5f2735] disabled:opacity-60"
                   >
-                    Leave
+                    {sessionBusy ? 'Leaving...' : 'Leave'}
                   </button>
                 </div>
               </footer>
+              {sessionMode === 'studio' && (
+                <div className="flex items-center justify-center gap-2">
+                  <p className="text-center text-[11px] text-slate-400">
+                    Chunk recorder: {chunkRecorder.isRunning ? 'running' : 'idle'} · active {chunkRecorder.activeKinds.length} · audio {chunkStats.audio} · video {chunkStats.video} · screen {chunkStats.screen} · queued {chunkUploadQueue.stats.pending} · uploading {chunkUploadQueue.stats.processing} · failed {chunkUploadQueue.stats.failed} · done {chunkUploadQueue.stats.completed} · {chunkUploadQueue.stats.online ? 'online' : 'offline'} · protocol {chunkUploadProtocol}
+                  </p>
+                  {chunkUploadQueue.stats.failed > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => void chunkUploadQueue.retryFailed()}
+                      className="rounded border border-amber-600/70 px-2 py-1 text-[10px] text-amber-300 hover:bg-amber-800/20"
+                    >
+                      Retry failed
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             <aside className="rounded-2xl border border-slate-800 bg-[#15171d] p-4">

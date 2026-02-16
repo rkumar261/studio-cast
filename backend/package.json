@@ -6,9 +6,12 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "dev:api": "tsx src/index.ts",
+    "dev:worker:stitch": "tsx src/workers/stitch.worker.ts",
     "dev:worker:transcode": "tsx src/workers/transcode.worker.ts",
     "dev:worker:asr": "tsx src/workers/asr.worker.ts",
     "dev:worker:export": "tsx src/workers/export.worker.ts",
+    "dev:worker:maintenance": "tsx src/workers/maintenance.worker.ts",
+    "acceptance:recording": "tsx src/tools/recording-acceptance.ts",
     "build": "tsc",
     "start": "node dist/index.js",
     "prisma:gen": "prisma generate",

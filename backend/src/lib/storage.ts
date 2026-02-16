@@ -4,7 +4,6 @@ import path from 'node:path';
 import os from 'node:os';
 import { Readable } from 'node:stream';
 import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner'; // optional if you want presign later
 
 // If you already have these utilities, import them instead:
 import { R2_BUCKET, getR2Client } from '../lib/r2.js';
@@ -29,6 +28,15 @@ export function isLikelyR2Key(key: string | null | undefined): boolean {
     // We store multipart raw as "recordings/<recId>/tracks/<uploadId>.raw"
     // You can tailor this check if your keys differ.
     return key.startsWith('recordings/');
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+    try {
+        await fsp.stat(filePath);
+        return true;
+    } catch {
+        return false;
+    }
 }
 
 /**
@@ -81,15 +89,31 @@ export async function resolveRawToLocal(track: TrackLike): Promise<{ localPath: 
     const key = track.storage_key_raw;
     if (!key) throw new Error(`track ${track.id} has no storage_key_raw`);
 
-    if (isLikelyR2Key(key) || (track.storage_bucket && key)) {
-        // R2 path
+    return resolveStorageKeyToLocal(key, { storageBucket: track.storage_bucket ?? undefined });
+}
+
+export async function resolveStorageKeyToLocal(
+    key: string,
+    opts: { storageBucket?: string | null } = {}
+): Promise<{ localPath: string; cleanup: () => Promise<void> }> {
+    const abs = path.isAbsolute(key) ? key : path.join(MEDIA_ROOT, key);
+
+    // Prefer local file path when present (covers TUS/local stitched paths).
+    if (await fileExists(abs)) {
+        return { localPath: abs, cleanup: async () => { } };
+    }
+
+    // Explicit bucket means key points to object storage.
+    if (opts.storageBucket) {
         return downloadR2ObjectToTmp(key);
     }
 
-    // Filesystem (tus finalized)
-    // storage_key_raw is a relative key like "recordings/<recId>/tracks/<trackId>/raw/<uploadId>.bin"
-    const abs = path.isAbsolute(key) ? key : path.join(MEDIA_ROOT, key);
-    // optionally assert file exists
+    // recording-like keys are commonly in R2 for multipart/final artifacts.
+    if (isLikelyR2Key(key)) {
+        return downloadR2ObjectToTmp(key);
+    }
+
+    // Non-recording keys without local file are treated as missing local artifacts.
     await fsp.stat(abs);
     return { localPath: abs, cleanup: async () => { } };
 }

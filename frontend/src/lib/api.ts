@@ -89,6 +89,9 @@ export type RecordingTrackProgressDto = {
   uploadState: string;
   protocol?: 'tus' | 'multipart';
   bytesReceived: number;
+  chunkTotal: number;
+  chunkUploaded: number;
+  chunkPending: number;
   updatedAt?: string;
 };
 
@@ -122,8 +125,98 @@ export type RecordingProgressResponse = {
     uploadsInProgress: number;
     uploadsCompleted: number;
     bytesReceived: number;
+    chunksTotal: number;
+    chunksUploaded: number;
+    chunksPending: number;
+  };
+  exports: {
+    requiredTotal: number;
+    requiredSucceeded: number;
+    requiredPending: number;
+    requiredFailed: number;
+    required: Array<{
+      type: 'wav' | 'mp4' | 'mp4_captions';
+      state: 'missing' | 'queued' | 'running' | 'succeeded' | 'failed';
+      exportId?: string;
+      updatedAt?: string;
+      lastError?: string;
+    }>;
   };
   participants: RecordingParticipantProgressDto[];
+};
+
+export type RegisterTrackRequest = {
+  participantId: string;
+  kind: 'audio' | 'video' | 'screen';
+  codec?: string;
+};
+
+export type RegisterTrackResponse = {
+  track: {
+    id: string;
+    recordingId: string;
+    participantId: string;
+    kind: 'audio' | 'video' | 'screen';
+    codec?: string;
+    state: string;
+    createdAt: string;
+  };
+  existed: boolean;
+};
+
+export type InitiateTrackChunkRequest = {
+  trackId: string;
+  seq: number;
+  protocol: 'tus' | 'multipart';
+  bytesExpected?: number;
+};
+
+export type InitiateTrackChunkResponse = {
+  chunk: {
+    id: string;
+    trackId: string;
+    seq: number;
+    protocol?: string;
+    state: string;
+    bytesExpected?: number;
+    createdAt: string;
+    updatedAt: string;
+  };
+  existed: boolean;
+};
+
+export type CompleteTrackChunkRequest = {
+  protocol: 'tus' | 'multipart';
+  bytesReceived?: number;
+  storageKeyRaw?: string;
+  etag?: string;
+  checksumSha256?: string;
+};
+
+export type InitiateMultipartTrackChunkRequest = {
+  trackId: string;
+  seq: number;
+  bytesExpected?: number;
+};
+
+export type CompleteMultipartTrackChunkRequest = Omit<CompleteTrackChunkRequest, 'protocol'>;
+
+export type CompleteTrackChunkResponse = {
+  chunk: {
+    id: string;
+    trackId: string;
+    seq: number;
+    protocol?: string;
+    state: string;
+    bytesReceived: number;
+    bytesExpected?: number;
+    storageKeyRaw?: string;
+    etag?: string;
+    checksumSha256?: string;
+    createdAt: string;
+    updatedAt: string;
+  };
+  already?: boolean;
 };
 
 export const RecordingsAPI = {
@@ -147,6 +240,31 @@ export const RecordingsAPI = {
     }),
   getProgress: (id: string) =>
     api<RecordingProgressResponse>(`/v1/recordings/${id}/progress`),
+  registerTrack: (id: string, body: RegisterTrackRequest) =>
+    api<RegisterTrackResponse>(`/v1/recordings/${id}/tracks/register`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  initiateChunk: (id: string, body: InitiateTrackChunkRequest) =>
+    api<InitiateTrackChunkResponse>(`/v1/recordings/${id}/chunks/initiate`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  completeChunk: (id: string, chunkId: string, body: CompleteTrackChunkRequest) =>
+    api<CompleteTrackChunkResponse>(`/v1/recordings/${id}/chunks/${chunkId}/complete`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  initiateChunkMultipart: (id: string, body: InitiateMultipartTrackChunkRequest) =>
+    api<InitiateTrackChunkResponse>(`/v1/recordings/${id}/chunks/multipart/initiate`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  completeChunkMultipart: (id: string, chunkId: string, body: CompleteMultipartTrackChunkRequest) =>
+    api<CompleteTrackChunkResponse>(`/v1/recordings/${id}/chunks/multipart/${chunkId}/complete`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 // ---- Participants ----

@@ -1,4 +1,4 @@
-import type { recording_status } from '@prisma/client';
+import type { export_type, recording_status } from '@prisma/client';
 
 export type RecordingProgressPhase = 'recording' | 'uploading' | 'processing' | 'ready' | 'error';
 
@@ -9,6 +9,9 @@ export type TrackProgressDto = {
   uploadState: string;
   protocol?: 'tus' | 'multipart';
   bytesReceived: number;
+  chunkTotal: number;
+  chunkUploaded: number;
+  chunkPending: number;
   updatedAt?: string;
 };
 
@@ -32,6 +35,25 @@ export type RecordingProgressSummaryDto = {
   uploadsInProgress: number;
   uploadsCompleted: number;
   bytesReceived: number;
+  chunksTotal: number;
+  chunksUploaded: number;
+  chunksPending: number;
+};
+
+export type RequiredExportProgressDto = {
+  type: export_type;
+  state: 'missing' | 'queued' | 'running' | 'succeeded' | 'failed';
+  exportId?: string;
+  updatedAt?: string;
+  lastError?: string;
+};
+
+export type RecordingExportProgressDto = {
+  requiredTotal: number;
+  requiredSucceeded: number;
+  requiredPending: number;
+  requiredFailed: number;
+  required: RequiredExportProgressDto[];
 };
 
 export type GetRecordingProgressResponse = {
@@ -45,5 +67,6 @@ export type GetRecordingProgressResponse = {
     controlVersion: number;
   };
   summary: RecordingProgressSummaryDto;
+  exports: RecordingExportProgressDto;
   participants: ParticipantProgressDto[];
 };

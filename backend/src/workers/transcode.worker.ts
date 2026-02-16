@@ -1,7 +1,9 @@
 import { prisma } from '../lib/prisma.js';
 import { runTranscodeForTrack } from './transcode.runner.js';
-import { job_state, job_type, track_state, track_kind } from '@prisma/client';
+import { job_state, job_type, track_state } from '@prisma/client';
 import { pathToFileURL } from 'node:url';
+import { enqueueAsrJob } from '../repositories/job.repo.js';
+import { reconcileRecordingReadiness } from '../services/recording-readiness.service.js';
 
 type JobRow = {
     id: string;
@@ -101,15 +103,9 @@ async function runJob(job: JobRow) {
         },
     });
 
-    // Enqueue follow-up ASR job (your schema requires recording_id)
-    await prisma.job.create({
-        data: {
-            recording_id: track.recording_id,
-            type: job_type.asr,
-            state: job_state.queued,
-            payload_json: { trackId: track.id },
-        },
-    });
+    // Enqueue follow-up ASR job.
+    await enqueueAsrJob(track.recording_id, track.id);
+    await reconcileRecordingReadiness(track.recording_id);
 }
 
 async function succeed(jobId: string) {

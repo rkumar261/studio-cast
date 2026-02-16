@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma.js';
 import { job_state, job_type } from '@prisma/client';
 import { pathToFileURL } from 'node:url';
 import { runAsrForTrack } from '../services/asr.service.js';
+import { reconcileRecordingReadiness } from '../services/recording-readiness.service.js';
 
 type JobRow = {
     id: string;
@@ -91,6 +92,8 @@ async function runJob(job: JobRow) {
             confidence: seg.confidence ?? null,
         })),
     });
+
+    await reconcileRecordingReadiness(track.recording_id);
 }
 
 async function succeed(jobId: string) {

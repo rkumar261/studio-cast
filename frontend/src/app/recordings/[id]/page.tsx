@@ -12,6 +12,7 @@ import {
   ExportsAPI,
   type GetTranscriptResponse,
   type ExportDto,
+  type RecordingProgressResponse,
 } from '@/lib/api';
 import ParticipantsList from '@/components/ParticipantsList';
 import AddParticipantForm from '@/components/AddParticipantForm';
@@ -30,6 +31,7 @@ export default function RecordingDetailPage() {
 
   const [transcript, setTranscript] = useState<GetTranscriptResponse | null>(null);
   const [exportsList, setExportsList] = useState<ExportDto[]>([]);
+  const [progress, setProgress] = useState<RecordingProgressResponse | null>(null);
   const [creatingExportType, setCreatingExportType] = useState<string | null>(null);
 
   // Load recording + participants (core data)
@@ -45,6 +47,7 @@ export default function RecordingDetailPage() {
       // Also refresh transcript + exports for this recording
       refreshTranscript(recId);
       refreshExports(recId);
+      refreshProgress(recId);
     },
     [], // no deps, uses functions defined below (function declarations are hoisted)
   );
@@ -63,6 +66,18 @@ export default function RecordingDetailPage() {
     };
   }, [id, loadAll]);
 
+  useEffect(() => {
+    if (typeof id !== 'string') return;
+
+    const timer = setInterval(() => {
+      refreshProgress(id);
+      refreshExports(id);
+      refreshTranscript(id);
+    }, 5000);
+
+    return () => clearInterval(timer);
+  }, [id]);
+
   // Map participantId -> participant so we can show names in the track list
   const participantById = useMemo(() => {
     const map = new Map<string, ParticipantItem>();
@@ -74,6 +89,26 @@ export default function RecordingDetailPage() {
 
   if (!data) return <p>Loading…</p>;
   const r = data.recording;
+  const requiredExports = progress?.exports.required ?? [
+    { type: 'wav', state: 'missing' as const },
+    { type: 'mp4', state: 'missing' as const },
+    { type: 'mp4_captions', state: 'missing' as const },
+  ];
+  const allRequiredExportsSucceeded = requiredExports.every((exp) => exp.state === 'succeeded');
+  const anyRequiredExportFailed = requiredExports.some((exp) => exp.state === 'failed');
+
+  const flowStage =
+    r.status === 'error' || anyRequiredExportFailed
+      ? 'error'
+      : allRequiredExportsSucceeded || r.status === 'ready'
+      ? 'exports_ready'
+      : progress?.phase === 'processing' || r.status === 'processing'
+      ? 'processing'
+      : progress?.phase === 'uploading' || r.status === 'uploading'
+      ? 'uploading'
+      : progress?.phase === 'recording'
+      ? 'recording'
+      : 'uploading';
 
   // Track download (processed track final URL)
   async function handleDownload(trackId: string) {
@@ -97,6 +132,12 @@ export default function RecordingDetailPage() {
     ExportsAPI.listForRecording(recId)
       .then((res) => setExportsList(res.exports ?? []))
       .catch(() => setExportsList([]));
+  }
+
+  function refreshProgress(recId: string) {
+    RecordingsAPI.getProgress(recId)
+      .then(setProgress)
+      .catch(() => setProgress(null));
   }
 
   // After an upload, poll tracks until they all become "processed"
@@ -151,12 +192,76 @@ export default function RecordingDetailPage() {
     }
   }
 
+  async function handleDownloadExportById(exportId: string) {
+    const full = await ExportsAPI.getById(exportId);
+    if (full.downloadUrl) {
+      triggerDownloadFromUrl(full.downloadUrl);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-semibold">{r.title || '(untitled)'}</h1>
       <div className="text-sm text-gray-300">
         Status: <b>{r.status}</b> · Created: {new Date(r.createdAt).toLocaleString()}
       </div>
+
+      <section className="space-y-3">
+        <h2 className="font-semibold">Recording flow</h2>
+        <div className="grid gap-2 md:grid-cols-5 text-sm">
+          {[
+            { key: 'recording', label: 'Recording' },
+            { key: 'uploading', label: 'Uploading' },
+            { key: 'processing', label: 'Processing' },
+            { key: 'exports_ready', label: 'Exports ready' },
+            { key: 'error', label: 'Error' },
+          ].map((step) => {
+            const active = flowStage === step.key;
+            const done =
+              flowStage === 'exports_ready'
+                ? ['recording', 'uploading', 'processing', 'exports_ready'].includes(step.key)
+                : flowStage === 'processing'
+                ? ['recording', 'uploading', 'processing'].includes(step.key)
+                : flowStage === 'uploading'
+                ? ['recording', 'uploading'].includes(step.key)
+                : flowStage === 'recording'
+                ? ['recording'].includes(step.key)
+                : step.key === 'error';
+
+            return (
+              <div
+                key={step.key}
+                className={`rounded border px-3 py-2 ${
+                  active
+                    ? 'border-indigo-400 bg-indigo-950/50'
+                    : done
+                    ? 'border-emerald-700 bg-emerald-950/30'
+                    : 'border-gray-700 bg-gray-900/40'
+                }`}
+              >
+                <div className="font-medium">{step.label}</div>
+                <div className="text-xs text-gray-400">
+                  {active ? 'active' : done ? 'done' : 'pending'}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {progress && (
+          <div className="grid gap-2 md:grid-cols-3 text-xs text-gray-300">
+            <div className="rounded border border-gray-700 px-3 py-2">
+              Participants: {progress.summary.participantsCompleted}/{progress.summary.participantsTotal}
+            </div>
+            <div className="rounded border border-gray-700 px-3 py-2">
+              Chunks uploaded: {progress.summary.chunksUploaded}/{progress.summary.chunksTotal} (pending {progress.summary.chunksPending})
+            </div>
+            <div className="rounded border border-gray-700 px-3 py-2">
+              Required exports: {progress.exports.requiredSucceeded}/{progress.exports.requiredTotal} (failed {progress.exports.requiredFailed})
+            </div>
+          </div>
+        )}
+      </section>
 
       <section className="space-y-3">
         <h2 className="font-semibold">Session mode</h2>
@@ -304,36 +409,60 @@ export default function RecordingDetailPage() {
       <section id="exports" className="space-y-3">
         <h2 className="font-semibold">Exports</h2>
 
+        <div className="rounded border border-gray-700 p-3 text-sm space-y-2">
+          <div className="text-xs text-gray-400">
+            Required exports are created automatically after processing.
+          </div>
+          {requiredExports.map((required) => {
+            const canRetry = required.state === 'failed';
+            const canDownload = required.state === 'succeeded' && !!required.exportId;
+            return (
+              <div
+                key={required.type}
+                className="flex items-center justify-between gap-3 border border-gray-800 rounded px-3 py-2"
+              >
+                <div>
+                  <div className="font-medium">{required.type}</div>
+                  <div className="text-xs text-gray-400">
+                    {required.state}
+                    {required.updatedAt ? ` · ${new Date(required.updatedAt).toLocaleString()}` : ''}
+                    {required.lastError ? ` · ${required.lastError}` : ''}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {canRetry && (
+                    <button
+                      className="px-3 py-1 rounded border border-amber-600 hover:bg-amber-950/40 disabled:opacity-50"
+                      disabled={!!creatingExportType}
+                      onClick={() => handleCreateExport(required.type)}
+                    >
+                      {creatingExportType === required.type ? 'Retrying…' : 'Retry'}
+                    </button>
+                  )}
+                  {canDownload && (
+                    <button
+                      className="px-3 py-1 rounded border border-gray-600 hover:bg-gray-800"
+                      onClick={() => handleDownloadExportById(required.exportId as string)}
+                    >
+                      Download
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
         <div className="flex gap-2 text-sm">
-          <button
-            className="px-3 py-1 rounded border border-gray-600 hover:bg-gray-800 disabled:opacity-50"
-            disabled={!!creatingExportType}
-            onClick={() => handleCreateExport('wav')}
-          >
-            {creatingExportType === 'wav' ? 'Creating WAV…' : 'Create WAV'}
-          </button>
-          <button
-            className="px-3 py-1 rounded border border-gray-600 hover:bg-gray-800 disabled:opacity-50"
-            disabled={!!creatingExportType}
-            onClick={() => handleCreateExport('mp4')}
-          >
-            {creatingExportType === 'mp4' ? 'Creating MP4…' : 'Create MP4'}
-          </button>
-          <button
-            className="px-3 py-1 rounded border border-gray-600 hover:bg-gray-800 disabled:opacity-50"
-            disabled={!!creatingExportType}
-            onClick={() => handleCreateExport('mp4_captions')}
-          >
-            {creatingExportType === 'mp4_captions'
-              ? 'Creating MP4 + captions…'
-              : 'Create MP4 + captions'}
-          </button>
           <button
             type="button"
             className="ml-auto text-xs px-2 py-1 border rounded"
-            onClick={() => refreshExports(r.id)}
+            onClick={() => {
+              refreshExports(r.id);
+              refreshProgress(r.id);
+            }}
           >
-            Refresh exports
+            Refresh export status
           </button>
         </div>
 

@@ -9,6 +9,8 @@ import {
 } from '@prisma/client';
 import { pathToFileURL } from 'node:url';
 import { renderCaptionsExportForRecording } from '../services/captions.service.js';
+import { reconcileRecordingReadiness } from '../services/recording-readiness.service.js';
+import { renderStandardExportForRecording } from '../services/standard-exports.service.js';
 
 type JobRow = {
     id: string;
@@ -117,7 +119,6 @@ async function runJob(job: JobRow) {
 
     // Decide how to build the export based on type
     if (artifact.type === export_type.mp4_captions) {
-        // For captions exports, go through the captions service
         const result = await renderCaptionsExportForRecording({
             recordingId: artifact.recording_id,
             exportType: artifact.type,
@@ -125,8 +126,12 @@ async function runJob(job: JobRow) {
         });
         finalKey = result.finalKey;
     } else {
-        // For wav/mp4 (for now), just reuse the processed track key
-        finalKey = sourceTrack.storage_key_final;
+        const result = await renderStandardExportForRecording({
+            recordingId: artifact.recording_id,
+            exportType: artifact.type,
+            sourceStorageKey: sourceTrack.storage_key_final,
+        });
+        finalKey = result.finalKey;
     }
 
     // Persist export artifact result
@@ -139,7 +144,7 @@ async function runJob(job: JobRow) {
         },
     });
 
-    // (Optionally, we might also update recording.status here later.)
+    await reconcileRecordingReadiness(artifact.recording_id);
 }
 
 async function succeed(jobId: string) {
@@ -179,6 +184,8 @@ async function fail(job: JobRow, err: any) {
             }
         }
     });
+
+    await reconcileRecordingReadiness(job.recording_id);
 }
 
 export async function runExportWorker() {

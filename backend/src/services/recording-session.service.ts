@@ -1,5 +1,6 @@
 import { recording_status } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
+import { reconcileRecordingPipeline } from './recording-pipeline.service.js';
 
 type ServiceResult<T> =
   | { code: 'ok'; data: T }
@@ -212,6 +213,9 @@ export async function stopRecordingSessionService(args: {
     },
   });
 
+  // Stop only requests the end of recording. Upload completion can continue in the background.
+  await reconcileRecordingPipeline(args.recordingId);
+
   return {
     code: 'ok',
     data: {
@@ -220,4 +224,3 @@ export async function stopRecordingSessionService(args: {
     },
   };
 }
-
