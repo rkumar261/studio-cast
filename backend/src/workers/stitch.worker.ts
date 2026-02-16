@@ -24,6 +24,14 @@ let stopping = false;
 process.on('SIGINT', () => (stopping = true));
 process.on('SIGTERM', () => (stopping = true));
 
+function isMissingStitchEnumError(err: unknown): boolean {
+  const message = String((err as any)?.message ?? err ?? '');
+  return (
+    message.includes('invalid input value for enum job_type') &&
+    message.includes('"stitch"')
+  );
+}
+
 async function claimOneStitchJob(): Promise<JobRow | null> {
   return prisma.$transaction(async (tx) => {
     const job = await tx.job.findFirst({
@@ -161,6 +169,13 @@ export async function runStitchWorker() {
         }
       }
     } catch (loopErr) {
+      if (isMissingStitchEnumError(loopErr)) {
+        console.error(
+          `[${WORKER_NAME}] database is missing enum value job_type.stitch. ` +
+          `Apply prisma migration 20260216201500_add_stitch_job_type and restart worker.`
+        );
+        break;
+      }
       console.error(`[${WORKER_NAME}] loop error`, loopErr);
     }
 

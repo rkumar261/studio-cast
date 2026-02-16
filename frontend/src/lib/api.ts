@@ -16,11 +16,15 @@ async function api<T>(
   path: string,
   options: RequestInit = {}
 ): Promise<T> {
+  const hasJsonBody =
+    typeof options.body === 'string' &&
+    options.body.length > 0;
+
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     credentials: 'include',            // <- send/receive HttpOnly cookies
     headers: {
-      'Content-Type': 'application/json',
+      ...(hasJsonBody ? { 'Content-Type': 'application/json' } : {}),
       ...(options.headers || {}),
     },
     cache: 'no-store',
