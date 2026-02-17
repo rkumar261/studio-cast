@@ -212,6 +212,11 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const searchParams = useSearchParams();
   const { profile } = useSession();
   const sessionMode: SessionMode = searchParams.get('mode') === 'meet' ? 'meet' : 'studio';
+  const requestedStudioRole = searchParams.get('role') === 'host'
+    ? 'host'
+    : searchParams.get('role') === 'guest'
+      ? 'guest'
+      : null;
 
   const meshMaxPeers = Number(process.env.NEXT_PUBLIC_MESH_MAX_PEERS ?? '4');
 
@@ -236,6 +241,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [selectedMicId, setSelectedMicId] = useState('');
   const [selectedSpeakerId, setSelectedSpeakerId] = useState('');
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
+  const [showStudioPeoplePanel, setShowStudioPeoplePanel] = useState(true);
   const [inviteRole, setInviteRole] = useState<'guest' | 'host'>('guest');
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteNotice, setInviteNotice] = useState<string | null>(null);
@@ -909,21 +915,6 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     }
   }, [active.tiles, pinnedTileKey, sessionMode]);
 
-  const stageTile = useMemo(() => {
-    if (active.tiles.length === 0) return null;
-    if (pinnedTileKey) {
-      const pinned = active.tiles.find((tile) => tile.key === pinnedTileKey);
-      if (pinned) return pinned;
-    }
-    const screen = active.tiles.find((tile) => tile.badge === 'Screen');
-    return screen ?? active.tiles[0];
-  }, [active.tiles, pinnedTileKey]);
-
-  const thumbnailTiles = useMemo(() => {
-    if (!stageTile) return active.tiles;
-    return active.tiles.filter((tile) => tile.key !== stageTile.key);
-  }, [active.tiles, stageTile]);
-
   const hasLocalPublishedVideo = active.localVideo.kind === 'livekit'
     ? !!active.localVideo.track
     : !!active.localVideo.stream;
@@ -1181,8 +1172,11 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   const inviteLink =
     typeof window !== 'undefined'
-      ? `${window.location.origin}/studio/${recordingId}?mode=studio`
+      ? `${window.location.origin}/studio/${recordingId}?mode=studio&role=${inviteRole}`
       : '';
+
+  const localStudioRole: 'host' | 'guest' = canControlRecording ? 'host' : requestedStudioRole ?? 'guest';
+  const localStudioRoleLabel = localStudioRole === 'host' ? 'Host' : 'Guest';
 
   async function handleCopyInviteLink() {
     if (!inviteLink) return;
@@ -1229,179 +1223,176 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   if (showPreJoin && sessionMode === 'studio') {
     return (
-      <main className={`${spaceGrotesk.className} min-h-[calc(100vh-56px)] bg-[#101114] text-slate-50`}>
-        <div className="mx-auto max-w-[1400px] px-5 py-6">
-          <header className="flex items-center justify-between rounded-xl bg-[#16181d] px-4 py-3">
+      <main className={`${spaceGrotesk.className} min-h-screen bg-[#090b10] text-slate-100`}>
+        <div className="mx-auto flex min-h-screen w-full max-w-[1450px] flex-col px-6 py-6">
+          <header className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <Link href="/" className="text-sm text-slate-400 hover:text-slate-200">
+              <Link href="/" className="text-slate-400 hover:text-slate-100">
                 ←
               </Link>
-              <p className="text-lg font-semibold tracking-wide">RIVERSIDE</p>
-              <span className="text-slate-500">|</span>
-              <p className="text-sm text-slate-300">{displayName || 'Studio'}’s Studio</p>
+              <p className="text-2xl font-semibold tracking-[0.2em]">RIVERSIDE</p>
+              <span className="text-slate-600">|</span>
+              <p className="text-xl text-slate-300">{displayName || 'Host'}&apos;s Studio</p>
             </div>
             <button
               type="button"
-              className="rounded-md border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:border-slate-500"
+              className="rounded-xl border border-slate-700 bg-[#161a22] px-4 py-2 text-sm text-slate-200 hover:border-slate-500"
             >
               Get help
             </button>
           </header>
 
-          <div className="mt-4 rounded-lg bg-violet-500/70 px-4 py-2 text-sm text-violet-50">
-            Tip: Plug your computer into a wall outlet for maximum recording quality.
-          </div>
+          <section className="flex flex-1 items-center py-10">
+            <div className="grid w-full items-start gap-12 xl:grid-cols-[minmax(0,1fr)_420px]">
+              <div className="max-w-xl space-y-6">
+                <span className="inline-flex rounded-full border border-rose-400/40 bg-rose-500/10 px-4 py-2 text-sm text-rose-200">
+                  REC
+                </span>
+                <p className="text-2xl text-slate-400">You&apos;re about to join {displayName || 'your'} studio</p>
+                <h1 className="text-6xl font-semibold leading-tight">Let&apos;s check your cam and mic</h1>
 
-          <section className="mt-8 grid gap-10 lg:grid-cols-[minmax(0,1fr)_420px] items-start">
-            <div className="max-w-xl space-y-5">
-              <p className="text-lg text-slate-400">You&apos;re about to join your studio</p>
-              <h1 className="text-5xl font-semibold leading-tight">Let&apos;s check your cam and mic</h1>
+                <div className="space-y-3">
+                  <label className="flex items-center gap-2 rounded-xl border border-slate-700 bg-[#1a1e26] px-4 py-3">
+                    <input
+                      type="text"
+                      value={displayName}
+                      onChange={(event) => setDisplayName(event.target.value)}
+                      className="min-w-0 flex-1 bg-transparent text-xl outline-none placeholder:text-slate-500"
+                      placeholder="Your display name"
+                    />
+                    <span className="rounded-lg bg-[#2a2f39] px-3 py-1 text-sm text-slate-200">{localStudioRoleLabel}</span>
+                  </label>
 
-              <div className="space-y-3">
-                <div className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/80 px-3 py-2">
-                  <input
-                    type="text"
-                    value={displayName}
-                    onChange={(event) => setDisplayName(event.target.value)}
-                    className="flex-1 bg-transparent text-base text-slate-100 outline-none placeholder:text-slate-500"
-                    placeholder="Your display name"
-                  />
-                  <span className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-300">Host</span>
-                </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <button
+                      type="button"
+                      onClick={() => setUsingHeadphones(false)}
+                      className={`rounded-xl px-4 py-3 text-base ${
+                        !usingHeadphones
+                          ? 'bg-[#2a2f39] text-white'
+                          : 'border border-slate-700 bg-[#171b22] text-slate-300'
+                      }`}
+                    >
+                      I am not using headphones
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setUsingHeadphones(true)}
+                      className={`rounded-xl px-4 py-3 text-base ${
+                        usingHeadphones
+                          ? 'bg-[#2a2f39] text-white'
+                          : 'border border-slate-700 bg-[#171b22] text-slate-300'
+                      }`}
+                    >
+                      I am using headphones
+                    </button>
+                  </div>
 
-                <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => setUsingHeadphones(false)}
-                    className={`rounded-lg px-3 py-2 text-sm ${
-                      !usingHeadphones
-                        ? 'bg-violet-500 text-white'
-                        : 'border border-slate-700 bg-slate-900 text-slate-300'
-                    }`}
+                    onClick={handleJoinFromPreJoin}
+                    disabled={preJoinStatus !== 'ready' || joiningFromPreJoin}
+                    className="w-full rounded-xl bg-[#8b5cf6] px-4 py-3 text-xl font-semibold text-white hover:bg-[#7c4cf0] disabled:opacity-60"
                   >
-                    I am not using headphones
+                    {joiningFromPreJoin ? 'Joining studio...' : 'Join studio'}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setUsingHeadphones(true)}
-                    className={`rounded-lg px-3 py-2 text-sm ${
-                      usingHeadphones
-                        ? 'bg-violet-500 text-white'
-                        : 'border border-slate-700 bg-slate-900 text-slate-300'
-                    }`}
-                  >
-                    I am using headphones
-                  </button>
-                </div>
 
-                <button
-                  type="button"
-                  onClick={handleJoinFromPreJoin}
-                  disabled={preJoinStatus !== 'ready' || joiningFromPreJoin}
-                  className="w-full rounded-lg bg-violet-500 px-4 py-2.5 text-lg font-semibold text-white hover:bg-violet-400 disabled:opacity-60"
-                >
-                  {joiningFromPreJoin ? 'Joining studio...' : 'Join studio'}
-                </button>
-
-                <p className="text-sm text-slate-400">
-                  You are joining as host.
-                </p>
-
-                {preJoinError && (
-                  <p className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                    {preJoinError}
+                  <p className="text-lg text-slate-400">
+                    You are joining as a {localStudioRole === 'host' ? 'host' : 'guest'}
                   </p>
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
-              <div className="relative overflow-hidden rounded-xl bg-slate-950">
-                <video
-                  ref={preJoinVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className="aspect-video w-full object-cover"
-                />
-                <div className="absolute inset-x-0 bottom-3 flex items-center justify-center gap-2">
-                  <button
-                    type="button"
-                    onClick={togglePreJoinMic}
-                    className={`rounded-full px-3 py-1 text-sm ${
-                      preJoinMicEnabled ? 'bg-slate-800 text-slate-100' : 'bg-red-500 text-white'
-                    }`}
-                  >
-                    {preJoinMicEnabled ? 'Mic on' : 'Mic off'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={togglePreJoinCam}
-                    className={`rounded-full px-3 py-1 text-sm ${
-                      preJoinCamEnabled ? 'bg-slate-800 text-slate-100' : 'bg-red-500 text-white'
-                    }`}
-                  >
-                    {preJoinCamEnabled ? 'Cam on' : 'Cam off'}
-                  </button>
+                  {preJoinError && (
+                    <p className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                      {preJoinError}
+                    </p>
+                  )}
                 </div>
               </div>
 
-              <div className="mt-3 space-y-2">
-                <label className="block rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200">
-                  <span className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Camera</span>
-                  <select
-                    value={selectedCameraId}
-                    onChange={(event) => setSelectedCameraId(event.target.value)}
-                    className="w-full bg-transparent text-sm outline-none"
-                  >
-                    {cameraDevices.length === 0 && <option value="">Default camera</option>}
-                    {cameraDevices.map((device) => (
-                      <option key={device.id} value={device.id}>
-                        {device.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+              <div className="rounded-3xl border border-slate-800 bg-[#151820] p-4">
+                <div className="relative overflow-hidden rounded-2xl bg-black">
+                  <video ref={preJoinVideoRef} autoPlay playsInline muted className="aspect-video w-full object-cover" />
+                  <div className="absolute left-3 top-3 rounded-full bg-black/55 px-3 py-1 text-xs text-slate-100">
+                    720p / 30fps
+                  </div>
+                  <div className="absolute inset-x-0 bottom-4 flex items-center justify-center gap-2">
+                    <button
+                      type="button"
+                      onClick={togglePreJoinMic}
+                      className={`rounded-full px-3 py-1 text-sm ${
+                        preJoinMicEnabled ? 'bg-[#1f2530] text-slate-100' : 'bg-rose-500 text-white'
+                      }`}
+                    >
+                      {preJoinMicEnabled ? 'Mic' : 'Mic off'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={togglePreJoinCam}
+                      className={`rounded-full px-3 py-1 text-sm ${
+                        preJoinCamEnabled ? 'bg-[#1f2530] text-slate-100' : 'bg-rose-500 text-white'
+                      }`}
+                    >
+                      {preJoinCamEnabled ? 'Cam' : 'Cam off'}
+                    </button>
+                  </div>
+                </div>
 
-                <label className="block rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200">
-                  <span className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Microphone</span>
-                  <select
-                    value={selectedMicId}
-                    onChange={(event) => setSelectedMicId(event.target.value)}
-                    className="w-full bg-transparent text-sm outline-none"
-                  >
-                    {micDevices.length === 0 && <option value="">Default microphone</option>}
-                    {micDevices.map((device) => (
-                      <option key={device.id} value={device.id}>
-                        {device.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <div className="mt-3 space-y-2">
+                  <label className="block rounded-xl border border-slate-700 bg-[#1a1f29] px-3 py-2 text-sm">
+                    <span className="mb-1 block text-xs text-slate-400">Camera</span>
+                    <select
+                      value={selectedCameraId}
+                      onChange={(event) => setSelectedCameraId(event.target.value)}
+                      className="w-full bg-transparent outline-none"
+                    >
+                      {cameraDevices.length === 0 && <option value="">Default camera</option>}
+                      {cameraDevices.map((device) => (
+                        <option key={device.id} value={device.id}>
+                          {device.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
 
-                <label className="block rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200">
-                  <span className="mb-1 block text-xs uppercase tracking-wide text-slate-500">Speaker</span>
-                  <select
-                    value={selectedSpeakerId}
-                    onChange={(event) => setSelectedSpeakerId(event.target.value)}
-                    className="w-full bg-transparent text-sm outline-none"
-                  >
-                    {speakerDevices.length === 0 && <option value="">Default speakers</option>}
-                    {speakerDevices.map((device) => (
-                      <option key={device.id} value={device.id}>
-                        {device.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                  <label className="block rounded-xl border border-slate-700 bg-[#1a1f29] px-3 py-2 text-sm">
+                    <span className="mb-1 block text-xs text-slate-400">Microphone</span>
+                    <select
+                      value={selectedMicId}
+                      onChange={(event) => setSelectedMicId(event.target.value)}
+                      className="w-full bg-transparent outline-none"
+                    >
+                      {micDevices.length === 0 && <option value="">Default microphone</option>}
+                      {micDevices.map((device) => (
+                        <option key={device.id} value={device.id}>
+                          {device.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
 
-                <button
-                  type="button"
-                  onClick={startPreJoinPreview}
-                  className="w-full rounded-lg border border-slate-700 px-3 py-2 text-sm text-slate-200 hover:border-slate-500"
-                >
-                  {preJoinStatus === 'starting' ? 'Refreshing preview...' : 'Refresh preview'}
-                </button>
+                  <label className="block rounded-xl border border-slate-700 bg-[#1a1f29] px-3 py-2 text-sm">
+                    <span className="mb-1 block text-xs text-slate-400">Speaker</span>
+                    <select
+                      value={selectedSpeakerId}
+                      onChange={(event) => setSelectedSpeakerId(event.target.value)}
+                      className="w-full bg-transparent outline-none"
+                    >
+                      {speakerDevices.length === 0 && <option value="">Default speakers</option>}
+                      {speakerDevices.map((device) => (
+                        <option key={device.id} value={device.id}>
+                          {device.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <button
+                    type="button"
+                    onClick={startPreJoinPreview}
+                    className="w-full rounded-xl border border-slate-700 bg-[#171b23] px-3 py-2 text-sm text-slate-200 hover:border-slate-500"
+                  >
+                    {preJoinStatus === 'starting' ? 'Refreshing preview...' : 'Refresh preview'}
+                  </button>
+                </div>
               </div>
             </div>
           </section>
@@ -1412,62 +1403,92 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   if (!showPreJoin && sessionMode === 'studio') {
     const people = [
-      { id: 'local', label: displayName || 'You', role: 'Host' as const, isLocal: true },
+      { id: 'local', label: displayName || 'You', role: localStudioRoleLabel, isLocal: true },
       ...active.peers.map((peer) => ({
         id: peer.id,
         label: peer.label,
-        role: 'Guest' as const,
+        role: 'Guest',
         isLocal: false,
       })),
     ];
-
-    const visibleTiles = studioCanvasTiles.slice(0, 4);
+    const visibleTiles = studioCanvasTiles.slice(0, 2);
+    const queueTotal =
+      chunkUploadQueue.stats.pending +
+      chunkUploadQueue.stats.processing +
+      chunkUploadQueue.stats.completed +
+      chunkUploadQueue.stats.failed;
+    const uploadedPercent =
+      queueTotal === 0
+        ? 0
+        : Math.min(
+            100,
+            Math.round(
+              ((chunkUploadQueue.stats.completed + chunkUploadQueue.stats.processing) * 100) /
+                queueTotal
+            )
+          );
+    const recordingSeconds = recordingSession?.startedAt
+      ? Math.max(0, Math.floor((Date.now() - new Date(recordingSession.startedAt).getTime()) / 1000))
+      : 0;
+    const recordingClock = `${String(Math.floor(recordingSeconds / 60)).padStart(2, '0')}:${String(
+      recordingSeconds % 60
+    ).padStart(2, '0')}`;
 
     return (
-      <main className={`${spaceGrotesk.className} min-h-screen bg-[#0d0f13] text-slate-100`}>
-        <div className="mx-auto max-w-[1500px] px-5 py-4">
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
-            <div className="space-y-4">
-              <header className="flex items-center justify-between rounded-xl bg-[#13151a] px-4 py-3">
-                <div className="flex items-center gap-3">
-                  <Link href="/" className="text-slate-300 hover:text-white">
-                    ←
-                  </Link>
-                  <p className="text-2xl font-semibold tracking-wide">RIVERSIDE</p>
-                  <span className="text-slate-600">|</span>
-                  <p className="text-sm text-slate-300">{displayName || 'Host'}&apos;s Studio</p>
-                  <p className="text-sm font-semibold text-slate-100">Untitled Recording</p>
-                </div>
+      <main className={`${spaceGrotesk.className} h-screen overflow-hidden bg-[#07090f] text-slate-100`}>
+        <div className="mx-auto flex h-full w-full max-w-[1600px] flex-col px-5 py-4">
+          <header className="flex items-center justify-between rounded-2xl bg-[#0f131a] px-4 py-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <Link href="/" className="text-slate-300 hover:text-white">
+                ←
+              </Link>
+              <p className="text-xl font-semibold tracking-[0.2em]">RIVERSIDE</p>
+              <span className="text-slate-600">|</span>
+              <p className="truncate text-base text-slate-300">{displayName || 'Host'} KUMAR&apos;s Studio</p>
+              <p className="truncate text-xl font-semibold text-slate-100">Untitled Recording</p>
+            </div>
 
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="rounded-full border border-slate-700 bg-[#1c2027] px-4 py-2 text-sm hover:border-slate-500"
-                  >
-                    + Live stream
-                  </button>
-                  <button
-                    type="button"
-                    className="h-10 w-10 rounded-full border border-slate-700 bg-[#1c2027] text-sm"
-                  >
-                    ?
-                  </button>
-                  <button
-                    type="button"
-                    className="h-10 w-10 rounded-full border border-slate-700 bg-[#1c2027] text-sm"
-                  >
-                    ⚙
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsInviteModalOpen(true)}
-                    className="rounded-full border border-slate-700 bg-[#1c2027] px-4 py-2 text-sm hover:border-slate-500"
-                  >
-                    Invite
-                  </button>
-                </div>
-              </header>
+            <div className="flex items-center gap-2">
+              {isRecording && (
+                <span className="rounded-full bg-rose-500/20 px-3 py-1 text-sm font-semibold text-rose-200">
+                  REC {recordingClock}
+                </span>
+              )}
+              {!isRecording && queueTotal > 0 && (
+                <span className="rounded-full bg-violet-500/25 px-3 py-1 text-sm font-semibold text-violet-100">
+                  ↑ {uploadedPercent}% Uploading...
+                </span>
+              )}
+              <button
+                type="button"
+                className="rounded-full border border-slate-700 bg-[#1a1f29] px-4 py-2 text-sm hover:border-slate-500"
+              >
+                + Live stream
+              </button>
+              <button
+                type="button"
+                className="h-10 w-10 rounded-full border border-slate-700 bg-[#1a1f29] text-sm"
+              >
+                ?
+              </button>
+              <button
+                type="button"
+                className="h-10 w-10 rounded-full border border-slate-700 bg-[#1a1f29] text-sm"
+              >
+                ⚙
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsInviteModalOpen(true)}
+                className="rounded-full border border-slate-700 bg-[#1a1f29] px-4 py-2 text-sm hover:border-slate-500"
+              >
+                Invite
+              </button>
+            </div>
+          </header>
 
+          {(fallbackNotice || sessionError || recorderError || chunkUploadQueue.lastError || active.error) && (
+            <div className="mt-3 space-y-2">
               {fallbackNotice && (
                 <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
                   {fallbackNotice}
@@ -1493,170 +1514,205 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   {active.error}
                 </p>
               )}
+            </div>
+          )}
 
-              <section className="rounded-2xl border border-slate-800 bg-[#111319] p-4">
-                <div className={`grid gap-3 ${visibleTiles.length > 1 ? 'md:grid-cols-2' : 'grid-cols-1'}`}>
-                  {visibleTiles.map((tile) => (
-                    <ParticipantTile
-                      key={tile.key}
-                      tile={tile}
-                      className="aspect-[4/3] rounded-xl border-slate-700 bg-black"
-                      showPin
-                      isPinned={pinnedTileKey === tile.key}
-                      onPin={() => togglePin(tile.key)}
-                    />
-                  ))}
-
-                  {visibleTiles.length === 0 && (
-                    <div className="flex aspect-[4/3] items-center justify-center rounded-xl border border-dashed border-slate-700 bg-black/40 text-sm text-slate-500">
-                      Waiting for camera feed...
+          <div className="mt-3 flex min-h-0 flex-1 gap-4">
+            <section className="flex min-h-0 flex-1 flex-col rounded-3xl bg-[#090b10] p-3">
+              <div className="flex min-h-0 flex-1 gap-3">
+                <aside className="hidden w-[380px] shrink-0 rounded-3xl border border-slate-800 bg-[#1b1f26] p-6 xl:flex xl:flex-col">
+                  <div className="mb-8 flex items-center justify-between">
+                    <h2 className="text-[42px] font-semibold leading-none">Invite someone to join remotely</h2>
+                    <button type="button" className="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-300">
+                      ×
+                    </button>
+                  </div>
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-[minmax(0,1fr)_86px_104px] gap-2">
+                      <input
+                        type="text"
+                        readOnly
+                        value={inviteLink}
+                        className="min-w-0 truncate rounded-xl border border-slate-700 bg-[#141922] px-3 py-2 text-sm text-slate-300"
+                      />
+                      <select
+                        value={inviteRole}
+                        onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
+                        className="rounded-xl border border-slate-700 bg-[#141922] px-2 py-2 text-sm"
+                      >
+                        <option value="guest">Guest</option>
+                        <option value="host">Host</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={handleCopyInviteLink}
+                        className="rounded-xl bg-[#8b5cf6] px-2 py-2 text-sm font-semibold text-white hover:bg-[#7c4cf0]"
+                      >
+                        {copyState === 'copied' ? 'Copied' : 'Copy'}
+                      </button>
                     </div>
-                  )}
-                </div>
-              </section>
+                  </div>
+                  <div className="my-10 text-center text-xs uppercase tracking-wider text-slate-500">New</div>
+                  <p className="text-3xl font-semibold">Record someone next to you</p>
+                  <button
+                    type="button"
+                    className="mt-6 rounded-xl border border-slate-700 bg-[#2a2f39] px-4 py-3 text-lg font-medium text-slate-100"
+                  >
+                    Add an in-person guest
+                  </button>
+                </aside>
 
-              <footer className="flex justify-center">
-                <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-800 bg-[#13151a] px-3 py-2">
+                <div className="flex min-h-0 flex-1 items-center justify-center rounded-3xl bg-[#05070c] p-2">
+                  <div className={`grid w-full max-w-[980px] gap-3 ${visibleTiles.length > 1 ? 'md:grid-cols-2' : 'grid-cols-1'}`}>
+                    {visibleTiles.map((tile) => (
+                      <ParticipantTile
+                        key={tile.key}
+                        tile={tile}
+                        className="aspect-[3/4] rounded-2xl border-violet-400/60 bg-black"
+                        showPin
+                        isPinned={pinnedTileKey === tile.key}
+                        onPin={() => togglePin(tile.key)}
+                      />
+                    ))}
+                    {visibleTiles.length === 0 && (
+                      <div className="flex aspect-[4/3] items-center justify-center rounded-xl border border-dashed border-slate-700 bg-black/40 text-sm text-slate-500">
+                        Waiting for camera feed...
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <footer className="mt-4 flex justify-center">
+                <div className="flex flex-wrap items-center justify-center gap-2 rounded-2xl border border-slate-800 bg-[#121722] px-3 py-3">
                   <button
                     type="button"
                     onClick={handleToggleRecordingSession}
                     disabled={!canControlRecording || sessionBusy}
-                    className={`rounded-xl px-4 py-2 text-sm font-semibold ${
-                      isRecording ? 'bg-rose-500 text-white' : 'bg-rose-500/90 text-white'
-                    } disabled:opacity-50`}
+                    className={`rounded-xl px-5 py-2.5 text-base font-semibold text-white ${
+                      isRecording ? 'bg-rose-500' : 'bg-rose-500/90'
+                    } disabled:opacity-60`}
                   >
-                    {sessionBusy ? (isRecording ? 'Stopping...' : 'Starting...') : (isRecording ? 'Stop recording' : 'Start recording')}
+                    {sessionBusy ? (isRecording ? 'Stopping...' : 'Starting...') : isRecording ? 'Stop' : 'Record'}
                   </button>
-                  <button
-                    type="button"
-                    onClick={active.toggleMic}
-                    className="rounded-xl bg-[#1f232b] px-3 py-2 text-sm text-slate-200 hover:bg-[#2a2f38]"
-                  >
-                    Mic
-                  </button>
-                  <button
-                    type="button"
-                    onClick={active.toggleCamera}
-                    className="rounded-xl bg-[#1f232b] px-3 py-2 text-sm text-slate-200 hover:bg-[#2a2f38]"
-                  >
-                    Cam
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded-xl bg-[#1f232b] px-3 py-2 text-sm text-slate-200 hover:bg-[#2a2f38]"
-                  >
-                    Speaker
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded-xl bg-[#1f232b] px-3 py-2 text-sm text-slate-200 hover:bg-[#2a2f38]"
-                  >
-                    React
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded-xl bg-[#1f232b] px-3 py-2 text-sm text-slate-200 hover:bg-[#2a2f38]"
-                  >
-                    Raise
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded-xl bg-[#1f232b] px-3 py-2 text-sm text-slate-200 hover:bg-[#2a2f38]"
-                  >
-                    Layout
-                  </button>
-                  <button
-                    type="button"
-                    className="rounded-xl bg-[#1f232b] px-3 py-2 text-sm text-slate-200 hover:bg-[#2a2f38]"
-                  >
-                    Script
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsInviteModalOpen(true)}
-                    className="rounded-xl bg-[#1f232b] px-3 py-2 text-sm text-slate-200 hover:bg-[#2a2f38]"
-                  >
-                    Share
-                  </button>
+                  <button type="button" onClick={active.toggleMic} className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Mic</button>
+                  <button type="button" onClick={active.toggleCamera} className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Cam</button>
+                  <button type="button" className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Speaker</button>
+                  <button type="button" className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">React</button>
+                  <button type="button" className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Raise</button>
+                  <button type="button" className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Layout</button>
+                  <button type="button" className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Script</button>
+                  <button type="button" onClick={() => setIsInviteModalOpen(true)} className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Share</button>
                   <button
                     type="button"
                     onClick={handleLeave}
                     disabled={sessionBusy}
-                    className="rounded-xl bg-[#4b1f2a] px-3 py-2 text-sm text-rose-100 hover:bg-[#5f2735] disabled:opacity-60"
+                    className="rounded-xl bg-[#4b1f2a] px-4 py-2.5 text-sm text-rose-100 hover:bg-[#5f2735] disabled:opacity-60"
                   >
                     {sessionBusy ? 'Leaving...' : 'Leave'}
                   </button>
                 </div>
               </footer>
-              {sessionMode === 'studio' && (
-                <div className="flex items-center justify-center gap-2">
-                  <p className="text-center text-[11px] text-slate-400">
-                    Chunk recorder: {chunkRecorder.isRunning ? 'running' : 'idle'} · active {chunkRecorder.activeKinds.length} · audio {chunkStats.audio} · video {chunkStats.video} · screen {chunkStats.screen} · queued {chunkUploadQueue.stats.pending} · uploading {chunkUploadQueue.stats.processing} · failed {chunkUploadQueue.stats.failed} · done {chunkUploadQueue.stats.completed} · {chunkUploadQueue.stats.online ? 'online' : 'offline'} · protocol {chunkUploadProtocol}
-                  </p>
-                  {chunkUploadQueue.stats.failed > 0 && (
+
+              <div className="mt-2 flex items-center justify-center gap-2">
+                <p className="text-center text-[11px] text-slate-400">
+                  Chunk recorder: {chunkRecorder.isRunning ? 'running' : 'idle'} · active {chunkRecorder.activeKinds.length} · audio {chunkStats.audio} · video {chunkStats.video} · screen {chunkStats.screen} · queued {chunkUploadQueue.stats.pending} · uploading {chunkUploadQueue.stats.processing} · failed {chunkUploadQueue.stats.failed} · done {chunkUploadQueue.stats.completed} · {chunkUploadQueue.stats.online ? 'online' : 'offline'} · protocol {chunkUploadProtocol}
+                </p>
+                {chunkUploadQueue.stats.failed > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => void chunkUploadQueue.retryFailed()}
+                    className="rounded border border-amber-600/70 px-2 py-1 text-[10px] text-amber-300 hover:bg-amber-800/20"
+                  >
+                    Retry failed
+                  </button>
+                )}
+              </div>
+            </section>
+
+            <div className="flex">
+              {showStudioPeoplePanel && (
+                <aside className="w-[330px] rounded-3xl border border-slate-800 bg-[#171b23] p-4">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-4xl font-semibold">People</h2>
                     <button
                       type="button"
-                      onClick={() => void chunkUploadQueue.retryFailed()}
-                      className="rounded border border-amber-600/70 px-2 py-1 text-[10px] text-amber-300 hover:bg-amber-800/20"
+                      onClick={() => setShowStudioPeoplePanel(false)}
+                      className="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-400"
                     >
-                      Retry failed
+                      ×
                     </button>
-                  )}
-                </div>
-              )}
-            </div>
+                  </div>
 
-            <aside className="rounded-2xl border border-slate-800 bg-[#15171d] p-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-4xl font-semibold">People</h2>
-                <button
-                  type="button"
-                  className="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-400"
-                >
-                  ×
-                </button>
-              </div>
-
-              <div className="mt-4 rounded-xl border border-slate-800 bg-[#1b1e25] p-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm text-slate-300">Recording info</p>
-                  <span className="text-slate-500">⌄</span>
-                </div>
-              </div>
-
-              <div className="mt-4 space-y-3">
-                {people.map((person) => (
-                  <div key={person.id} className="rounded-xl border border-slate-800 bg-[#1b1e25] p-3">
-                    <div className="flex items-center gap-3">
-                      <div className="h-14 w-14 rounded-md border border-slate-700 bg-slate-900" />
-                      <div>
-                        <p className="text-xl font-semibold text-slate-100">{person.label}</p>
-                        <p className="text-sm text-slate-400">{person.role}</p>
-                      </div>
-                    </div>
-                    <div className="mt-3 h-2 w-full rounded-full bg-slate-800">
-                      <div className="h-full w-1/3 rounded-full bg-emerald-400/80" />
+                  <div className="mt-4 rounded-xl border border-slate-800 bg-[#1b202a] p-3">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm text-slate-300">Recording info</p>
+                      <span className="text-slate-500">⌄</span>
                     </div>
                   </div>
-                ))}
-              </div>
 
-              <button
-                type="button"
-                onClick={() => setIsInviteModalOpen(true)}
-                className="mt-4 w-full rounded-xl border border-slate-700 bg-[#1b1e25] px-3 py-2 text-sm text-slate-100 hover:border-slate-500"
-              >
-                + Add participant
-              </button>
-            </aside>
+                  <div className="mt-4 space-y-3">
+                    {people.map((person, index) => (
+                      <div key={person.id} className="rounded-xl border border-slate-800 bg-[#1b202a] p-3">
+                        <div className="flex items-start gap-3">
+                          <div className="h-14 w-14 rounded-md border border-slate-700 bg-slate-900" />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="truncate text-xl font-semibold text-slate-100">{person.label}</p>
+                              {isRecording && (
+                                <span className="rounded bg-rose-500/20 px-2 py-0.5 text-[11px] text-rose-200">REC</span>
+                              )}
+                            </div>
+                            <p className="text-sm text-slate-400">{person.role}</p>
+                            <p className="text-xs text-slate-500">
+                              {person.isLocal ? `${uploadedPercent}% uploaded` : index === 0 ? 'Host control' : 'Connected'}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="mt-3 h-1.5 w-full rounded-full bg-slate-800">
+                          <div
+                            className="h-full rounded-full bg-emerald-400/80"
+                            style={{ width: `${person.isLocal ? Math.max(uploadedPercent, 5) : 30}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsInviteModalOpen(true)}
+                    className="mt-4 w-full rounded-xl border border-slate-700 bg-[#1b202a] px-3 py-2 text-sm text-slate-100 hover:border-slate-500"
+                  >
+                    + Add participant
+                  </button>
+                </aside>
+              )}
+
+              <div className="ml-3 flex w-16 shrink-0 flex-col items-center justify-center gap-3 rounded-3xl bg-[#0f131b] py-5">
+                <button
+                  type="button"
+                  onClick={() => setShowStudioPeoplePanel((prev) => !prev)}
+                  className={`w-12 rounded-2xl px-1 py-3 text-xs ${
+                    showStudioPeoplePanel ? 'bg-[#2a3040] text-white' : 'bg-transparent text-slate-400'
+                  }`}
+                >
+                  People
+                </button>
+                <button type="button" className="w-12 rounded-2xl px-1 py-3 text-xs text-slate-400">Chat</button>
+                <button type="button" className="w-12 rounded-2xl px-1 py-3 text-xs text-slate-400">Brand</button>
+                <button type="button" className="w-12 rounded-2xl px-1 py-3 text-xs text-slate-400">Text</button>
+                <button type="button" className="w-12 rounded-2xl px-1 py-3 text-xs text-slate-400">Media</button>
+              </div>
+            </div>
           </div>
         </div>
 
         {isInviteModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
-            <div className="w-full max-w-2xl rounded-2xl border border-slate-700 bg-[#1a1c21] p-6">
+            <div className="w-full max-w-3xl rounded-3xl border border-slate-700 bg-[#1a1d24] p-6">
               <div className="mb-4 flex items-center justify-between">
-                <h3 className="text-3xl font-semibold text-slate-100">Invite people</h3>
+                <h3 className="text-4xl font-semibold text-slate-100">Invite people</h3>
                 <button
                   type="button"
                   onClick={() => {
@@ -1669,24 +1725,23 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   ×
                 </button>
               </div>
-
-              <p className="text-sm text-slate-400">
-                Share a link or invite participants by email to join this recording session.
+              <p className="text-base text-slate-400">
+                Invite people to join your recording session.
               </p>
 
-              <div className="mt-5 space-y-3">
-                <p className="text-xl font-semibold text-slate-100">Share a link</p>
-                <div className="grid gap-2 md:grid-cols-[1fr_110px_120px]">
+              <div className="mt-6 space-y-3">
+                <p className="text-2xl font-semibold text-slate-100">Share a link</p>
+                <div className="grid gap-2 md:grid-cols-[1fr_120px_130px]">
                   <input
                     type="text"
                     readOnly
                     value={inviteLink}
-                    className="rounded-lg border border-slate-700 bg-[#23262e] px-3 py-2 text-sm text-slate-100"
+                    className="rounded-xl border border-slate-700 bg-[#242936] px-3 py-3 text-sm text-slate-100"
                   />
                   <select
                     value={inviteRole}
                     onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
-                    className="rounded-lg border border-slate-700 bg-[#23262e] px-3 py-2 text-sm text-slate-100"
+                    className="rounded-xl border border-slate-700 bg-[#242936] px-3 py-3 text-sm text-slate-100"
                   >
                     <option value="guest">Guest</option>
                     <option value="host">Host</option>
@@ -1694,29 +1749,29 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   <button
                     type="button"
                     onClick={handleCopyInviteLink}
-                    className="rounded-lg bg-violet-500 px-3 py-2 text-sm font-semibold text-white hover:bg-violet-400"
+                    className="rounded-xl bg-[#8b5cf6] px-3 py-3 text-sm font-semibold text-white hover:bg-[#7c4cf0]"
                   >
                     {copyState === 'copied' ? 'Copied' : 'Copy link'}
                   </button>
                 </div>
               </div>
 
-              <div className="my-5 h-px bg-slate-700" />
+              <div className="my-6 h-px bg-slate-700" />
 
               <div className="space-y-3">
-                <p className="text-xl font-semibold text-slate-100">Invite via email</p>
-                <div className="grid gap-2 md:grid-cols-[1fr_110px_120px]">
+                <p className="text-2xl font-semibold text-slate-100">Invite via email</p>
+                <div className="grid gap-2 md:grid-cols-[1fr_120px_130px]">
                   <input
                     type="email"
                     value={inviteEmail}
                     onChange={(event) => setInviteEmail(event.target.value)}
                     placeholder="example@email.com"
-                    className="rounded-lg border border-slate-700 bg-[#23262e] px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
+                    className="rounded-xl border border-slate-700 bg-[#242936] px-3 py-3 text-sm text-slate-100 placeholder:text-slate-500"
                   />
                   <select
                     value={inviteRole}
                     onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
-                    className="rounded-lg border border-slate-700 bg-[#23262e] px-3 py-2 text-sm text-slate-100"
+                    className="rounded-xl border border-slate-700 bg-[#242936] px-3 py-3 text-sm text-slate-100"
                   >
                     <option value="guest">Guest</option>
                     <option value="host">Host</option>
@@ -1724,7 +1779,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   <button
                     type="button"
                     onClick={handleInviteByEmail}
-                    className="rounded-lg bg-violet-500 px-3 py-2 text-sm font-semibold text-white hover:bg-violet-400"
+                    className="rounded-xl bg-[#8b5cf6] px-3 py-3 text-sm font-semibold text-white hover:bg-[#7c4cf0]"
                   >
                     Send invite
                   </button>
