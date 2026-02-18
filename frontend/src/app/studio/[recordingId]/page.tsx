@@ -46,9 +46,21 @@ type Tile = {
   video: MediaSource;
   audio?: MediaSource;
   muted?: boolean;
+  micOff?: boolean;
 };
 
 type RecorderKind = 'audio' | 'video' | 'screen';
+type StudioControlIconKind =
+  | 'mark'
+  | 'mic'
+  | 'cam'
+  | 'speaker'
+  | 'react'
+  | 'raise'
+  | 'layout'
+  | 'script'
+  | 'share'
+  | 'leave';
 
 const spaceGrotesk = Space_Grotesk({
   subsets: ['latin'],
@@ -89,31 +101,35 @@ function useAttachMedia<T extends HTMLMediaElement>(
   source?: MediaSource,
   kind: 'video' | 'audio' = 'video'
 ) {
+  const sourceKind = source?.kind;
+  const sourceTrack = source?.kind === 'livekit' ? source.track : null;
+  const sourceStream = source?.kind === 'media' ? source.stream : null;
+
   useEffect(() => {
     const element = mediaRef.current;
     if (!element) return;
 
-    if (!source) {
+    if (!sourceKind) {
       if ('srcObject' in element) {
         (element as HTMLMediaElement).srcObject = null;
       }
       return;
     }
 
-    if (source.kind === 'livekit') {
-      if (!source.track) return;
-      source.track.attach(element);
+    if (sourceKind === 'livekit') {
+      if (!sourceTrack) return;
+      sourceTrack.attach(element);
       return () => {
         try {
-          source.track?.detach(element);
+          sourceTrack.detach(element);
         } catch {
           // ignore
         }
       };
     }
 
-    if (source.kind === 'media') {
-      (element as HTMLMediaElement).srcObject = source.stream ?? null;
+    if (sourceKind === 'media') {
+      (element as HTMLMediaElement).srcObject = sourceStream ?? null;
       element.play?.().catch(() => {});
       return () => {
         try {
@@ -123,7 +139,7 @@ function useAttachMedia<T extends HTMLMediaElement>(
         }
       };
     }
-  }, [mediaRef, source, kind]);
+  }, [kind, mediaRef, sourceKind, sourceStream, sourceTrack]);
 }
 
 function ParticipantTile({
@@ -132,6 +148,8 @@ function ParticipantTile({
   showPin = false,
   isPinned = false,
   onPin,
+  micPublishEnabled,
+  onTogglePublishMic,
   fit = 'cover',
   fill = false,
   showBadge = true,
@@ -141,23 +159,55 @@ function ParticipantTile({
   showPin?: boolean;
   isPinned?: boolean;
   onPin?: () => void;
+  micPublishEnabled?: boolean;
+  onTogglePublishMic?: () => void;
   fit?: 'cover' | 'contain';
   fill?: boolean;
   showBadge?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const controlsHideTimerRef = useRef<number | null>(null);
+  const [showControlsOnClick, setShowControlsOnClick] = useState(false);
+  const [isTileMuted, setIsTileMuted] = useState(Boolean(tile.muted));
 
   const hasVideo = tile.video.kind === 'livekit'
     ? !!tile.video.track
     : !!tile.video.stream;
+  const remoteMicOff = !!tile.micOff;
+  const isAudioMuted = isTileMuted;
+  const isPublishMicControl = typeof micPublishEnabled === 'boolean' && !!onTogglePublishMic;
+  const shouldMutePlayback = isPublishMicControl ? isAudioMuted : (isAudioMuted || remoteMicOff);
+  const micIsOff = isPublishMicControl ? !micPublishEnabled : shouldMutePlayback;
 
   useAttachMedia(videoRef, tile.video, 'video');
-  useAttachMedia(audioRef, tile.audio, 'audio');
+  useAttachMedia(audioRef, shouldMutePlayback ? undefined : tile.audio, 'audio');
+
+  useEffect(() => {
+    return () => {
+      if (controlsHideTimerRef.current) {
+        window.clearTimeout(controlsHideTimerRef.current);
+      }
+    };
+  }, []);
+
+  const revealControls = useCallback(() => {
+    setShowControlsOnClick(true);
+    if (controlsHideTimerRef.current) {
+      window.clearTimeout(controlsHideTimerRef.current);
+    }
+    controlsHideTimerRef.current = window.setTimeout(() => {
+      setShowControlsOnClick(false);
+    }, 2200);
+  }, []);
 
   return (
     <div
-      className={`studio-rise relative w-full ${fill ? 'h-full' : 'aspect-video'} overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70 ${className ?? ''}`}
+      onClick={() => {
+        if (!showPin || !onPin) return;
+        revealControls();
+      }}
+      className={`studio-rise group relative w-full ${fill ? 'h-full' : 'aspect-video'} overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70 ${className ?? ''}`}
     >
       <div className="absolute inset-0 pointer-events-none bg-gradient-to-b from-slate-900/30 via-transparent to-slate-950/60" />
       {hasVideo ? (
@@ -174,7 +224,7 @@ function ParticipantTile({
         </div>
       )}
 
-      {tile.audio && !tile.muted && (
+      {tile.audio && !shouldMutePlayback && (
         <audio ref={audioRef} autoPlay playsInline className="hidden" />
       )}
 
@@ -184,26 +234,161 @@ function ParticipantTile({
         </div>
       )}
       {showPin && onPin && (
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onPin();
-          }}
-          className={`absolute right-3 top-3 rounded-full px-3 py-1 text-[11px] ${
-            isPinned
-              ? 'bg-cyan-400/30 text-cyan-100 border border-cyan-300/40'
-              : 'bg-black/60 text-slate-200 border border-slate-500/40 hover:border-cyan-300/50'
+        <div
+          className={`absolute left-1/2 top-1/2 z-20 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 transition-opacity duration-150 ${
+            showControlsOnClick
+              ? 'pointer-events-auto opacity-100'
+              : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100'
           }`}
-          title={isPinned ? 'Unpin from stage' : 'Pin to stage'}
         >
-          {isPinned ? 'Unpin' : 'Pin'}
-        </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              if (isPublishMicControl) {
+                onTogglePublishMic();
+                return;
+              }
+              setIsTileMuted((prev) => !prev);
+            }}
+            className={`flex h-9 w-9 items-center justify-center rounded-full border ${
+              micIsOff
+                ? 'border-rose-300/50 bg-rose-500/20 text-rose-100'
+                : 'border-slate-600/60 bg-black/45 text-slate-100'
+            }`}
+            title={micIsOff ? 'Unmute participant' : 'Mute participant'}
+            aria-label={micIsOff ? 'Unmute participant' : 'Mute participant'}
+          >
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="9" y="4" width="6" height="10" rx="3" />
+              <path d="M6 11a6 6 0 0 0 12 0M12 17v3M9 20h6" />
+              {micIsOff && <line x1="5" y1="19" x2="19" y2="5" />}
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onPin();
+            }}
+            className={`flex h-9 w-9 items-center justify-center rounded-full border ${
+              isPinned
+                ? 'border-cyan-300/50 bg-cyan-500/25 text-cyan-100'
+                : 'border-slate-600/60 bg-black/45 text-slate-100'
+            }`}
+            title={isPinned ? 'Unpin from stage' : 'Pin to stage'}
+            aria-label={isPinned ? 'Unpin from stage' : 'Pin to stage'}
+          >
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 3h8l-1.5 5 3.5 3v1H6v-1l3.5-3L8 3zM12 12v9" />
+            </svg>
+          </button>
+        </div>
       )}
       <div className="absolute left-3 bottom-3 rounded-full bg-black/60 px-3 py-1 text-[11px] text-slate-100">
         {tile.label}
       </div>
     </div>
+  );
+}
+
+function StudioControlIcon({ kind, off = false }: { kind: StudioControlIconKind; off?: boolean }) {
+  const icon = (() => {
+    switch (kind) {
+      case 'mark':
+        return <path d="M12 3 19 6v6c0 5-3.5 7.8-7 9-3.5-1.2-7-4-7-9V6l7-3z" />;
+      case 'mic':
+        return (
+          <>
+            <rect x="9" y="4" width="6" height="10" rx="3" />
+            <path d="M6 11a6 6 0 0 0 12 0M12 17v3M9 20h6" />
+          </>
+        );
+      case 'cam':
+        return (
+          <>
+            <rect x="3" y="7" width="13" height="10" rx="2" />
+            <path d="M16 10 21 7v10l-5-3z" />
+          </>
+        );
+      case 'speaker':
+        return (
+          <>
+            <path d="M4 13h4l5 4V7l-5 4H4z" />
+            <path d="M16 10a4 4 0 0 1 0 4M18 8a7 7 0 0 1 0 8" />
+          </>
+        );
+      case 'react':
+        return (
+          <>
+            <circle cx="12" cy="12" r="8" />
+            <circle cx="9" cy="10" r="1" />
+            <circle cx="15" cy="10" r="1" />
+            <path d="M8 14c1 2 3 3 4 3s3-1 4-3" />
+            <path d="M18 4v4M16 6h4" />
+          </>
+        );
+      case 'raise':
+        return (
+          <path d="M8 12V7.2a1.6 1.6 0 1 1 3.2 0V11M11.2 11V5.8a1.6 1.6 0 1 1 3.2 0V11M14.4 11V6.6a1.6 1.6 0 1 1 3.2 0v8.3A6.1 6.1 0 0 1 11.5 21h-.4A6.1 6.1 0 0 1 5 14.9v-2.3a1.6 1.6 0 1 1 3.2 0V12z" />
+        );
+      case 'layout':
+        return (
+          <>
+            <rect x="4" y="5" width="16" height="14" rx="2" />
+            <path d="M12 5v14M4 12h16" />
+          </>
+        );
+      case 'script':
+        return (
+          <>
+            <rect x="5" y="4" width="14" height="16" rx="2" />
+            <path d="M8 9h8M8 13h8M8 17h6" />
+          </>
+        );
+      case 'share':
+        return (
+          <>
+            <path d="M12 4v11M8 8l4-4 4 4" />
+            <rect x="5" y="14" width="14" height="6" rx="2" />
+          </>
+        );
+      case 'leave':
+        return (
+          <path d="M22 16.9v2.2a2 2 0 0 1-2.2 2A19.8 19.8 0 0 1 11.2 18a19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3-8.6A2 2 0 0 1 4.2 1h2.2a2 2 0 0 1 2 1.7c.1 1 .4 1.9.8 2.8a2 2 0 0 1-.4 2.1l-.9.9a16 16 0 0 0 6 6l.9-.9a2 2 0 0 1 2.1-.4c.9.4 1.8.7 2.8.8a2 2 0 0 1 1.7 2z" />
+        );
+      default:
+        return null;
+    }
+  })();
+
+  return (
+    <span className="relative inline-flex h-5 w-5 items-center justify-center">
+      <svg
+        viewBox="0 0 24 24"
+        className="h-5 w-5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        {icon}
+      </svg>
+      {off && (
+        <svg
+          viewBox="0 0 24 24"
+          className="pointer-events-none absolute inset-0 h-5 w-5 text-rose-400"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+        >
+          <line x1="4" y1="20" x2="20" y2="4" />
+        </svg>
+      )}
+    </span>
   );
 }
 
@@ -241,6 +426,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [selectedMicId, setSelectedMicId] = useState('');
   const [selectedSpeakerId, setSelectedSpeakerId] = useState('');
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
+  const [showStudioInvitePanel, setShowStudioInvitePanel] = useState(true);
   const [showStudioPeoplePanel, setShowStudioPeoplePanel] = useState(true);
   const [inviteRole, setInviteRole] = useState<'guest' | 'host'>('guest');
   const [inviteEmail, setInviteEmail] = useState('');
@@ -322,6 +508,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   const refreshRecordingSession = useCallback(async () => {
     if (sessionMode !== 'studio') return;
+    if (requestedStudioRole === 'guest') {
+      setCanControlRecording(false);
+      return;
+    }
 
     try {
       const res = await RecordingsAPI.getSession(recordingId);
@@ -331,10 +521,14 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     } catch (err) {
       setSessionError((err as Error)?.message ?? 'Failed to refresh recording session.');
     }
-  }, [recordingId, sessionMode]);
+  }, [recordingId, requestedStudioRole, sessionMode]);
 
   useEffect(() => {
     if (sessionMode !== 'studio') return;
+    if (requestedStudioRole === 'guest') {
+      setCanControlRecording(false);
+      return;
+    }
     void refreshRecordingSession();
 
     const timer = window.setInterval(() => {
@@ -342,7 +536,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     }, 5000);
 
     return () => window.clearInterval(timer);
-  }, [refreshRecordingSession, sessionMode]);
+  }, [refreshRecordingSession, requestedStudioRole, sessionMode]);
 
   useEffect(() => {
     if (sessionMode === 'studio') {
@@ -373,6 +567,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     });
     setRecorderError(null);
     registeringKindsRef.current.clear();
+    setShowStudioInvitePanel(true);
   }, [recordingId]);
 
   const stopPreJoinPreview = useCallback(() => {
@@ -527,6 +722,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       newRoom.on(RoomEvent.TrackUnpublished, refresh);
       newRoom.on(RoomEvent.TrackSubscribed, refresh);
       newRoom.on(RoomEvent.TrackUnsubscribed, refresh);
+      newRoom.on(RoomEvent.TrackMuted, refresh);
+      newRoom.on(RoomEvent.TrackUnmuted, refresh);
 
       await newRoom.connect(wsUrl, token);
       await newRoom.localParticipant.enableCameraAndMicrophone();
@@ -597,7 +794,9 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const livekitTiles = useMemo<Tile[]>(() => {
     return remoteParticipants.flatMap((p) => {
       const label = p.name || p.identity || 'Guest';
-      const micTrack = getTrack(p, Track.Source.Microphone);
+      const micPublication = p.getTrackPublication(Track.Source.Microphone);
+      const micTrack = micPublication?.track ?? null;
+      const micOff = !micTrack || !!micPublication?.isMuted;
       const screenAudio = getTrack(p, Track.Source.ScreenShareAudio);
       const cameraTrack = getTrack(p, Track.Source.Camera);
       const screenTrack = getTrack(p, Track.Source.ScreenShare);
@@ -610,6 +809,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           badge: 'Screen',
           video: livekitSource(screenTrack),
           audio: screenAudio || micTrack ? livekitSource(screenAudio || micTrack) : undefined,
+          micOff,
         });
       }
       if (cameraTrack) {
@@ -619,6 +819,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           badge: 'Camera',
           video: livekitSource(cameraTrack),
           audio: micTrack ? livekitSource(micTrack) : undefined,
+          micOff,
         });
       }
       if (!cameraTrack && !screenTrack) {
@@ -628,6 +829,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           badge: 'Audio only',
           video: livekitSource(null),
           audio: micTrack ? livekitSource(micTrack) : undefined,
+          micOff,
         });
       }
 
@@ -907,10 +1109,13 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   useEffect(() => {
     if (!pinnedTileKey) return;
     const isRemotePinValid = active.tiles.some((tile) => tile.key === pinnedTileKey);
+    const isStudioLocalPin =
+      sessionMode === 'studio' &&
+      (pinnedTileKey === 'studio-local-camera' || pinnedTileKey === 'studio-local-screen');
     const isMeetLocalPin =
       sessionMode === 'meet' &&
       (pinnedTileKey === 'meet-local-camera' || pinnedTileKey === 'meet-local-screen');
-    if (!isRemotePinValid && !isMeetLocalPin) {
+    if (!isRemotePinValid && !isMeetLocalPin && !isStudioLocalPin) {
       setPinnedTileKey(null);
     }
   }, [active.tiles, pinnedTileKey, sessionMode]);
@@ -1170,6 +1375,18 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     }
   }, [active.status, sessionMode, showPreJoin]);
 
+  useEffect(() => {
+    if (sessionMode === 'studio' && isRecording) {
+      setShowStudioInvitePanel(false);
+    }
+  }, [isRecording, sessionMode]);
+
+  useEffect(() => {
+    if (sessionMode === 'studio' && requestedStudioRole === 'guest') {
+      setShowStudioInvitePanel(false);
+    }
+  }, [requestedStudioRole, sessionMode]);
+
   const inviteLink =
     typeof window !== 'undefined'
       ? `${window.location.origin}/studio/${recordingId}?mode=studio&role=${inviteRole}`
@@ -1205,6 +1422,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       badge: 'Camera',
       video: active.localVideo,
       muted: true,
+      micOff: !active.isMicEnabled,
     });
 
     if (active.localScreen.kind === 'livekit' ? !!active.localScreen.track : !!active.localScreen.stream) {
@@ -1214,6 +1432,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         badge: 'Screen',
         video: active.localScreen,
         muted: true,
+        micOff: !active.isMicEnabled,
       });
     }
 
@@ -1411,7 +1630,18 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         isLocal: false,
       })),
     ];
-    const visibleTiles = studioCanvasTiles.slice(0, 2);
+    const visibleTiles = studioCanvasTiles;
+    const tileCount = visibleTiles.length;
+    const stageGridClass =
+      tileCount >= 4
+        ? 'xl:grid-cols-4 md:grid-cols-2 auto-rows-fr'
+        : tileCount === 3
+          ? 'xl:grid-cols-3 md:grid-cols-2 auto-rows-fr'
+          : tileCount === 2
+            ? 'md:grid-cols-2 auto-rows-fr'
+            : 'grid-cols-1 auto-rows-fr';
+    const shouldFillTiles = true;
+    const tileClassName = 'h-full min-h-0 rounded-2xl border-violet-400/60 bg-black';
     const queueTotal =
       chunkUploadQueue.stats.pending +
       chunkUploadQueue.stats.processing +
@@ -1433,6 +1663,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     const recordingClock = `${String(Math.floor(recordingSeconds / 60)).padStart(2, '0')}:${String(
       recordingSeconds % 60
     ).padStart(2, '0')}`;
+    const isMicOff = !active.isMicEnabled;
+    const isCamOff = !active.isCameraEnabled;
 
     return (
       <main className={`${spaceGrotesk.className} h-screen overflow-hidden bg-[#07090f] text-slate-100`}>
@@ -1479,7 +1711,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               </button>
               <button
                 type="button"
-                onClick={() => setIsInviteModalOpen(true)}
+                onClick={() => setShowStudioInvitePanel(true)}
                 className="rounded-full border border-slate-700 bg-[#1a1f29] px-4 py-2 text-sm hover:border-slate-500"
               >
                 Invite
@@ -1520,60 +1752,79 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           <div className="mt-3 flex min-h-0 flex-1 gap-4">
             <section className="flex min-h-0 flex-1 flex-col rounded-3xl bg-[#090b10] p-3">
               <div className="flex min-h-0 flex-1 gap-3">
-                <aside className="hidden w-[380px] shrink-0 rounded-3xl border border-slate-800 bg-[#1b1f26] p-6 xl:flex xl:flex-col">
-                  <div className="mb-8 flex items-center justify-between">
-                    <h2 className="text-[42px] font-semibold leading-none">Invite someone to join remotely</h2>
-                    <button type="button" className="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-300">
-                      ×
-                    </button>
-                  </div>
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-[minmax(0,1fr)_86px_104px] gap-2">
-                      <input
-                        type="text"
-                        readOnly
-                        value={inviteLink}
-                        className="min-w-0 truncate rounded-xl border border-slate-700 bg-[#141922] px-3 py-2 text-sm text-slate-300"
-                      />
-                      <select
-                        value={inviteRole}
-                        onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
-                        className="rounded-xl border border-slate-700 bg-[#141922] px-2 py-2 text-sm"
-                      >
-                        <option value="guest">Guest</option>
-                        <option value="host">Host</option>
-                      </select>
+                {showStudioInvitePanel && (
+                  <aside className="hidden w-[380px] shrink-0 rounded-3xl border border-slate-800 bg-[#1b1f26] p-6 xl:flex xl:flex-col">
+                    <div className="mb-8 flex items-center justify-between">
+                      <h2 className="text-[42px] font-semibold leading-none">Invite someone to join remotely</h2>
                       <button
                         type="button"
-                        onClick={handleCopyInviteLink}
-                        className="rounded-xl bg-[#8b5cf6] px-2 py-2 text-sm font-semibold text-white hover:bg-[#7c4cf0]"
+                        onClick={() => setShowStudioInvitePanel(false)}
+                        className="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-300"
+                        aria-label="Close invite panel"
                       >
-                        {copyState === 'copied' ? 'Copied' : 'Copy'}
+                        ×
                       </button>
                     </div>
-                  </div>
-                  <div className="my-10 text-center text-xs uppercase tracking-wider text-slate-500">New</div>
-                  <p className="text-3xl font-semibold">Record someone next to you</p>
-                  <button
-                    type="button"
-                    className="mt-6 rounded-xl border border-slate-700 bg-[#2a2f39] px-4 py-3 text-lg font-medium text-slate-100"
-                  >
-                    Add an in-person guest
-                  </button>
-                </aside>
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-[minmax(0,1fr)_86px_104px] gap-2">
+                        <input
+                          type="text"
+                          readOnly
+                          value={inviteLink}
+                          className="min-w-0 truncate rounded-xl border border-slate-700 bg-[#141922] px-3 py-2 text-sm text-slate-300"
+                        />
+                        <select
+                          value={inviteRole}
+                          onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
+                          className="rounded-xl border border-slate-700 bg-[#141922] px-2 py-2 text-sm"
+                        >
+                          <option value="guest">Guest</option>
+                          <option value="host">Host</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={handleCopyInviteLink}
+                          className="rounded-xl bg-[#8b5cf6] px-2 py-2 text-sm font-semibold text-white hover:bg-[#7c4cf0]"
+                        >
+                          {copyState === 'copied' ? 'Copied' : 'Copy'}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="my-10 text-center text-xs uppercase tracking-wider text-slate-500">New</div>
+                    <p className="text-3xl font-semibold">Record someone next to you</p>
+                    <button
+                      type="button"
+                      className="mt-6 rounded-xl border border-slate-700 bg-[#2a2f39] px-4 py-3 text-lg font-medium text-slate-100"
+                    >
+                      Add an in-person guest
+                    </button>
+                  </aside>
+                )}
 
-                <div className="flex min-h-0 flex-1 items-center justify-center rounded-3xl bg-[#05070c] p-2">
-                  <div className={`grid w-full max-w-[980px] gap-3 ${visibleTiles.length > 1 ? 'md:grid-cols-2' : 'grid-cols-1'}`}>
-                    {visibleTiles.map((tile) => (
-                      <ParticipantTile
-                        key={tile.key}
-                        tile={tile}
-                        className="aspect-[3/4] rounded-2xl border-violet-400/60 bg-black"
-                        showPin
-                        isPinned={pinnedTileKey === tile.key}
-                        onPin={() => togglePin(tile.key)}
-                      />
-                    ))}
+                <div className="flex min-h-0 flex-1 rounded-3xl bg-[#05070c] p-2">
+                  <div
+                    className={`grid h-full w-full gap-3 ${
+                      showStudioInvitePanel ? 'mx-auto max-w-[980px]' : ''
+                    } ${stageGridClass}`}
+                  >
+                    {visibleTiles.map((tile) => {
+                      const isLocalStudioTile =
+                        tile.key === 'studio-local-camera' || tile.key === 'studio-local-screen';
+                      return (
+                        <ParticipantTile
+                          key={tile.key}
+                          tile={tile}
+                          className={tileClassName}
+                          showPin
+                          isPinned={pinnedTileKey === tile.key}
+                          onPin={() => togglePin(tile.key)}
+                          micPublishEnabled={isLocalStudioTile ? active.isMicEnabled : undefined}
+                          onTogglePublishMic={isLocalStudioTile ? active.toggleMic : undefined}
+                          fill={shouldFillTiles}
+                          showBadge={false}
+                        />
+                      );
+                    })}
                     {visibleTiles.length === 0 && (
                       <div className="flex aspect-[4/3] items-center justify-center rounded-xl border border-dashed border-slate-700 bg-black/40 text-sm text-slate-500">
                         Waiting for camera feed...
@@ -1584,33 +1835,110 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               </div>
 
               <footer className="mt-4 flex justify-center">
-                <div className="flex flex-wrap items-center justify-center gap-2 rounded-2xl border border-slate-800 bg-[#121722] px-3 py-3">
-                  <button
-                    type="button"
-                    onClick={handleToggleRecordingSession}
-                    disabled={!canControlRecording || sessionBusy}
-                    className={`rounded-xl px-5 py-2.5 text-base font-semibold text-white ${
-                      isRecording ? 'bg-rose-500' : 'bg-rose-500/90'
-                    } disabled:opacity-60`}
-                  >
-                    {sessionBusy ? (isRecording ? 'Stopping...' : 'Starting...') : isRecording ? 'Stop' : 'Record'}
-                  </button>
-                  <button type="button" onClick={active.toggleMic} className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Mic</button>
-                  <button type="button" onClick={active.toggleCamera} className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Cam</button>
-                  <button type="button" className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Speaker</button>
-                  <button type="button" className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">React</button>
-                  <button type="button" className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Raise</button>
-                  <button type="button" className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Layout</button>
-                  <button type="button" className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Script</button>
-                  <button type="button" onClick={() => setIsInviteModalOpen(true)} className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Share</button>
-                  <button
-                    type="button"
-                    onClick={handleLeave}
-                    disabled={sessionBusy}
-                    className="rounded-xl bg-[#4b1f2a] px-4 py-2.5 text-sm text-rose-100 hover:bg-[#5f2735] disabled:opacity-60"
-                  >
-                    {sessionBusy ? 'Leaving...' : 'Leave'}
-                  </button>
+                <div className="flex flex-wrap items-start justify-center gap-3 rounded-2xl border border-slate-800 bg-[#121722] px-4 py-3">
+                  <div className="flex flex-col items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={handleToggleRecordingSession}
+                      disabled={!canControlRecording || sessionBusy}
+                      className={`rounded-xl px-5 py-2.5 text-base font-semibold text-white ${
+                        isRecording ? 'bg-rose-500' : 'bg-rose-500/90'
+                      } disabled:opacity-60`}
+                    >
+                      {sessionBusy ? (isRecording ? 'Stopping...' : 'Starting...') : isRecording ? 'Stop' : 'Record'}
+                    </button>
+                    <span className="text-[10px] text-slate-400">{isRecording ? 'Stop' : 'Start'}</span>
+                  </div>
+
+                  <div className="h-12 w-px bg-slate-700/70" />
+
+                  <div className="flex flex-col items-center gap-1">
+                    <button
+                      type="button"
+                      className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100"
+                    >
+                      <StudioControlIcon kind="mark" />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Mark Clip</span>
+                  </div>
+
+                  <div className="flex flex-col items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={active.toggleMic}
+                      className={`flex h-12 w-12 items-center justify-center rounded-xl ${
+                        isMicOff ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40' : 'bg-[#222834] text-slate-100'
+                      }`}
+                    >
+                      <StudioControlIcon kind="mic" off={isMicOff} />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Mic</span>
+                  </div>
+
+                  <div className="flex flex-col items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={active.toggleCamera}
+                      className={`flex h-12 w-12 items-center justify-center rounded-xl ${
+                        isCamOff ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40' : 'bg-[#222834] text-slate-100'
+                      }`}
+                    >
+                      <StudioControlIcon kind="cam" off={isCamOff} />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Cam</span>
+                  </div>
+
+                  <div className="flex flex-col items-center gap-1">
+                    <button type="button" className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100">
+                      <StudioControlIcon kind="speaker" />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Speaker</span>
+                  </div>
+                  <div className="flex flex-col items-center gap-1">
+                    <button type="button" className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100">
+                      <StudioControlIcon kind="react" />
+                    </button>
+                    <span className="text-[10px] text-slate-400">React</span>
+                  </div>
+                  <div className="flex flex-col items-center gap-1">
+                    <button type="button" className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100">
+                      <StudioControlIcon kind="raise" />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Raise</span>
+                  </div>
+                  <div className="flex flex-col items-center gap-1">
+                    <button type="button" className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100">
+                      <StudioControlIcon kind="layout" />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Layout</span>
+                  </div>
+                  <div className="flex flex-col items-center gap-1">
+                    <button type="button" className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100">
+                      <StudioControlIcon kind="script" />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Script</span>
+                  </div>
+                  <div className="flex flex-col items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setIsInviteModalOpen(true)}
+                      className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100"
+                    >
+                      <StudioControlIcon kind="share" />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Share</span>
+                  </div>
+                  <div className="flex flex-col items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={handleLeave}
+                      disabled={sessionBusy}
+                      className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#4b1f2a] text-rose-100 hover:bg-[#5f2735] disabled:opacity-60"
+                    >
+                      <StudioControlIcon kind="leave" />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Leave</span>
+                  </div>
                 </div>
               </footer>
 
