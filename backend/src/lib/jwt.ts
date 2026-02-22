@@ -19,7 +19,7 @@ function parseTTL(ttl: string, fallbackMs: number) {
     return n * (u === 's' ? 1000 : u === 'm' ? 60000 : u === 'h' ? 3600000 : 86400000);
 }
 
-const accessTtlMs = parseTTL(process.env.JWT_ACCESS_TTL ?? '15m', 15 * 60_000);
+const accessTtlMs = parseTTL(process.env.JWT_ACCESS_TTL ?? '1h', 60 * 60_000);
 const refreshTtlMs = parseTTL(process.env.JWT_REFRESH_TTL ?? '7d', 7 * 24 * 60 * 60_000);
 
 function pemToBuf(pem: string) {

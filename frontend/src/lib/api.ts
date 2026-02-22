@@ -12,9 +12,19 @@ export type TrackDto = {
   state: 'recording' | 'uploaded' | 'processed' | string;
 };
 
+async function tryRefreshSession(): Promise<boolean> {
+  const res = await fetch(`${API_BASE}/auth/refresh`, {
+    method: 'POST',
+    credentials: 'include',
+    cache: 'no-store',
+  });
+  return res.ok;
+}
+
 async function api<T>(
   path: string,
-  options: RequestInit = {}
+  options: RequestInit = {},
+  retryOnAuth = true
 ): Promise<T> {
   const hasJsonBody =
     typeof options.body === 'string' &&
@@ -30,6 +40,13 @@ async function api<T>(
     cache: 'no-store',
   });
 
+  if (res.status === 401 && retryOnAuth && path !== '/auth/refresh') {
+    const refreshed = await tryRefreshSession().catch(() => false);
+    if (refreshed) {
+      return api<T>(path, options, false);
+    }
+  }
+
   if (!res.ok) {
     let detail: unknown = undefined;
     try { detail = await res.json(); } catch { }
@@ -38,6 +55,10 @@ async function api<T>(
         ? String((detail as { message: unknown }).message)
         : `HTTP ${res.status}`;
     throw new Error(message);
+  }
+
+  if (res.status === 204) {
+    return undefined as T;
   }
 
   return res.json() as Promise<T>;
