@@ -4,6 +4,7 @@ export type CompleteTrackChunkBody = {
   storageKeyRaw?: string;
   etag?: string;
   checksumSha256?: string;
+  tusUrl?: string;
 };
 
 export type CompleteTrackChunkResponse = {

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { saveTusMapping } from '../repositories/upload.repo.js';
+import { setTrackChunkTusRef } from '../repositories/track-chunk.repo.js';
 
 /**
  * tusd HTTP hooks handler.
@@ -34,6 +35,7 @@ export default async function tusdHooksRoutes(app: FastifyInstance) {
     if (hookName === 'post-create') {
       const tusId: string | undefined = body?.Upload?.ID;
       const uploadId: string | undefined = meta['upload-id'] ?? meta['upload_id'];
+      const chunkId: string | undefined = meta['chunk-id'] ?? meta['chunk_id'];
 
       if (tusId && uploadId) {
         try {
@@ -48,6 +50,15 @@ export default async function tusdHooksRoutes(app: FastifyInstance) {
         }
       } else {
         req.log.warn({ tusId, meta }, 'post-create missing tusId or upload-id');
+      }
+
+      if (tusId && chunkId) {
+        try {
+          await setTrackChunkTusRef({ chunkId, tusId });
+          req.log.info({ chunkId, tusId }, 'Saved chunk tus mapping');
+        } catch (e) {
+          req.log.error({ err: e, chunkId, tusId }, 'setTrackChunkTusRef failed');
+        }
       }
 
       return res.code(200).send({ Action: 'continue' });

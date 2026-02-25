@@ -48,13 +48,32 @@ async function api<T>(
   }
 
   if (!res.ok) {
-    let detail: unknown = undefined;
-    try { detail = await res.json(); } catch { }
+    let detail: any = undefined;
+    try {
+      detail = await res.json();
+    } catch {
+      detail = undefined;
+    }
+    const code =
+      typeof detail === 'object' && detail !== null
+        ? String(detail.code ?? detail.error ?? 'http_error')
+        : 'http_error';
     const message =
       typeof detail === 'object' && detail !== null && 'message' in detail
-        ? String((detail as { message: unknown }).message)
+        ? String(detail.message)
         : `HTTP ${res.status}`;
-    throw new Error(message);
+    const requestId = res.headers.get('x-request-id') ?? undefined;
+    const err = new Error(message) as Error & {
+      code?: string;
+      details?: unknown;
+      requestId?: string;
+      status?: number;
+    };
+    err.code = code;
+    err.details = typeof detail === 'object' && detail !== null ? detail.details : undefined;
+    err.requestId = requestId;
+    err.status = res.status;
+    throw err;
   }
 
   if (res.status === 204) {
@@ -208,6 +227,16 @@ export type InitiateTrackChunkResponse = {
     updatedAt: string;
   };
   existed: boolean;
+  uploadPlan?: {
+    protocol: 'tus';
+    tusEndpoint: string;
+    metadata: {
+      chunkId: string;
+      recordingId: string;
+      trackId: string;
+      seq: string;
+    };
+  };
 };
 
 export type CompleteTrackChunkRequest = {
@@ -216,6 +245,7 @@ export type CompleteTrackChunkRequest = {
   storageKeyRaw?: string;
   etag?: string;
   checksumSha256?: string;
+  tusUrl?: string;
 };
 
 export type InitiateMultipartTrackChunkRequest = {

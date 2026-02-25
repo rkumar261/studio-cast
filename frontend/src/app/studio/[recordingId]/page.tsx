@@ -3,8 +3,14 @@
 import React, { use, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Space_Grotesk } from 'next/font/google';
-import { useSearchParams } from 'next/navigation';
-import { LiveKitAPI, RecordingsAPI, type RecordingSessionResponse } from '@/lib/api';
+import { useRouter, useSearchParams } from 'next/navigation';
+import {
+  LiveKitAPI,
+  ParticipantsAPI,
+  RecordingsAPI,
+  type RecordingProgressResponse,
+  type RecordingSessionResponse,
+} from '@/lib/api';
 import {
   useRollingChunkRecorder,
   type RollingRecorderChunk,
@@ -20,6 +26,7 @@ import {
   type RemoteParticipant,
 } from 'livekit-client';
 import { useMeshRoom } from '@/lib/studio/useMeshRoom';
+import UploadStatusModal from '@/components/studio/UploadStatusModal';
 
 type RouteParams = {
   recordingId: string;
@@ -394,6 +401,7 @@ function StudioControlIcon({ kind, off = false }: { kind: StudioControlIconKind;
 
 export default function StudioRecordingPage({ params }: StudioPageProps) {
   const { recordingId } = use(params);
+  const router = useRouter();
   const searchParams = useSearchParams();
   const { profile } = useSession();
   const sessionMode: SessionMode = searchParams.get('mode') === 'meet' ? 'meet' : 'studio';
@@ -402,6 +410,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     : searchParams.get('role') === 'guest'
       ? 'guest'
       : null;
+  const requestedParticipantId = searchParams.get('participantId')?.trim() || null;
 
   const meshMaxPeers = Number(process.env.NEXT_PUBLIC_MESH_MAX_PEERS ?? '4');
 
@@ -433,16 +442,16 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [inviteNotice, setInviteNotice] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
   const [recordingSession, setRecordingSession] = useState<RecordingSessionResponse['session'] | null>(null);
+  const [recordingProgress, setRecordingProgress] = useState<RecordingProgressResponse | null>(null);
   const [canControlRecording, setCanControlRecording] = useState(false);
   const [sessionBusy, setSessionBusy] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
+  const [showUploadStatusModal, setShowUploadStatusModal] = useState(false);
+  const [localHostParticipantId, setLocalHostParticipantId] = useState<string | null>(null);
+  const [createdInviteParticipantIdByRole, setCreatedInviteParticipantIdByRole] = useState<
+    Partial<Record<'guest' | 'host', string>>
+  >({});
   const [trackIdByKind, setTrackIdByKind] = useState<Partial<Record<RecorderKind, string>>>({});
-  const [chunkStats, setChunkStats] = useState({
-    audio: 0,
-    video: 0,
-    screen: 0,
-    totalBytes: 0,
-  });
   const [recorderError, setRecorderError] = useState<string | null>(null);
   const registeringKindsRef = useRef<Set<RecorderKind>>(new Set());
   const [showMeetSelfPreview, setShowMeetSelfPreview] = useState(true);
@@ -457,6 +466,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     isMain: boolean;
   } | null>(null);
   const meetStageRef = useRef<HTMLDivElement | null>(null);
+  const hostParticipantEnsureRef = useRef<Promise<string | null> | null>(null);
 
   // ===== LiveKit state =====
   const [room, setRoom] = useState<Room | null>(null);
@@ -471,9 +481,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const isRecording = !!recordingSession?.startedAt && !recordingSession?.stoppedAt;
   const chunkUploadProtocol: ChunkUploadProtocol =
-    process.env.NEXT_PUBLIC_CHUNK_UPLOAD_PROTOCOL === 'multipart' ? 'multipart' : 'tus';
+    process.env.NEXT_PUBLIC_STUDIO_CHUNK_MULTIPART_ENABLED === '1' ? 'multipart' : 'tus';
   const chunkUploadQueue = useChunkUploadQueue({
     enabled: sessionMode === 'studio',
+    recordingId,
     concurrency: 2,
     maxRetries: 8,
   });
@@ -508,35 +519,71 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   const refreshRecordingSession = useCallback(async () => {
     if (sessionMode !== 'studio') return;
-    if (requestedStudioRole === 'guest') {
-      setCanControlRecording(false);
-      return;
-    }
 
     try {
       const res = await RecordingsAPI.getSession(recordingId);
       setRecordingSession(res.session);
-      setCanControlRecording(res.canControl);
+      setCanControlRecording(requestedStudioRole === 'guest' ? false : res.canControl);
       setSessionError(null);
     } catch (err) {
       setSessionError((err as Error)?.message ?? 'Failed to refresh recording session.');
     }
   }, [recordingId, requestedStudioRole, sessionMode]);
 
+  const refreshRecordingProgress = useCallback(async () => {
+    if (sessionMode !== 'studio') return;
+    try {
+      const progress = await RecordingsAPI.getProgress(recordingId);
+      setRecordingProgress(progress);
+    } catch {
+      // keep UI resilient; session/queue UI still functions without progress payload
+    }
+  }, [recordingId, sessionMode]);
+
+  const hasLocalQueueWork =
+    sessionMode === 'studio' &&
+    (chunkUploadQueue.stats.pending > 0 || chunkUploadQueue.stats.processing > 0);
+  const hasBackendPendingFromProgress = (recordingProgress?.participants ?? []).some(
+    (participant) => participant.pendingCount > 0
+  );
+  const shouldPollStudioSession =
+    sessionMode === 'studio' &&
+    (!recordingSession?.stoppedAt || isRecording || hasLocalQueueWork || showUploadStatusModal);
+  const shouldPollStudioProgress =
+    sessionMode === 'studio' &&
+    (!recordingSession?.stoppedAt ||
+      isRecording ||
+      hasLocalQueueWork ||
+      hasBackendPendingFromProgress ||
+      showUploadStatusModal);
+
   useEffect(() => {
     if (sessionMode !== 'studio') return;
-    if (requestedStudioRole === 'guest') {
-      setCanControlRecording(false);
-      return;
-    }
     void refreshRecordingSession();
+    if (!shouldPollStudioSession) return;
 
     const timer = window.setInterval(() => {
       void refreshRecordingSession();
     }, 5000);
 
     return () => window.clearInterval(timer);
-  }, [refreshRecordingSession, requestedStudioRole, sessionMode]);
+  }, [
+    refreshRecordingSession,
+    requestedStudioRole,
+    sessionMode,
+    shouldPollStudioSession,
+  ]);
+
+  useEffect(() => {
+    if (sessionMode !== 'studio') return;
+    void refreshRecordingProgress();
+    if (!shouldPollStudioProgress) return;
+
+    const timer = window.setInterval(() => {
+      void refreshRecordingProgress();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [refreshRecordingProgress, sessionMode, shouldPollStudioProgress]);
 
   useEffect(() => {
     if (sessionMode === 'studio') {
@@ -559,15 +606,11 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   useEffect(() => {
     setTrackIdByKind({});
-    setChunkStats({
-      audio: 0,
-      video: 0,
-      screen: 0,
-      totalBytes: 0,
-    });
     setRecorderError(null);
     registeringKindsRef.current.clear();
     setShowStudioInvitePanel(true);
+    setCreatedInviteParticipantIdByRole({});
+    setLocalHostParticipantId(null);
   }, [recordingId]);
 
   const stopPreJoinPreview = useCallback(() => {
@@ -847,7 +890,11 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   );
 
   // ===== Mesh state =====
-  const mesh = useMeshRoom({ roomId: recordingId, maxPeers: meshMaxPeers });
+  const mesh = useMeshRoom({
+    roomId: recordingId,
+    maxPeers: meshMaxPeers,
+    role: requestedStudioRole ?? 'host',
+  });
 
   const meshTiles = useMemo<Tile[]>(() => {
     return mesh.remotePeers.flatMap((peer) => {
@@ -954,10 +1001,81 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     ]
   );
 
-  const recorderParticipantId = recordingSession?.hostParticipantId;
+  const ensureLocalHostParticipantId = useCallback(async () => {
+    if (sessionMode !== 'studio' || requestedStudioRole === 'guest') return null;
+    if (recordingSession?.hostParticipantId) {
+      setLocalHostParticipantId(recordingSession.hostParticipantId);
+      return recordingSession.hostParticipantId;
+    }
+    if (localHostParticipantId) return localHostParticipantId;
+    if (hostParticipantEnsureRef.current) {
+      return hostParticipantEnsureRef.current;
+    }
+
+    const resolvePromise = (async () => {
+      const listed = await ParticipantsAPI.list(recordingId);
+      const existingHost = listed.participants.find((participant) => participant.role === 'host');
+      if (existingHost) {
+        setLocalHostParticipantId(existingHost.id);
+        return existingHost.id;
+      }
+
+      const created = await ParticipantsAPI.create(recordingId, {
+        role: 'host',
+        displayName: displayName?.trim() || profile?.name?.trim() || 'Host',
+      });
+      setLocalHostParticipantId(created.participant.id);
+      setCreatedInviteParticipantIdByRole((prev) => ({
+        ...prev,
+        host: prev.host ?? created.participant.id,
+      }));
+      return created.participant.id;
+    })();
+
+    hostParticipantEnsureRef.current = resolvePromise;
+    try {
+      return await resolvePromise;
+    } finally {
+      if (hostParticipantEnsureRef.current === resolvePromise) {
+        hostParticipantEnsureRef.current = null;
+      }
+    }
+  }, [
+    displayName,
+    localHostParticipantId,
+    profile?.name,
+    recordingId,
+    recordingSession?.hostParticipantId,
+    requestedStudioRole,
+    sessionMode,
+  ]);
 
   useEffect(() => {
-    if (sessionMode !== 'studio' || !isRecording || !canControlRecording) return;
+    if (sessionMode !== 'studio' || requestedStudioRole === 'guest') return;
+    if (recordingSession?.hostParticipantId) {
+      setLocalHostParticipantId(recordingSession.hostParticipantId);
+      return;
+    }
+    void ensureLocalHostParticipantId().catch((err) => {
+      setSessionError((err as Error)?.message ?? 'Failed to resolve host participant.');
+    });
+  }, [
+    ensureLocalHostParticipantId,
+    recordingSession?.hostParticipantId,
+    requestedStudioRole,
+    sessionMode,
+  ]);
+
+  const recorderParticipantId =
+    requestedStudioRole === 'guest'
+      ? requestedParticipantId
+      : recordingSession?.hostParticipantId ??
+        localHostParticipantId ??
+        createdInviteParticipantIdByRole.host ??
+        null;
+
+  useEffect(() => {
+    if (sessionMode !== 'studio' || !isRecording) return;
     if (!recorderParticipantId) return;
 
     const kinds = Object.keys(recordingStreams) as RecorderKind[];
@@ -988,7 +1106,6 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         });
     });
   }, [
-    canControlRecording,
     isRecording,
     recorderParticipantId,
     recordingId,
@@ -1017,12 +1134,6 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   const onChunkEmitted = useCallback(
     (chunk: RollingRecorderChunk) => {
-      setChunkStats((prev) => ({
-        ...prev,
-        [chunk.kind]: prev[chunk.kind] + 1,
-        totalBytes: prev.totalBytes + chunk.bytes,
-      }));
-
       void chunkUploadQueue
         .enqueue({
           recordingId,
@@ -1041,11 +1152,11 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     [chunkUploadProtocol, chunkUploadQueue, recordingId]
   );
 
-  const chunkRecorder = useRollingChunkRecorder({
+  useRollingChunkRecorder({
     enabled:
       sessionMode === 'studio' &&
       isRecording &&
-      canControlRecording &&
+      !!recorderParticipantId &&
       rollingRecorderSources.length > 0,
     timesliceMs: 4000,
     sources: rollingRecorderSources,
@@ -1285,12 +1396,22 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     setSessionBusy(true);
     setSessionError(null);
     try {
+      const wasRecording = isRecording;
+      if (!wasRecording) {
+        const hostId = await ensureLocalHostParticipantId();
+        if (!hostId) {
+          throw new Error('Host participant is required before recording can start.');
+        }
+      }
       const response = isRecording
         ? await RecordingsAPI.stopSession(recordingId)
         : await RecordingsAPI.startSession(recordingId);
 
       setRecordingSession(response.session);
       setCanControlRecording(response.canControl);
+      if (wasRecording) {
+        setShowUploadStatusModal(true);
+      }
     } catch (err) {
       setSessionError((err as Error)?.message ?? 'Failed to update recording session.');
     } finally {
@@ -1381,27 +1502,147 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     }
   }, [isRecording, sessionMode]);
 
+  const progressParticipants = useMemo(
+    () => {
+      const participants = recordingProgress?.participants ?? [];
+      const sessionStartedAtMs = recordingSession?.startedAt
+        ? new Date(recordingSession.startedAt).getTime()
+        : null;
+
+      return participants.filter((participant) => {
+        if (participant.participantId === recorderParticipantId) return true;
+        if (requestedParticipantId && participant.participantId === requestedParticipantId) return true;
+        if (participant.pendingCount > 0) return true;
+        if (participant.trackCount <= 0 && participant.uploadedCount <= 0) return false;
+        if (!sessionStartedAtMs) return true;
+
+        return participant.tracks.some((track) => {
+          if (!track.updatedAt) return true;
+          const updatedMs = new Date(track.updatedAt).getTime();
+          return Number.isFinite(updatedMs) && updatedMs >= sessionStartedAtMs;
+        });
+      });
+    },
+    [
+      recorderParticipantId,
+      recordingProgress?.participants,
+      recordingSession?.startedAt,
+      requestedParticipantId,
+    ]
+  );
+
+  useEffect(() => {
+    if (sessionMode !== 'studio') return;
+    if (!recordingSession?.stoppedAt) return;
+    const hasLocalPendingUploads =
+      chunkUploadQueue.stats.pending > 0 || chunkUploadQueue.stats.processing > 0;
+    const hasBackendPendingUploads = progressParticipants.some((participant) => participant.pendingCount > 0);
+    if (!hasLocalPendingUploads && !hasBackendPendingUploads) return;
+    setShowUploadStatusModal(true);
+  }, [
+    chunkUploadQueue.stats.pending,
+    chunkUploadQueue.stats.processing,
+    progressParticipants,
+    recordingSession?.stoppedAt,
+    sessionMode,
+  ]);
+
   useEffect(() => {
     if (sessionMode === 'studio' && requestedStudioRole === 'guest') {
       setShowStudioInvitePanel(false);
+      if (!requestedParticipantId) {
+        setSessionError('Guest invite link is missing participant context. Ask host for a fresh invite link.');
+      }
     }
-  }, [requestedStudioRole, sessionMode]);
+  }, [requestedParticipantId, requestedStudioRole, sessionMode]);
 
   const inviteLink =
     typeof window !== 'undefined'
-      ? `${window.location.origin}/studio/${recordingId}?mode=studio&role=${inviteRole}`
+      ? `${window.location.origin}/studio/${recordingId}?mode=studio&role=${inviteRole}${
+          createdInviteParticipantIdByRole[inviteRole]
+            ? `&participantId=${encodeURIComponent(createdInviteParticipantIdByRole[inviteRole] as string)}`
+            : ''
+        }`
       : '';
 
-  const localStudioRole: 'host' | 'guest' = canControlRecording ? 'host' : requestedStudioRole ?? 'guest';
+  const localStudioRole: 'host' | 'guest' = canControlRecording ? 'host' : 'guest';
   const localStudioRoleLabel = localStudioRole === 'host' ? 'Host' : 'Guest';
+  const localParticipantProgress = progressParticipants.find((participant) =>
+    recorderParticipantId
+      ? participant.participantId === recorderParticipantId
+      : requestedParticipantId
+        ? participant.participantId === requestedParticipantId
+        : participant.role === 'host'
+  );
+  const localUploadComplete = localParticipantProgress
+    ? localParticipantProgress.pendingCount === 0
+    : chunkUploadQueue.stats.pending + chunkUploadQueue.stats.processing === 0;
+
+  useEffect(() => {
+    if (sessionMode !== 'studio') return;
+    if (!showUploadStatusModal) return;
+    if (!recordingSession?.stoppedAt) return;
+    if (!localUploadComplete) return;
+
+    if (localStudioRole === 'guest') {
+      router.replace(`/studio/${recordingId}/thanks`);
+      return;
+    }
+  }, [
+    localStudioRole,
+    localUploadComplete,
+    recordingId,
+    recordingSession?.stoppedAt,
+    router,
+    sessionMode,
+    showUploadStatusModal,
+  ]);
+
+  useEffect(() => {
+    if (sessionMode !== 'studio') return;
+    const hasWork = chunkUploadQueue.stats.pending + chunkUploadQueue.stats.processing > 0;
+    if (!hasWork) return;
+    const handler = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [chunkUploadQueue.stats.pending, chunkUploadQueue.stats.processing, sessionMode]);
+
+  async function ensureInviteParticipantId(role: 'guest' | 'host') {
+    const existing = createdInviteParticipantIdByRole[role];
+    if (existing) return existing;
+
+    if (role === 'host') {
+      const hostId = await ensureLocalHostParticipantId();
+      if (!hostId) {
+        throw new Error('Host participant is not available.');
+      }
+      setCreatedInviteParticipantIdByRole((prev) => ({ ...prev, host: hostId }));
+      return hostId;
+    }
+
+    const result = await ParticipantsAPI.create(recordingId, {
+      role,
+      displayName: `${role === 'host' ? 'Host' : 'Guest'} ${Date.now()}`,
+    });
+    const participantId = result.participant.id;
+    setCreatedInviteParticipantIdByRole((prev) => ({ ...prev, [role]: participantId }));
+    return participantId;
+  }
 
   async function handleCopyInviteLink() {
-    if (!inviteLink) return;
+    if (typeof window === 'undefined') return;
     try {
-      await navigator.clipboard.writeText(inviteLink);
+      const participantId = await ensureInviteParticipantId(inviteRole);
+      const link = `${window.location.origin}/studio/${recordingId}?mode=studio&role=${inviteRole}&participantId=${encodeURIComponent(participantId)}`;
+      await navigator.clipboard.writeText(link);
       setCopyState('copied');
+      setInviteNotice(null);
     } catch {
       setCopyState('error');
+      setInviteNotice('Could not create/copy invite link.');
     }
   }
 
@@ -1438,7 +1679,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
     tiles.push(...active.tiles);
     return tiles;
-  }, [active.localScreen, active.localVideo, active.tiles, displayName]);
+  }, [active.isMicEnabled, active.localScreen, active.localVideo, active.tiles, displayName]);
 
   if (showPreJoin && sessionMode === 'studio') {
     return (
@@ -1621,15 +1862,52 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   }
 
   if (!showPreJoin && sessionMode === 'studio') {
-    const people = [
-      { id: 'local', label: displayName || 'You', role: localStudioRoleLabel, isLocal: true },
-      ...active.peers.map((peer) => ({
-        id: peer.id,
-        label: peer.label,
-        role: 'Guest',
-        isLocal: false,
-      })),
-    ];
+    const progressPeople =
+      progressParticipants.map((participant) => {
+        const participantChunkTotal = participant.tracks.reduce(
+          (sum, track) => sum + track.chunkTotal,
+          0
+        );
+        const participantChunkUploaded = participant.tracks.reduce(
+          (sum, track) => sum + track.chunkUploaded,
+          0
+        );
+        const pct =
+          participantChunkTotal > 0
+            ? Math.round((participantChunkUploaded / participantChunkTotal) * 100)
+            : participant.trackCount === 0
+              ? 0
+              : Math.round((participant.uploadedCount / participant.trackCount) * 100);
+        return {
+          id: participant.participantId,
+          label: participant.displayName || participant.participantId.slice(0, 8),
+          role: participant.role === 'host' ? 'Host' : 'Guest',
+          percent: pct,
+          note:
+            participant.pendingCount > 0
+              ? `${Math.max(0, 100 - pct)}% remaining`
+              : 'Upload complete',
+        };
+      }) ?? [];
+    const people =
+      progressPeople.length > 0
+        ? progressPeople
+        : [
+            {
+              id: 'local',
+              label: displayName || 'You',
+              role: localStudioRoleLabel,
+              percent: 0,
+              note: isRecording ? 'Recording...' : 'Waiting for upload...',
+            },
+            ...active.peers.map((peer) => ({
+              id: peer.id,
+              label: peer.label,
+              role: 'Guest',
+              percent: 30,
+              note: 'Connected',
+            })),
+          ];
     const visibleTiles = studioCanvasTiles;
     const tileCount = visibleTiles.length;
     const stageGridClass =
@@ -1642,21 +1920,66 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
             : 'grid-cols-1 auto-rows-fr';
     const shouldFillTiles = true;
     const tileClassName = 'h-full min-h-0 rounded-2xl border-violet-400/60 bg-black';
-    const queueTotal =
-      chunkUploadQueue.stats.pending +
-      chunkUploadQueue.stats.processing +
-      chunkUploadQueue.stats.completed +
-      chunkUploadQueue.stats.failed;
-    const uploadedPercent =
-      queueTotal === 0
+    const queueTotalBytes = chunkUploadQueue.stats.bytesTotal;
+    const queueUploadedPercent =
+      queueTotalBytes === 0
         ? 0
         : Math.min(
             100,
             Math.round(
-              ((chunkUploadQueue.stats.completed + chunkUploadQueue.stats.processing) * 100) /
-                queueTotal
+              ((chunkUploadQueue.stats.bytesUploaded + chunkUploadQueue.stats.bytesProcessing) * 100) /
+                queueTotalBytes
             )
           );
+    const fallbackProgressChunkTotal = progressParticipants.reduce(
+      (sum, participant) =>
+        sum + participant.tracks.reduce((trackSum, track) => trackSum + track.chunkTotal, 0),
+      0
+    );
+    const fallbackProgressChunkUploaded = progressParticipants.reduce(
+      (sum, participant) =>
+        sum + participant.tracks.reduce((trackSum, track) => trackSum + track.chunkUploaded, 0),
+      0
+    );
+    const progressChunkTotal =
+      recordingProgress?.summary.chunksTotal && recordingProgress.summary.chunksTotal > 0
+        ? recordingProgress.summary.chunksTotal
+        : fallbackProgressChunkTotal;
+    const progressChunkUploaded =
+      recordingProgress?.summary.chunksUploaded && recordingProgress.summary.chunksUploaded > 0
+        ? recordingProgress.summary.chunksUploaded
+        : fallbackProgressChunkUploaded;
+    const progressUploadedPercent =
+      progressChunkTotal > 0
+        ? Math.min(100, Math.round((progressChunkUploaded * 100) / progressChunkTotal))
+        : null;
+    const uploadedPercent = Math.max(progressUploadedPercent ?? 0, queueUploadedPercent);
+    const peopleForPanel =
+      progressPeople.length > 0
+        ? progressPeople
+        : people.map((person, index) =>
+            index === 0
+              ? {
+                  ...person,
+                  percent: uploadedPercent,
+                  note: `${uploadedPercent}% uploaded`,
+                }
+              : person
+          );
+    const hasBackendPendingUploads = progressParticipants.some(
+      (participant) => participant.pendingCount > 0
+    );
+    const hasPendingUploads =
+      chunkUploadQueue.stats.pending > 0 ||
+      chunkUploadQueue.stats.processing > 0 ||
+      hasBackendPendingUploads;
+    const hasAnyUploadedEvidence =
+      progressParticipants.length > 0 ||
+      chunkUploadQueue.stats.completed > 0 ||
+      chunkUploadQueue.stats.bytesUploaded > 0;
+    const canOpenProject = !!recordingSession?.stoppedAt && hasAnyUploadedEvidence && !hasPendingUploads;
+    const showUploadChip =
+      isRecording || hasPendingUploads || (!!recordingSession?.stoppedAt && !localUploadComplete);
     const recordingSeconds = recordingSession?.startedAt
       ? Math.max(0, Math.floor((Date.now() - new Date(recordingSession.startedAt).getTime()) / 1000))
       : 0;
@@ -1686,7 +2009,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   REC {recordingClock}
                 </span>
               )}
-              {!isRecording && queueTotal > 0 && (
+              {showUploadChip && (
                 <span className="rounded-full bg-violet-500/25 px-3 py-1 text-sm font-semibold text-violet-100">
                   ↑ {uploadedPercent}% Uploading...
                 </span>
@@ -1779,7 +2102,6 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                           className="rounded-xl border border-slate-700 bg-[#141922] px-2 py-2 text-sm"
                         >
                           <option value="guest">Guest</option>
-                          <option value="host">Host</option>
                         </select>
                         <button
                           type="button"
@@ -1836,21 +2158,25 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
               <footer className="mt-4 flex justify-center">
                 <div className="flex flex-wrap items-start justify-center gap-3 rounded-2xl border border-slate-800 bg-[#121722] px-4 py-3">
-                  <div className="flex flex-col items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={handleToggleRecordingSession}
-                      disabled={!canControlRecording || sessionBusy}
-                      className={`rounded-xl px-5 py-2.5 text-base font-semibold text-white ${
-                        isRecording ? 'bg-rose-500' : 'bg-rose-500/90'
-                      } disabled:opacity-60`}
-                    >
-                      {sessionBusy ? (isRecording ? 'Stopping...' : 'Starting...') : isRecording ? 'Stop' : 'Record'}
-                    </button>
-                    <span className="text-[10px] text-slate-400">{isRecording ? 'Stop' : 'Start'}</span>
-                  </div>
+                  {localStudioRole === 'host' && (
+                    <>
+                      <div className="flex flex-col items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={handleToggleRecordingSession}
+                          disabled={!canControlRecording || sessionBusy}
+                          className={`rounded-xl px-5 py-2.5 text-base font-semibold text-white ${
+                            isRecording ? 'bg-rose-500' : 'bg-rose-500/90'
+                          } disabled:opacity-60`}
+                        >
+                          {sessionBusy ? (isRecording ? 'Stopping...' : 'Starting...') : isRecording ? 'Stop' : 'Record'}
+                        </button>
+                        <span className="text-[10px] text-slate-400">{isRecording ? 'Stop' : 'Start'}</span>
+                      </div>
 
-                  <div className="h-12 w-px bg-slate-700/70" />
+                      <div className="h-12 w-px bg-slate-700/70" />
+                    </>
+                  )}
 
                   <div className="flex flex-col items-center gap-1">
                     <button
@@ -1921,8 +2247,12 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   <div className="flex flex-col items-center gap-1">
                     <button
                       type="button"
-                      onClick={() => setIsInviteModalOpen(true)}
-                      className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100"
+                      onClick={active.toggleScreen}
+                      className={`flex h-12 w-12 items-center justify-center rounded-xl ${
+                        active.isScreenSharing
+                          ? 'border border-cyan-400/60 bg-cyan-500/20 text-cyan-100'
+                          : 'bg-[#222834] text-slate-100'
+                      }`}
                     >
                       <StudioControlIcon kind="share" />
                     </button>
@@ -1942,20 +2272,17 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 </div>
               </footer>
 
-              <div className="mt-2 flex items-center justify-center gap-2">
-                <p className="text-center text-[11px] text-slate-400">
-                  Chunk recorder: {chunkRecorder.isRunning ? 'running' : 'idle'} · active {chunkRecorder.activeKinds.length} · audio {chunkStats.audio} · video {chunkStats.video} · screen {chunkStats.screen} · queued {chunkUploadQueue.stats.pending} · uploading {chunkUploadQueue.stats.processing} · failed {chunkUploadQueue.stats.failed} · done {chunkUploadQueue.stats.completed} · {chunkUploadQueue.stats.online ? 'online' : 'offline'} · protocol {chunkUploadProtocol}
-                </p>
-                {chunkUploadQueue.stats.failed > 0 && (
+              {chunkUploadQueue.stats.failed > 0 && (
+                <div className="mt-2 flex items-center justify-center">
                   <button
                     type="button"
                     onClick={() => void chunkUploadQueue.retryFailed()}
                     className="rounded border border-amber-600/70 px-2 py-1 text-[10px] text-amber-300 hover:bg-amber-800/20"
                   >
-                    Retry failed
+                    Retry failed uploads
                   </button>
-                )}
-              </div>
+                </div>
+              )}
             </section>
 
             <div className="flex">
@@ -1980,7 +2307,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   </div>
 
                   <div className="mt-4 space-y-3">
-                    {people.map((person, index) => (
+                    {peopleForPanel.map((person) => (
                       <div key={person.id} className="rounded-xl border border-slate-800 bg-[#1b202a] p-3">
                         <div className="flex items-start gap-3">
                           <div className="h-14 w-14 rounded-md border border-slate-700 bg-slate-900" />
@@ -1992,15 +2319,13 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                               )}
                             </div>
                             <p className="text-sm text-slate-400">{person.role}</p>
-                            <p className="text-xs text-slate-500">
-                              {person.isLocal ? `${uploadedPercent}% uploaded` : index === 0 ? 'Host control' : 'Connected'}
-                            </p>
+                            <p className="text-xs text-slate-500">{person.note}</p>
                           </div>
                         </div>
                         <div className="mt-3 h-1.5 w-full rounded-full bg-slate-800">
                           <div
                             className="h-full rounded-full bg-emerald-400/80"
-                            style={{ width: `${person.isLocal ? Math.max(uploadedPercent, 5) : 30}%` }}
+                            style={{ width: `${Math.max(person.percent, 5)}%` }}
                           />
                         </div>
                       </div>
@@ -2035,6 +2360,19 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
             </div>
           </div>
         </div>
+
+        <UploadStatusModal
+          open={showUploadStatusModal}
+          participants={progressParticipants}
+          canOpenProject={canOpenProject}
+          onClose={() => setShowUploadStatusModal(false)}
+          onGoToProject={() => {
+            setShowUploadStatusModal(false);
+            if (localStudioRole === 'host') {
+              router.push(`/recordings/${recordingId}`);
+            }
+          }}
+        />
 
         {isInviteModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
@@ -2072,7 +2410,6 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     className="rounded-xl border border-slate-700 bg-[#242936] px-3 py-3 text-sm text-slate-100"
                   >
                     <option value="guest">Guest</option>
-                    <option value="host">Host</option>
                   </select>
                   <button
                     type="button"
@@ -2102,7 +2439,6 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     className="rounded-xl border border-slate-700 bg-[#242936] px-3 py-3 text-sm text-slate-100"
                   >
                     <option value="guest">Guest</option>
-                    <option value="host">Host</option>
                   </select>
                   <button
                     type="button"

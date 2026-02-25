@@ -102,3 +102,12 @@ export async function markTrackChunkUploaded(args: {
     },
   });
 }
+
+export async function setTrackChunkTusRef(args: { chunkId: string; tusId: string }) {
+  return prisma.track_chunk.update({
+    where: { id: args.chunkId },
+    data: {
+      storage_key_raw: `tus-id:${args.tusId}`,
+    },
+  });
+}

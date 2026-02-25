@@ -17,4 +17,14 @@ export type InitiateTrackChunkResponse = {
     updatedAt: string;
   };
   existed: boolean;
+  uploadPlan?: {
+    protocol: 'tus';
+    tusEndpoint: string;
+    metadata: {
+      chunkId: string;
+      recordingId: string;
+      trackId: string;
+      seq: string;
+    };
+  };
 };

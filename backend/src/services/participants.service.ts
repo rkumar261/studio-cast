@@ -1,7 +1,7 @@
 import { randomBytes, createHash } from 'crypto';
 import type { CreateParticipantRequestBody, CreateParticipantResponse } from '../dto/participants/create.dto.js';
 import { findRecordingById } from '../repositories/recording.repo.js';
-import { createParticipant, } from '../repositories/participant.repo.js';
+import { createParticipant, findHostParticipantByRecording } from '../repositories/participant.repo.js';
 import type { GetParticipantsResponse } from '../dto/participants/get.dto.js';
 import { findRecordingOwner, listParticipantsByRecording } from '../repositories/participant.repo.js';
 
@@ -31,6 +31,25 @@ export async function createParticipantService(
     let magicHash: string | undefined = undefined;
 
     const base = process.env.MAGIC_LINK_BASE_URL!;
+
+    if (body.role === 'host') {
+        const existingHost = await findHostParticipantByRecording(recordingId);
+        if (existingHost) {
+            return {
+                code: 'ok',
+                data: {
+                    participant: {
+                        id: existingHost.id,
+                        recordingId: existingHost.recording_id,
+                        role: existingHost.role as 'host' | 'guest',
+                        displayName: existingHost.display_name ?? undefined,
+                        email: existingHost.email ?? undefined,
+                    },
+                },
+            };
+        }
+    }
+
     if (body.role == 'guest') {
         const token = randomBytes(32).toString('hex');
         magicHash = createHash('sha256').update(token).digest('hex');
@@ -43,6 +62,7 @@ export async function createParticipantService(
         displayName: body.displayName,
         email: body.email,
         magicLinkHash: magicHash,
+        userId: body.role === 'host' ? requesterId : null,
     });
 
     const response: CreateParticipantResponse = {

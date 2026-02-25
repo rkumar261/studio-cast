@@ -16,21 +16,34 @@ import studioWebsocketRoutes from './routes/studio-websocket.routes.js';
 import livekitRoutes from './routes/livekit.routes.js';
 
 
+const DEFAULT_CORS_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000'];
+
+function normalizeOrigin(origin: string) {
+  return origin.trim().replace(/\/+$/, '');
+}
+
+function buildAllowedOrigins() {
+  const configured = (process.env.CORS_ORIGIN ?? '')
+    .split(',')
+    .map(normalizeOrigin)
+    .filter(Boolean);
+  return new Set<string>([...DEFAULT_CORS_ORIGINS, ...configured]);
+}
+
 export async function buildApp() {
   const app = Fastify({ logger: true });
+  const allowedOrigins = buildAllowedOrigins();
 
-  // Register the TUS reverse proxy FIRST so /tus/* goes straight to tusd
-  await app.register(proxyTus);
-
-  // Skip any global validation/parsing for /tus/*
-  app.addHook('preValidation', (req, _res, next) => {
-    if (req.url.startsWith('/tus/')) return next();
-    next();
-  });
-
-  // CORS after the proxy; include all TUS headers
+  // CORS for API + tus proxy routes.
   await app.register(cors, {
-    origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+    origin: (origin, callback) => {
+      if (!origin) {
+        callback(null, true);
+        return;
+      }
+      const normalized = normalizeOrigin(origin);
+      callback(null, allowedOrigins.has(normalized));
+    },
     credentials: true,
     methods: ['GET', 'POST', 'HEAD', 'PATCH', 'OPTIONS'],
     allowedHeaders: [
@@ -39,14 +52,35 @@ export async function buildApp() {
       'Upload-Defer-Length',
       'Upload-Offset',
       'Upload-Metadata',
+      'Upload-Checksum',
+      'Upload-Concat',
       'Content-Type',
       'Authorization',
+    ],
+    exposedHeaders: [
+      'Location',
+      'Tus-Resumable',
+      'Upload-Offset',
+      'Upload-Length',
+      'Upload-Metadata',
+      'Upload-Expires',
+      'Upload-Checksum',
+      'Upload-Concat',
     ],
   });
 
   // Cookies
   await app.register(cookie, {
     secret: process.env.COOKIE_SECRET || 'riverside-dev-secret',
+  });
+
+  // Register the TUS reverse proxy before app routes.
+  await app.register(proxyTus);
+
+  // Skip any global validation/parsing for /tus/*
+  app.addHook('preValidation', (req, _res, next) => {
+    if (req.url.startsWith('/tus/')) return next();
+    next();
   });
 
   // Your routes

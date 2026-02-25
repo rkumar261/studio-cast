@@ -6,6 +6,7 @@ export  type ParticipantCreateInput = {
     displayName?: string;
     email?: string;
     magicLinkHash?: string;
+    userId?: string | null;
 };
 
 export async function createParticipant(input: ParticipantCreateInput) {
@@ -17,7 +18,18 @@ export async function createParticipant(input: ParticipantCreateInput) {
             display_name: input.displayName ?? null,
             email: input.email ?? null,
             magic_link_hash: input.magicLinkHash ?? null,
+            userId: input.userId ?? null,
         }
+    });
+}
+
+export async function findHostParticipantByRecording(recordingId: string) {
+    return prisma.participant.findFirst({
+        where: {
+            recording_id: recordingId,
+            role: 'host',
+        },
+        orderBy: { id: 'asc' },
     });
 }
 

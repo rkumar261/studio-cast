@@ -1,5 +1,7 @@
 import type { CompleteTrackChunkBody, CompleteTrackChunkResponse } from '../dto/chunks/complete.dto.js';
 import type { InitiateTrackChunkBody, InitiateTrackChunkResponse } from '../dto/chunks/initiate.dto.js';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import {
   getMaxTrackChunkSeq,
   getTrackChunkById,
@@ -72,6 +74,89 @@ function toCompleteDto(row: {
   };
 }
 
+function normalizeTusEndpoint(input?: string) {
+  const raw = (input ?? '').trim();
+  if (!raw) return 'http://localhost:8080/tus/';
+  return raw.endsWith('/') ? raw : `${raw}/`;
+}
+
+function parseTusIdFromUrl(url?: string): string | null {
+  if (!url) return null;
+  try {
+    const cleaned = url.split('?')[0]?.replace(/\/+$/, '');
+    const maybeId = cleaned?.split('/').pop();
+    return maybeId || null;
+  } catch {
+    return null;
+  }
+}
+
+function decodeMaybeBase64(v?: string) {
+  if (!v) return '';
+  const trimmed = String(v).trim();
+  const looksBase64 = /^[A-Za-z0-9+/]+={0,2}$/.test(trimmed) && trimmed.length % 4 === 0;
+  if (!looksBase64) return trimmed;
+  try {
+    return Buffer.from(trimmed, 'base64').toString('utf8');
+  } catch {
+    return trimmed;
+  }
+}
+
+async function exists(filePath: string) {
+  try {
+    await fs.stat(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveTusFiles(args: {
+  tusUploadDir: string;
+  tusId?: string | null;
+  chunkId: string;
+}): Promise<{ dataPath: string; infoPath?: string } | null> {
+  if (args.tusId) {
+    const byId = path.join(args.tusUploadDir, args.tusId);
+    if (await exists(byId)) {
+      return {
+        dataPath: byId,
+        infoPath: path.join(args.tusUploadDir, `${args.tusId}.info`),
+      };
+    }
+  }
+
+  const entries = await fs.readdir(args.tusUploadDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.info')) continue;
+    const infoPath = path.join(args.tusUploadDir, entry.name);
+    try {
+      const raw = await fs.readFile(infoPath, 'utf8');
+      const json = JSON.parse(raw) as any;
+      const meta = (json?.Upload?.MetaData ?? json?.MetaData ?? json?.metadata ?? {}) as Record<string, string>;
+      const value = decodeMaybeBase64(meta['chunk-id'] ?? meta['chunk_id']);
+      if (value !== args.chunkId) continue;
+      const stem = entry.name.replace(/\.info$/, '');
+      const dataPath = path.join(args.tusUploadDir, stem);
+      if (await exists(dataPath)) {
+        return {
+          dataPath,
+          infoPath,
+        };
+      }
+    } catch {
+      // ignore malformed hook info files
+    }
+  }
+
+  return null;
+}
+
+async function ensureDir(dir: string) {
+  await fs.mkdir(dir, { recursive: true });
+}
+
 async function canManageRecording(recordingId: string, requesterId: string) {
   const rec = await prisma.recording.findUnique({
     where: { id: recordingId },
@@ -116,6 +201,20 @@ export async function initiateTrackChunkService(args: {
       data: {
         chunk: toInitiateDto(existing as any),
         existed: true,
+        ...(args.body.protocol === 'tus'
+          ? {
+              uploadPlan: {
+                protocol: 'tus',
+                tusEndpoint: normalizeTusEndpoint(process.env.UPLOAD_TUS_BASE_URL),
+                metadata: {
+                  chunkId: existing.id,
+                  recordingId: args.recordingId,
+                  trackId: args.body.trackId,
+                  seq: String(args.body.seq),
+                },
+              },
+            }
+          : {}),
       },
     };
   }
@@ -142,6 +241,20 @@ export async function initiateTrackChunkService(args: {
     data: {
       chunk: toInitiateDto(created as any),
       existed: false,
+      ...(args.body.protocol === 'tus'
+        ? {
+            uploadPlan: {
+              protocol: 'tus',
+              tusEndpoint: normalizeTusEndpoint(process.env.UPLOAD_TUS_BASE_URL),
+              metadata: {
+                chunkId: created.id,
+                recordingId: args.recordingId,
+                trackId: args.body.trackId,
+                seq: String(args.body.seq),
+              },
+            },
+          }
+        : {}),
     },
   };
 }
@@ -180,10 +293,62 @@ export async function completeTrackChunkService(args: {
     };
   }
 
+  let bytesReceived = args.body.bytesReceived;
+  let storageKeyRaw = args.body.storageKeyRaw;
+
+  if (args.body.protocol === 'tus' && (!storageKeyRaw || bytesReceived == null)) {
+    const mediaRoot = process.env.MEDIA_ROOT;
+    const tusUploadDir = process.env.TUSD_UPLOAD_DIR;
+    if (!mediaRoot || !tusUploadDir) {
+      return {
+        code: 'seq_integrity_error',
+        message: 'Chunk upload environment is not configured (MEDIA_ROOT/TUSD_UPLOAD_DIR).',
+      };
+    }
+
+    const tusRefFromChunk = chunk.storage_key_raw?.startsWith('tus-id:')
+      ? chunk.storage_key_raw.slice('tus-id:'.length)
+      : null;
+    const tusId = parseTusIdFromUrl(args.body.tusUrl) ?? tusRefFromChunk;
+    const tusFiles = await resolveTusFiles({
+      tusUploadDir,
+      tusId,
+      chunkId: args.chunkId,
+    });
+
+    if (!tusFiles) {
+      return {
+        code: 'seq_integrity_error',
+        message: 'Chunk data not found in tus storage.',
+      };
+    }
+
+    const sourcePath = tusFiles.dataPath;
+    const ext = path.extname(sourcePath) || '.webm';
+    const relativeKey = `recordings/${args.recordingId}/tracks/${chunk.track_id}/chunks/${chunk.seq}${ext}`;
+    const destination = path.join(mediaRoot, relativeKey);
+    await ensureDir(path.dirname(destination));
+
+    try {
+      await fs.rename(sourcePath, destination);
+    } catch {
+      await fs.copyFile(sourcePath, destination);
+      await fs.unlink(sourcePath).catch(() => {});
+    }
+
+    const written = await fs.stat(destination);
+    bytesReceived = bytesReceived ?? Number(written.size);
+    storageKeyRaw = storageKeyRaw ?? relativeKey;
+
+    if (tusFiles.infoPath) {
+      await fs.unlink(tusFiles.infoPath).catch(() => {});
+    }
+  }
+
   const updated = await markTrackChunkUploaded({
     chunkId: args.chunkId,
-    bytesReceived: args.body.bytesReceived,
-    storageKeyRaw: args.body.storageKeyRaw,
+    bytesReceived,
+    storageKeyRaw,
     etag: args.body.etag,
     checksumSha256: args.body.checksumSha256,
   });
