@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:all": "bash scripts/dev-all.sh",
     "dev:api": "tsx src/index.ts",
     "dev:worker:stitch": "tsx src/workers/stitch.worker.ts",
     "dev:worker:transcode": "tsx src/workers/transcode.worker.ts",
