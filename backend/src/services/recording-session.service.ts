@@ -1,5 +1,6 @@
 import { recording_status } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
+import type { RequestPrincipal } from '../lib/request-principal.js';
 import { reconcileRecordingPipeline } from './recording-pipeline.service.js';
 
 type ServiceResult<T> =
@@ -81,7 +82,7 @@ function toSessionDto(row: {
   };
 }
 
-async function findRecordingWithAcl(recordingId: string, requesterId: string) {
+async function findRecordingWithAcl(recordingId: string, principal: RequestPrincipal) {
   const recording = await prisma.recording.findUnique({
     where: { id: recordingId },
     select: {
@@ -96,9 +97,18 @@ async function findRecordingWithAcl(recordingId: string, requesterId: string) {
   });
 
   if (!recording) return { code: 'not_found' as const };
-  if (!recording.userId || recording.userId !== requesterId) return { code: 'forbidden' as const };
+  if (principal.kind === 'user') {
+    if (!recording.userId || recording.userId !== principal.userId) return { code: 'forbidden' as const };
+    return { code: 'ok' as const, recording, canControl: true };
+  }
 
-  return { code: 'ok' as const, recording };
+  if (principal.recordingId !== recordingId) return { code: 'forbidden' as const };
+  const participant = await prisma.participant.findUnique({
+    where: { id: principal.participantId },
+    select: { id: true, recording_id: true },
+  });
+  if (!participant || participant.recording_id !== recordingId) return { code: 'forbidden' as const };
+  return { code: 'ok' as const, recording, canControl: false };
 }
 
 async function tryResolveHostParticipantId(recordingId: string, requesterId: string): Promise<string | null> {
@@ -125,26 +135,27 @@ async function tryResolveHostParticipantId(recordingId: string, requesterId: str
 
 export async function getRecordingSessionService(args: {
   recordingId: string;
-  requesterId: string;
+  principal: RequestPrincipal;
 }): Promise<ServiceResult<RecordingSessionResponse>> {
-  const acl = await findRecordingWithAcl(args.recordingId, args.requesterId);
+  const acl = await findRecordingWithAcl(args.recordingId, args.principal);
   if (acl.code !== 'ok') return { code: acl.code };
 
   return {
     code: 'ok',
     data: {
       session: toSessionDto(acl.recording),
-      canControl: true,
+      canControl: acl.canControl,
     },
   };
 }
 
 export async function startRecordingSessionService(args: {
   recordingId: string;
-  requesterId: string;
+  principal: RequestPrincipal;
 }): Promise<ServiceResult<RecordingSessionResponse>> {
-  const acl = await findRecordingWithAcl(args.recordingId, args.requesterId);
+  const acl = await findRecordingWithAcl(args.recordingId, args.principal);
   if (acl.code !== 'ok') return { code: acl.code };
+  if (!acl.canControl || args.principal.kind !== 'user') return { code: 'forbidden' };
 
   const transition = transitionRecordingStatus(acl.recording.status, 'start_session');
   if (!transition.ok) {
@@ -154,7 +165,7 @@ export async function startRecordingSessionService(args: {
   const startedAt = acl.recording.started_at ?? new Date();
   const hostParticipantId =
     acl.recording.host_participant_id ??
-    (await tryResolveHostParticipantId(args.recordingId, args.requesterId));
+    (await tryResolveHostParticipantId(args.recordingId, args.principal.userId));
 
   const updated = await prisma.recording.update({
     where: { id: args.recordingId },
@@ -186,10 +197,11 @@ export async function startRecordingSessionService(args: {
 
 export async function stopRecordingSessionService(args: {
   recordingId: string;
-  requesterId: string;
+  principal: RequestPrincipal;
 }): Promise<ServiceResult<RecordingSessionResponse>> {
-  const acl = await findRecordingWithAcl(args.recordingId, args.requesterId);
+  const acl = await findRecordingWithAcl(args.recordingId, args.principal);
   if (acl.code !== 'ok') return { code: acl.code };
+  if (!acl.canControl || args.principal.kind !== 'user') return { code: 'forbidden' };
 
   const transition = transitionRecordingStatus(acl.recording.status, 'stop_session');
   if (!transition.ok) {

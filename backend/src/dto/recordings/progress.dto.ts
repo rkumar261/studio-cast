@@ -2,16 +2,42 @@ import type { export_type, recording_status } from '@prisma/client';
 
 export type RecordingProgressPhase = 'recording' | 'uploading' | 'processing' | 'ready' | 'error';
 
+export type TrackProgressBlockedReason =
+  | 'track_not_finalized'
+  | 'invalid_final_seq'
+  | 'missing_chunks'
+  | 'chunks_pending_upload'
+  | 'already_stitched';
+
+export type RecordingProgressBlockedReason =
+  | 'recording_active'
+  | 'tracks_not_finalized'
+  | 'invalid_final_seq'
+  | 'missing_chunks'
+  | 'chunks_pending_upload'
+  | 'ready_for_stitch'
+  | 'stitching_in_progress'
+  | 'exports_pending'
+  | 'exports_failed';
+
 export type TrackProgressDto = {
   trackId: string;
   kind: 'audio' | 'video' | 'screen';
   state: string;
   uploadState: string;
+  blockedReason?: TrackProgressBlockedReason;
   protocol?: 'tus' | 'multipart';
+  isFinalized: boolean;
+  finalSeq?: number;
+  readyForStitch: boolean;
   bytesReceived: number;
   chunkTotal: number;
   chunkUploaded: number;
   chunkPending: number;
+  expectedTotal?: number;
+  highestSeq: number;
+  highestContiguousSeq: number;
+  missingSeqs: number[];
   updatedAt?: string;
 };
 
@@ -60,6 +86,10 @@ export type GetRecordingProgressResponse = {
   recordingId: string;
   status: recording_status;
   phase: RecordingProgressPhase;
+  readiness: {
+    readyForStitch: boolean;
+    blockedReasons: RecordingProgressBlockedReason[];
+  };
   session: {
     startedAt?: string;
     stoppedAt?: string;

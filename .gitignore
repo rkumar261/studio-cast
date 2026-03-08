@@ -26,3 +26,7 @@ Thumbs.db
 
 # Local agent guide (do not commit)
 AGENTS.md
+
+# Local recording/upload artifacts
+media/recordings/
+uploads/tmp/

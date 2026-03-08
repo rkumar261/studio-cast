@@ -76,6 +76,7 @@ type MeshServerMessage =
 type UseMeshRoomArgs = {
   roomId: string;
   maxPeers?: number;
+  role?: Role;
 };
 
 function createPeerId() {
@@ -85,9 +86,9 @@ function createPeerId() {
   return `peer-${Math.random().toString(36).slice(2)}`;
 }
 
-export function useMeshRoom({ roomId, maxPeers = 4 }: UseMeshRoomArgs) {
+export function useMeshRoom({ roomId, maxPeers = 4, role = 'host' }: UseMeshRoomArgs) {
   const peerIdRef = useRef<string>(createPeerId());
-  const roleRef = useRef<Role>('host');
+  const roleRef = useRef<Role>(role);
 
   const [status, setStatus] = useState<MeshStatus>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -122,6 +123,10 @@ export function useMeshRoom({ roomId, maxPeers = 4 }: UseMeshRoomArgs) {
   } = useLocalMedia();
 
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+
+  useEffect(() => {
+    roleRef.current = role;
+  }, [role]);
 
   const syncRemotePeers = useCallback(() => {
     setRemotePeers(Array.from(remotePeersRef.current.values()));

@@ -3,6 +3,7 @@ import { job_state, job_type, track_state } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { enqueueTranscodeJob } from '../repositories/job.repo.js';
 import { maybeMarkRecordingProcessing } from '../services/recording-pipeline.service.js';
+import { evaluateTrackStitchReadiness } from '../services/track-contiguity.service.js';
 import { runStitchForTrack } from './stitch.runner.js';
 
 type JobRow = {
@@ -68,6 +69,16 @@ async function runJob(job: JobRow) {
       recording_id: true,
       state: true,
       storage_key_raw: true,
+      final_seq: true,
+      capture_closed_at: true,
+      track_chunk: {
+        orderBy: { seq: 'asc' },
+        select: {
+          seq: true,
+          state: true,
+          storage_key_raw: true,
+        },
+      },
     },
   });
 
@@ -84,33 +95,33 @@ async function runJob(job: JobRow) {
     return;
   }
 
-  const chunks = await prisma.track_chunk.findMany({
-    where: { track_id: track.id },
-    orderBy: { seq: 'asc' },
-    select: {
-      seq: true,
-      state: true,
-      storage_key_raw: true,
-    },
+  const readiness = evaluateTrackStitchReadiness({
+    storageKeyRaw: track.storage_key_raw,
+    finalSeq: track.final_seq,
+    captureClosedAt: track.capture_closed_at,
+    chunks: track.track_chunk,
   });
-
-  if (!chunks.length) {
-    const err = new Error('stitch_no_chunks');
-    (err as any).code = 'no_chunks';
-    throw err;
-  }
-
-  const incomplete = chunks.find((chunk) => chunk.state !== 'uploaded' || !chunk.storage_key_raw);
-  if (incomplete) {
-    const err = new Error(`stitch_chunks_not_uploaded seq=${incomplete.seq}`);
-    (err as any).code = 'chunks_not_finalized';
+  if (!readiness.ready) {
+    if (readiness.reason === 'missing_chunks') {
+      const err = new Error(`stitch_missing_chunks seqs=${readiness.missingSeqs.join(',')}`);
+      (err as any).code = 'missing_chunks';
+      throw err;
+    }
+    if (readiness.reason === 'chunks_not_uploaded') {
+      const firstIncomplete = readiness.incompleteSeqs[0];
+      const err = new Error(`stitch_chunks_not_uploaded seq=${firstIncomplete ?? 'unknown'}`);
+      (err as any).code = 'chunks_not_finalized';
+      throw err;
+    }
+    const err = new Error(`stitch_track_not_ready reason=${readiness.reason}`);
+    (err as any).code = 'track_not_ready';
     throw err;
   }
 
   const outcome = await runStitchForTrack({
     recordingId: track.recording_id,
     trackId: track.id,
-    chunks: chunks.map((chunk) => ({
+    chunks: track.track_chunk.map((chunk) => ({
       seq: chunk.seq,
       storageKeyRaw: chunk.storage_key_raw as string,
     })),

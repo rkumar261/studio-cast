@@ -3,8 +3,14 @@
 import React, { use, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { Space_Grotesk } from 'next/font/google';
-import { useSearchParams } from 'next/navigation';
-import { LiveKitAPI, RecordingsAPI, type RecordingSessionResponse } from '@/lib/api';
+import { useRouter, useSearchParams } from 'next/navigation';
+import {
+  LiveKitAPI,
+  ParticipantsAPI,
+  RecordingsAPI,
+  type RecordingProgressResponse,
+  type RecordingSessionResponse,
+} from '@/lib/api';
 import {
   useRollingChunkRecorder,
   type RollingRecorderChunk,
@@ -20,6 +26,7 @@ import {
   type RemoteParticipant,
 } from 'livekit-client';
 import { useMeshRoom } from '@/lib/studio/useMeshRoom';
+import UploadStatusModal from '@/components/studio/UploadStatusModal';
 
 type RouteParams = {
   recordingId: string;
@@ -46,9 +53,21 @@ type Tile = {
   video: MediaSource;
   audio?: MediaSource;
   muted?: boolean;
+  micOff?: boolean;
 };
 
 type RecorderKind = 'audio' | 'video' | 'screen';
+type StudioControlIconKind =
+  | 'mark'
+  | 'mic'
+  | 'cam'
+  | 'speaker'
+  | 'react'
+  | 'raise'
+  | 'layout'
+  | 'script'
+  | 'share'
+  | 'leave';
 
 const spaceGrotesk = Space_Grotesk({
   subsets: ['latin'],
@@ -84,36 +103,73 @@ function getTrack(participant: Participant, source: Track.Source): Track | null 
   return pub?.track ?? null;
 }
 
+function tokenFromMagicLink(magicLink?: string): string | null {
+  if (!magicLink) return null;
+  try {
+    const parsed = new URL(magicLink, window.location.origin);
+    const fromQuery = parsed.searchParams.get('guestToken')?.trim();
+    if (fromQuery) return fromQuery;
+    const segment = parsed.pathname.split('/').filter(Boolean).pop()?.trim();
+    return segment || null;
+  } catch {
+    const segment = magicLink.split('/').filter(Boolean).pop()?.trim();
+    return segment || null;
+  }
+}
+
+function buildStudioInviteLink(args: {
+  origin: string;
+  recordingId: string;
+  role: 'guest' | 'host';
+  participantId?: string | null;
+  guestToken?: string | null;
+}) {
+  const url = new URL(`/studio/${args.recordingId}`, args.origin);
+  url.searchParams.set('mode', 'studio');
+  url.searchParams.set('role', args.role);
+  if (args.participantId) {
+    url.searchParams.set('participantId', args.participantId);
+  }
+  if (args.role === 'guest' && args.guestToken) {
+    url.searchParams.set('guestToken', args.guestToken);
+  }
+  return url.toString();
+}
+
 function useAttachMedia<T extends HTMLMediaElement>(
   mediaRef: React.RefObject<T | null>,
   source?: MediaSource,
   kind: 'video' | 'audio' = 'video'
 ) {
+  const sourceKind = source?.kind;
+  const sourceTrack = source?.kind === 'livekit' ? source.track : null;
+  const sourceStream = source?.kind === 'media' ? source.stream : null;
+
   useEffect(() => {
     const element = mediaRef.current;
     if (!element) return;
 
-    if (!source) {
+    if (!sourceKind) {
       if ('srcObject' in element) {
         (element as HTMLMediaElement).srcObject = null;
       }
       return;
     }
 
-    if (source.kind === 'livekit') {
-      if (!source.track) return;
-      source.track.attach(element);
+    if (sourceKind === 'livekit') {
+      if (!sourceTrack) return;
+      sourceTrack.attach(element);
       return () => {
         try {
-          source.track?.detach(element);
+          sourceTrack.detach(element);
         } catch {
           // ignore
         }
       };
     }
 
-    if (source.kind === 'media') {
-      (element as HTMLMediaElement).srcObject = source.stream ?? null;
+    if (sourceKind === 'media') {
+      (element as HTMLMediaElement).srcObject = sourceStream ?? null;
       element.play?.().catch(() => {});
       return () => {
         try {
@@ -123,7 +179,7 @@ function useAttachMedia<T extends HTMLMediaElement>(
         }
       };
     }
-  }, [mediaRef, source, kind]);
+  }, [kind, mediaRef, sourceKind, sourceStream, sourceTrack]);
 }
 
 function ParticipantTile({
@@ -132,6 +188,8 @@ function ParticipantTile({
   showPin = false,
   isPinned = false,
   onPin,
+  micPublishEnabled,
+  onTogglePublishMic,
   fit = 'cover',
   fill = false,
   showBadge = true,
@@ -141,23 +199,55 @@ function ParticipantTile({
   showPin?: boolean;
   isPinned?: boolean;
   onPin?: () => void;
+  micPublishEnabled?: boolean;
+  onTogglePublishMic?: () => void;
   fit?: 'cover' | 'contain';
   fill?: boolean;
   showBadge?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const controlsHideTimerRef = useRef<number | null>(null);
+  const [showControlsOnClick, setShowControlsOnClick] = useState(false);
+  const [isTileMuted, setIsTileMuted] = useState(Boolean(tile.muted));
 
   const hasVideo = tile.video.kind === 'livekit'
     ? !!tile.video.track
     : !!tile.video.stream;
+  const remoteMicOff = !!tile.micOff;
+  const isAudioMuted = isTileMuted;
+  const isPublishMicControl = typeof micPublishEnabled === 'boolean' && !!onTogglePublishMic;
+  const shouldMutePlayback = isPublishMicControl ? isAudioMuted : (isAudioMuted || remoteMicOff);
+  const micIsOff = isPublishMicControl ? !micPublishEnabled : shouldMutePlayback;
 
   useAttachMedia(videoRef, tile.video, 'video');
-  useAttachMedia(audioRef, tile.audio, 'audio');
+  useAttachMedia(audioRef, shouldMutePlayback ? undefined : tile.audio, 'audio');
+
+  useEffect(() => {
+    return () => {
+      if (controlsHideTimerRef.current) {
+        window.clearTimeout(controlsHideTimerRef.current);
+      }
+    };
+  }, []);
+
+  const revealControls = useCallback(() => {
+    setShowControlsOnClick(true);
+    if (controlsHideTimerRef.current) {
+      window.clearTimeout(controlsHideTimerRef.current);
+    }
+    controlsHideTimerRef.current = window.setTimeout(() => {
+      setShowControlsOnClick(false);
+    }, 2200);
+  }, []);
 
   return (
     <div
-      className={`studio-rise relative w-full ${fill ? 'h-full' : 'aspect-video'} overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70 ${className ?? ''}`}
+      onClick={() => {
+        if (!showPin || !onPin) return;
+        revealControls();
+      }}
+      className={`studio-rise group relative w-full ${fill ? 'h-full' : 'aspect-video'} overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70 ${className ?? ''}`}
     >
       <div className="absolute inset-0 pointer-events-none bg-gradient-to-b from-slate-900/30 via-transparent to-slate-950/60" />
       {hasVideo ? (
@@ -174,7 +264,7 @@ function ParticipantTile({
         </div>
       )}
 
-      {tile.audio && !tile.muted && (
+      {tile.audio && !shouldMutePlayback && (
         <audio ref={audioRef} autoPlay playsInline className="hidden" />
       )}
 
@@ -184,21 +274,57 @@ function ParticipantTile({
         </div>
       )}
       {showPin && onPin && (
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onPin();
-          }}
-          className={`absolute right-3 top-3 rounded-full px-3 py-1 text-[11px] ${
-            isPinned
-              ? 'bg-cyan-400/30 text-cyan-100 border border-cyan-300/40'
-              : 'bg-black/60 text-slate-200 border border-slate-500/40 hover:border-cyan-300/50'
+        <div
+          className={`absolute left-1/2 top-1/2 z-20 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 transition-opacity duration-150 ${
+            showControlsOnClick
+              ? 'pointer-events-auto opacity-100'
+              : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100'
           }`}
-          title={isPinned ? 'Unpin from stage' : 'Pin to stage'}
         >
-          {isPinned ? 'Unpin' : 'Pin'}
-        </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              if (isPublishMicControl) {
+                onTogglePublishMic();
+                return;
+              }
+              setIsTileMuted((prev) => !prev);
+            }}
+            className={`flex h-9 w-9 items-center justify-center rounded-full border ${
+              micIsOff
+                ? 'border-rose-300/50 bg-rose-500/20 text-rose-100'
+                : 'border-slate-600/60 bg-black/45 text-slate-100'
+            }`}
+            title={micIsOff ? 'Unmute participant' : 'Mute participant'}
+            aria-label={micIsOff ? 'Unmute participant' : 'Mute participant'}
+          >
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="9" y="4" width="6" height="10" rx="3" />
+              <path d="M6 11a6 6 0 0 0 12 0M12 17v3M9 20h6" />
+              {micIsOff && <line x1="5" y1="19" x2="19" y2="5" />}
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              onPin();
+            }}
+            className={`flex h-9 w-9 items-center justify-center rounded-full border ${
+              isPinned
+                ? 'border-cyan-300/50 bg-cyan-500/25 text-cyan-100'
+                : 'border-slate-600/60 bg-black/45 text-slate-100'
+            }`}
+            title={isPinned ? 'Unpin from stage' : 'Pin to stage'}
+            aria-label={isPinned ? 'Unpin from stage' : 'Pin to stage'}
+          >
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M8 3h8l-1.5 5 3.5 3v1H6v-1l3.5-3L8 3zM12 12v9" />
+            </svg>
+          </button>
+        </div>
       )}
       <div className="absolute left-3 bottom-3 rounded-full bg-black/60 px-3 py-1 text-[11px] text-slate-100">
         {tile.label}
@@ -207,8 +333,108 @@ function ParticipantTile({
   );
 }
 
+function StudioControlIcon({ kind, off = false }: { kind: StudioControlIconKind; off?: boolean }) {
+  const icon = (() => {
+    switch (kind) {
+      case 'mark':
+        return <path d="M12 3 19 6v6c0 5-3.5 7.8-7 9-3.5-1.2-7-4-7-9V6l7-3z" />;
+      case 'mic':
+        return (
+          <>
+            <rect x="9" y="4" width="6" height="10" rx="3" />
+            <path d="M6 11a6 6 0 0 0 12 0M12 17v3M9 20h6" />
+          </>
+        );
+      case 'cam':
+        return (
+          <>
+            <rect x="3" y="7" width="13" height="10" rx="2" />
+            <path d="M16 10 21 7v10l-5-3z" />
+          </>
+        );
+      case 'speaker':
+        return (
+          <>
+            <path d="M4 13h4l5 4V7l-5 4H4z" />
+            <path d="M16 10a4 4 0 0 1 0 4M18 8a7 7 0 0 1 0 8" />
+          </>
+        );
+      case 'react':
+        return (
+          <>
+            <circle cx="12" cy="12" r="8" />
+            <circle cx="9" cy="10" r="1" />
+            <circle cx="15" cy="10" r="1" />
+            <path d="M8 14c1 2 3 3 4 3s3-1 4-3" />
+            <path d="M18 4v4M16 6h4" />
+          </>
+        );
+      case 'raise':
+        return (
+          <path d="M8 12V7.2a1.6 1.6 0 1 1 3.2 0V11M11.2 11V5.8a1.6 1.6 0 1 1 3.2 0V11M14.4 11V6.6a1.6 1.6 0 1 1 3.2 0v8.3A6.1 6.1 0 0 1 11.5 21h-.4A6.1 6.1 0 0 1 5 14.9v-2.3a1.6 1.6 0 1 1 3.2 0V12z" />
+        );
+      case 'layout':
+        return (
+          <>
+            <rect x="4" y="5" width="16" height="14" rx="2" />
+            <path d="M12 5v14M4 12h16" />
+          </>
+        );
+      case 'script':
+        return (
+          <>
+            <rect x="5" y="4" width="14" height="16" rx="2" />
+            <path d="M8 9h8M8 13h8M8 17h6" />
+          </>
+        );
+      case 'share':
+        return (
+          <>
+            <path d="M12 4v11M8 8l4-4 4 4" />
+            <rect x="5" y="14" width="14" height="6" rx="2" />
+          </>
+        );
+      case 'leave':
+        return (
+          <path d="M22 16.9v2.2a2 2 0 0 1-2.2 2A19.8 19.8 0 0 1 11.2 18a19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3-8.6A2 2 0 0 1 4.2 1h2.2a2 2 0 0 1 2 1.7c.1 1 .4 1.9.8 2.8a2 2 0 0 1-.4 2.1l-.9.9a16 16 0 0 0 6 6l.9-.9a2 2 0 0 1 2.1-.4c.9.4 1.8.7 2.8.8a2 2 0 0 1 1.7 2z" />
+        );
+      default:
+        return null;
+    }
+  })();
+
+  return (
+    <span className="relative inline-flex h-5 w-5 items-center justify-center">
+      <svg
+        viewBox="0 0 24 24"
+        className="h-5 w-5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        {icon}
+      </svg>
+      {off && (
+        <svg
+          viewBox="0 0 24 24"
+          className="pointer-events-none absolute inset-0 h-5 w-5 text-rose-400"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+        >
+          <line x1="4" y1="20" x2="20" y2="4" />
+        </svg>
+      )}
+    </span>
+  );
+}
+
 export default function StudioRecordingPage({ params }: StudioPageProps) {
   const { recordingId } = use(params);
+  const router = useRouter();
   const searchParams = useSearchParams();
   const { profile } = useSession();
   const sessionMode: SessionMode = searchParams.get('mode') === 'meet' ? 'meet' : 'studio';
@@ -217,6 +443,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     : searchParams.get('role') === 'guest'
       ? 'guest'
       : null;
+  const requestedParticipantId = searchParams.get('participantId')?.trim() || null;
+  const requestedGuestToken = searchParams.get('guestToken')?.trim() || null;
 
   const meshMaxPeers = Number(process.env.NEXT_PUBLIC_MESH_MAX_PEERS ?? '4');
 
@@ -241,24 +469,35 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [selectedMicId, setSelectedMicId] = useState('');
   const [selectedSpeakerId, setSelectedSpeakerId] = useState('');
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
+  const [showStudioInvitePanel, setShowStudioInvitePanel] = useState(true);
   const [showStudioPeoplePanel, setShowStudioPeoplePanel] = useState(true);
   const [inviteRole, setInviteRole] = useState<'guest' | 'host'>('guest');
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteNotice, setInviteNotice] = useState<string | null>(null);
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
   const [recordingSession, setRecordingSession] = useState<RecordingSessionResponse['session'] | null>(null);
+  const [recordingProgress, setRecordingProgress] = useState<RecordingProgressResponse | null>(null);
   const [canControlRecording, setCanControlRecording] = useState(false);
   const [sessionBusy, setSessionBusy] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
+  const [showUploadStatusModal, setShowUploadStatusModal] = useState(false);
+  const [localHostParticipantId, setLocalHostParticipantId] = useState<string | null>(null);
+  const [createdInviteParticipantIdByRole, setCreatedInviteParticipantIdByRole] = useState<
+    Partial<Record<'guest' | 'host', string>>
+  >({});
+  const [createdInviteGuestToken, setCreatedInviteGuestToken] = useState<string | null>(null);
+  const [claimedGuestParticipantId, setClaimedGuestParticipantId] = useState<string | null>(null);
+  const [guestClaimReady, setGuestClaimReady] = useState(
+    !(sessionMode === 'studio' && requestedStudioRole === 'guest' && !!requestedGuestToken)
+  );
+  const claimedGuestTokenRef = useRef<string | null>(null);
   const [trackIdByKind, setTrackIdByKind] = useState<Partial<Record<RecorderKind, string>>>({});
-  const [chunkStats, setChunkStats] = useState({
-    audio: 0,
-    video: 0,
-    screen: 0,
-    totalBytes: 0,
-  });
+  const [recoveredNextSeqByTrack, setRecoveredNextSeqByTrack] = useState<Record<string, number>>({});
+  const [recoveryReadyByTrack, setRecoveryReadyByTrack] = useState<Record<string, boolean>>({});
   const [recorderError, setRecorderError] = useState<string | null>(null);
   const registeringKindsRef = useRef<Set<RecorderKind>>(new Set());
+  const recoveringTrackIdsRef = useRef<Set<string>>(new Set());
+  const latestChunkSeqByTrackRef = useRef<Map<string, number>>(new Map());
   const [showMeetSelfPreview, setShowMeetSelfPreview] = useState(true);
   const [meetSelfPreviewExpanded, setMeetSelfPreviewExpanded] = useState(false);
   const [meetStageFit, setMeetStageFit] = useState<'contain' | 'cover'>('contain');
@@ -271,6 +510,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     isMain: boolean;
   } | null>(null);
   const meetStageRef = useRef<HTMLDivElement | null>(null);
+  const hostParticipantEnsureRef = useRef<Promise<string | null> | null>(null);
 
   // ===== LiveKit state =====
   const [room, setRoom] = useState<Room | null>(null);
@@ -285,9 +525,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const isRecording = !!recordingSession?.startedAt && !recordingSession?.stoppedAt;
   const chunkUploadProtocol: ChunkUploadProtocol =
-    process.env.NEXT_PUBLIC_CHUNK_UPLOAD_PROTOCOL === 'multipart' ? 'multipart' : 'tus';
+    process.env.NEXT_PUBLIC_STUDIO_CHUNK_MULTIPART_ENABLED === '1' ? 'multipart' : 'tus';
   const chunkUploadQueue = useChunkUploadQueue({
     enabled: sessionMode === 'studio',
+    recordingId,
     concurrency: 2,
     maxRetries: 8,
   });
@@ -322,27 +563,101 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   const refreshRecordingSession = useCallback(async () => {
     if (sessionMode !== 'studio') return;
+    if (requestedStudioRole === 'guest' && !guestClaimReady) return;
 
     try {
       const res = await RecordingsAPI.getSession(recordingId);
       setRecordingSession(res.session);
-      setCanControlRecording(res.canControl);
+      setCanControlRecording(requestedStudioRole === 'guest' ? false : res.canControl);
       setSessionError(null);
     } catch (err) {
       setSessionError((err as Error)?.message ?? 'Failed to refresh recording session.');
     }
-  }, [recordingId, sessionMode]);
+  }, [guestClaimReady, recordingId, requestedStudioRole, sessionMode]);
+
+  const refreshRecordingProgress = useCallback(async () => {
+    if (sessionMode !== 'studio') return;
+    if (requestedStudioRole === 'guest' && !guestClaimReady) return;
+    try {
+      const progress = await RecordingsAPI.getProgress(recordingId);
+      setRecordingProgress(progress);
+    } catch {
+      // keep UI resilient; session/queue UI still functions without progress payload
+    }
+  }, [guestClaimReady, recordingId, requestedStudioRole, sessionMode]);
+
+  useEffect(() => {
+    if (sessionMode !== 'studio' || requestedStudioRole !== 'guest') return;
+    if (!requestedGuestToken) {
+      setGuestClaimReady(true);
+      return;
+    }
+    if (claimedGuestTokenRef.current === requestedGuestToken) return;
+
+    let cancelled = false;
+    setGuestClaimReady(false);
+    void ParticipantsAPI.claimGuest(requestedGuestToken)
+      .then((result) => {
+        if (cancelled) return;
+        claimedGuestTokenRef.current = requestedGuestToken;
+        setClaimedGuestParticipantId(result.participant.id);
+        setGuestClaimReady(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setGuestClaimReady(false);
+        setSessionError('Guest invite token is invalid or expired. Ask host for a fresh invite link.');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [requestedGuestToken, requestedStudioRole, sessionMode]);
+
+  const hasLocalQueueWork =
+    sessionMode === 'studio' &&
+    (chunkUploadQueue.stats.pending > 0 || chunkUploadQueue.stats.processing > 0);
+  const hasBackendPendingFromProgress = (recordingProgress?.participants ?? []).some(
+    (participant) => participant.pendingCount > 0
+  );
+  const shouldPollStudioSession =
+    sessionMode === 'studio' &&
+    (!recordingSession?.stoppedAt || isRecording || hasLocalQueueWork || showUploadStatusModal);
+  const shouldPollStudioProgress =
+    sessionMode === 'studio' &&
+    (!recordingSession?.stoppedAt ||
+      isRecording ||
+      hasLocalQueueWork ||
+      hasBackendPendingFromProgress ||
+      showUploadStatusModal);
 
   useEffect(() => {
     if (sessionMode !== 'studio') return;
     void refreshRecordingSession();
+    if (!shouldPollStudioSession) return;
 
     const timer = window.setInterval(() => {
       void refreshRecordingSession();
     }, 5000);
 
     return () => window.clearInterval(timer);
-  }, [refreshRecordingSession, sessionMode]);
+  }, [
+    refreshRecordingSession,
+    requestedStudioRole,
+    sessionMode,
+    shouldPollStudioSession,
+  ]);
+
+  useEffect(() => {
+    if (sessionMode !== 'studio') return;
+    void refreshRecordingProgress();
+    if (!shouldPollStudioProgress) return;
+
+    const timer = window.setInterval(() => {
+      void refreshRecordingProgress();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [refreshRecordingProgress, sessionMode, shouldPollStudioProgress]);
 
   useEffect(() => {
     if (sessionMode === 'studio') {
@@ -365,15 +680,20 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   useEffect(() => {
     setTrackIdByKind({});
-    setChunkStats({
-      audio: 0,
-      video: 0,
-      screen: 0,
-      totalBytes: 0,
-    });
+    setRecoveredNextSeqByTrack({});
+    setRecoveryReadyByTrack({});
     setRecorderError(null);
+    setCreatedInviteGuestToken(null);
+    setClaimedGuestParticipantId(null);
+    setGuestClaimReady(!(requestedStudioRole === 'guest' && !!requestedGuestToken));
+    claimedGuestTokenRef.current = null;
     registeringKindsRef.current.clear();
-  }, [recordingId]);
+    recoveringTrackIdsRef.current.clear();
+    latestChunkSeqByTrackRef.current.clear();
+    setShowStudioInvitePanel(true);
+    setCreatedInviteParticipantIdByRole({});
+    setLocalHostParticipantId(null);
+  }, [recordingId, requestedGuestToken, requestedStudioRole]);
 
   const stopPreJoinPreview = useCallback(() => {
     if (preJoinStreamRef.current) {
@@ -527,6 +847,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       newRoom.on(RoomEvent.TrackUnpublished, refresh);
       newRoom.on(RoomEvent.TrackSubscribed, refresh);
       newRoom.on(RoomEvent.TrackUnsubscribed, refresh);
+      newRoom.on(RoomEvent.TrackMuted, refresh);
+      newRoom.on(RoomEvent.TrackUnmuted, refresh);
 
       await newRoom.connect(wsUrl, token);
       await newRoom.localParticipant.enableCameraAndMicrophone();
@@ -597,7 +919,9 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const livekitTiles = useMemo<Tile[]>(() => {
     return remoteParticipants.flatMap((p) => {
       const label = p.name || p.identity || 'Guest';
-      const micTrack = getTrack(p, Track.Source.Microphone);
+      const micPublication = p.getTrackPublication(Track.Source.Microphone);
+      const micTrack = micPublication?.track ?? null;
+      const micOff = !micTrack || !!micPublication?.isMuted;
       const screenAudio = getTrack(p, Track.Source.ScreenShareAudio);
       const cameraTrack = getTrack(p, Track.Source.Camera);
       const screenTrack = getTrack(p, Track.Source.ScreenShare);
@@ -610,6 +934,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           badge: 'Screen',
           video: livekitSource(screenTrack),
           audio: screenAudio || micTrack ? livekitSource(screenAudio || micTrack) : undefined,
+          micOff,
         });
       }
       if (cameraTrack) {
@@ -619,6 +944,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           badge: 'Camera',
           video: livekitSource(cameraTrack),
           audio: micTrack ? livekitSource(micTrack) : undefined,
+          micOff,
         });
       }
       if (!cameraTrack && !screenTrack) {
@@ -628,6 +954,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           badge: 'Audio only',
           video: livekitSource(null),
           audio: micTrack ? livekitSource(micTrack) : undefined,
+          micOff,
         });
       }
 
@@ -645,7 +972,11 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   );
 
   // ===== Mesh state =====
-  const mesh = useMeshRoom({ roomId: recordingId, maxPeers: meshMaxPeers });
+  const mesh = useMeshRoom({
+    roomId: recordingId,
+    maxPeers: meshMaxPeers,
+    role: requestedStudioRole ?? 'host',
+  });
 
   const meshTiles = useMemo<Tile[]>(() => {
     return mesh.remotePeers.flatMap((peer) => {
@@ -752,10 +1083,87 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     ]
   );
 
-  const recorderParticipantId = recordingSession?.hostParticipantId;
+  const ensureLocalHostParticipantId = useCallback(async () => {
+    if (sessionMode !== 'studio' || requestedStudioRole === 'guest') return null;
+    if (recordingSession?.hostParticipantId) {
+      setLocalHostParticipantId(recordingSession.hostParticipantId);
+      return recordingSession.hostParticipantId;
+    }
+    if (localHostParticipantId) return localHostParticipantId;
+    if (hostParticipantEnsureRef.current) {
+      return hostParticipantEnsureRef.current;
+    }
+
+    const resolvePromise = (async () => {
+      const listed = await ParticipantsAPI.list(recordingId);
+      const existingHost = listed.participants.find((participant) => participant.role === 'host');
+      if (existingHost) {
+        setLocalHostParticipantId(existingHost.id);
+        return existingHost.id;
+      }
+
+      const created = await ParticipantsAPI.create(recordingId, {
+        role: 'host',
+        displayName: displayName?.trim() || profile?.name?.trim() || 'Host',
+      });
+      setLocalHostParticipantId(created.participant.id);
+      setCreatedInviteParticipantIdByRole((prev) => ({
+        ...prev,
+        host: prev.host ?? created.participant.id,
+      }));
+      return created.participant.id;
+    })();
+
+    hostParticipantEnsureRef.current = resolvePromise;
+    try {
+      return await resolvePromise;
+    } finally {
+      if (hostParticipantEnsureRef.current === resolvePromise) {
+        hostParticipantEnsureRef.current = null;
+      }
+    }
+  }, [
+    displayName,
+    localHostParticipantId,
+    profile?.name,
+    recordingId,
+    recordingSession?.hostParticipantId,
+    requestedStudioRole,
+    sessionMode,
+  ]);
 
   useEffect(() => {
-    if (sessionMode !== 'studio' || !isRecording || !canControlRecording) return;
+    if (sessionMode !== 'studio' || requestedStudioRole === 'guest') return;
+    if (recordingSession?.hostParticipantId) {
+      setLocalHostParticipantId(recordingSession.hostParticipantId);
+      return;
+    }
+    void ensureLocalHostParticipantId().catch((err) => {
+      setSessionError((err as Error)?.message ?? 'Failed to resolve host participant.');
+    });
+  }, [
+    ensureLocalHostParticipantId,
+    recordingSession?.hostParticipantId,
+    requestedStudioRole,
+    sessionMode,
+  ]);
+
+  const effectiveRequestedParticipantId =
+    requestedStudioRole === 'guest' && requestedGuestToken
+      ? claimedGuestParticipantId ?? requestedParticipantId
+      : requestedParticipantId;
+
+  const recorderParticipantId =
+    requestedStudioRole === 'guest'
+      ? effectiveRequestedParticipantId
+      : recordingSession?.hostParticipantId ??
+        localHostParticipantId ??
+        createdInviteParticipantIdByRole.host ??
+        null;
+
+  useEffect(() => {
+    if (sessionMode !== 'studio' || !isRecording) return;
+    if (requestedStudioRole === 'guest' && !guestClaimReady) return;
     if (!recorderParticipantId) return;
 
     const kinds = Object.keys(recordingStreams) as RecorderKind[];
@@ -786,11 +1194,12 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         });
     });
   }, [
-    canControlRecording,
+    guestClaimReady,
     isRecording,
     recorderParticipantId,
     recordingId,
     recordingStreams,
+    requestedStudioRole,
     sessionMode,
     trackIdByKind,
   ]);
@@ -813,13 +1222,86 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     return sources;
   }, [recordingStreams, trackIdByKind]);
 
+  const recoverTrackChunkState = useCallback(
+    async (trackId: string) => {
+      if (!trackId || recoveringTrackIdsRef.current.has(trackId)) return;
+      recoveringTrackIdsRef.current.add(trackId);
+
+      try {
+        const response = await RecordingsAPI.getTrackChunkRecovery(recordingId, trackId);
+        const highestExistingSeq = Math.max(0, Math.floor(response.recovery.highestExistingSeq));
+        const highestContiguousUploadedSeq = Math.max(
+          0,
+          Math.floor(response.recovery.highestContiguousUploadedSeq)
+        );
+        const nextSeq = Math.max(1, Math.floor(response.recovery.nextSeq));
+
+        setRecoveredNextSeqByTrack((prev) =>
+          prev[trackId] === nextSeq ? prev : { ...prev, [trackId]: nextSeq }
+        );
+        setRecoveryReadyByTrack((prev) => (prev[trackId] ? prev : { ...prev, [trackId]: true }));
+
+        await chunkUploadQueue.reconcileTrackRecovery({
+          recordingId,
+          trackId,
+          highestExistingSeq,
+          highestContiguousUploadedSeq,
+          resumableTus: response.recovery.resumableTus,
+        });
+
+        setRecorderError((prev) => {
+          if (!prev) return prev;
+          if (!prev.includes('recover track chunk state')) return prev;
+          return null;
+        });
+      } catch (err) {
+        setRecoveryReadyByTrack((prev) => ({ ...prev, [trackId]: false }));
+        setRecorderError(
+          (err as Error)?.message ?? `Failed to recover track chunk state for ${trackId}.`
+        );
+      } finally {
+        recoveringTrackIdsRef.current.delete(trackId);
+      }
+    },
+    [chunkUploadQueue, recordingId]
+  );
+
+  useEffect(() => {
+    if (sessionMode !== 'studio' || !isRecording) return;
+
+    const trackIds = Array.from(new Set(rollingRecorderSources.map((source) => source.trackId)));
+    trackIds.forEach((trackId) => {
+      if (recoveryReadyByTrack[trackId]) return;
+      void recoverTrackChunkState(trackId);
+    });
+  }, [isRecording, recoverTrackChunkState, recoveryReadyByTrack, rollingRecorderSources, sessionMode]);
+
+  useEffect(() => {
+    if (sessionMode !== 'studio') return;
+    const onOnline = () => {
+      if (!isRecording) return;
+      const trackIds = Array.from(new Set(rollingRecorderSources.map((source) => source.trackId)));
+      trackIds.forEach((trackId) => {
+        void recoverTrackChunkState(trackId);
+      });
+    };
+    window.addEventListener('online', onOnline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+    };
+  }, [isRecording, recoverTrackChunkState, rollingRecorderSources, sessionMode]);
+
+  const recoveredRollingRecorderSources = useMemo(
+    () => rollingRecorderSources.filter((source) => recoveryReadyByTrack[source.trackId]),
+    [recoveryReadyByTrack, rollingRecorderSources]
+  );
+
   const onChunkEmitted = useCallback(
     (chunk: RollingRecorderChunk) => {
-      setChunkStats((prev) => ({
-        ...prev,
-        [chunk.kind]: prev[chunk.kind] + 1,
-        totalBytes: prev.totalBytes + chunk.bytes,
-      }));
+      const previous = latestChunkSeqByTrackRef.current.get(chunk.trackId) ?? 0;
+      if (chunk.seq > previous) {
+        latestChunkSeqByTrackRef.current.set(chunk.trackId, chunk.seq);
+      }
 
       void chunkUploadQueue
         .enqueue({
@@ -839,14 +1321,40 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     [chunkUploadProtocol, chunkUploadQueue, recordingId]
   );
 
-  const chunkRecorder = useRollingChunkRecorder({
+  const finalizeTrackCaptures = useCallback(async () => {
+    if (sessionMode !== 'studio') return;
+    const trackIds = Array.from(
+      new Set(Object.values(trackIdByKind).filter((value): value is string => !!value))
+    );
+    if (trackIds.length === 0) return;
+
+    const captureClosedAt = new Date().toISOString();
+    await Promise.all(
+      trackIds.map(async (trackId) => {
+        const observedFinalSeq = latestChunkSeqByTrackRef.current.get(trackId) ?? 0;
+        const recoveredNextSeq = recoveredNextSeqByTrack[trackId];
+        const recoveredFinalSeq =
+          typeof recoveredNextSeq === 'number' && Number.isFinite(recoveredNextSeq)
+            ? Math.max(0, Math.floor(recoveredNextSeq) - 1)
+            : 0;
+        const finalSeq = Math.max(observedFinalSeq, recoveredFinalSeq);
+        await RecordingsAPI.finalizeTrack(recordingId, trackId, {
+          finalSeq,
+          captureClosedAt,
+        });
+      })
+    );
+  }, [recordingId, recoveredNextSeqByTrack, sessionMode, trackIdByKind]);
+
+  useRollingChunkRecorder({
     enabled:
       sessionMode === 'studio' &&
       isRecording &&
-      canControlRecording &&
-      rollingRecorderSources.length > 0,
+      !!recorderParticipantId &&
+      recoveredRollingRecorderSources.length > 0,
     timesliceMs: 4000,
-    sources: rollingRecorderSources,
+    sources: recoveredRollingRecorderSources,
+    initialNextSeqByTrack: recoveredNextSeqByTrack,
     onChunk: onChunkEmitted,
     onError: setRecorderError,
   });
@@ -907,10 +1415,13 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   useEffect(() => {
     if (!pinnedTileKey) return;
     const isRemotePinValid = active.tiles.some((tile) => tile.key === pinnedTileKey);
+    const isStudioLocalPin =
+      sessionMode === 'studio' &&
+      (pinnedTileKey === 'studio-local-camera' || pinnedTileKey === 'studio-local-screen');
     const isMeetLocalPin =
       sessionMode === 'meet' &&
       (pinnedTileKey === 'meet-local-camera' || pinnedTileKey === 'meet-local-screen');
-    if (!isRemotePinValid && !isMeetLocalPin) {
+    if (!isRemotePinValid && !isMeetLocalPin && !isStudioLocalPin) {
       setPinnedTileKey(null);
     }
   }, [active.tiles, pinnedTileKey, sessionMode]);
@@ -1058,6 +1569,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         const response = await RecordingsAPI.stopSession(recordingId);
         setRecordingSession(response.session);
         setCanControlRecording(response.canControl);
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        await finalizeTrackCaptures();
       } catch (err) {
         setSessionError((err as Error)?.message ?? 'Failed to stop recording session before leaving.');
       } finally {
@@ -1080,12 +1593,24 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     setSessionBusy(true);
     setSessionError(null);
     try {
+      const wasRecording = isRecording;
+      if (!wasRecording) {
+        const hostId = await ensureLocalHostParticipantId();
+        if (!hostId) {
+          throw new Error('Host participant is required before recording can start.');
+        }
+      }
       const response = isRecording
         ? await RecordingsAPI.stopSession(recordingId)
         : await RecordingsAPI.startSession(recordingId);
 
       setRecordingSession(response.session);
       setCanControlRecording(response.canControl);
+      if (wasRecording) {
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        await finalizeTrackCaptures();
+        setShowUploadStatusModal(true);
+      }
     } catch (err) {
       setSessionError((err as Error)?.message ?? 'Failed to update recording session.');
     } finally {
@@ -1170,21 +1695,175 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     }
   }, [active.status, sessionMode, showPreJoin]);
 
+  useEffect(() => {
+    if (sessionMode === 'studio' && isRecording) {
+      setShowStudioInvitePanel(false);
+    }
+  }, [isRecording, sessionMode]);
+
+  const progressParticipants = useMemo(
+    () => {
+      const participants = recordingProgress?.participants ?? [];
+      const sessionStartedAtMs = recordingSession?.startedAt
+        ? new Date(recordingSession.startedAt).getTime()
+        : null;
+
+      return participants.filter((participant) => {
+        if (participant.participantId === recorderParticipantId) return true;
+        if (effectiveRequestedParticipantId && participant.participantId === effectiveRequestedParticipantId) return true;
+        if (participant.pendingCount > 0) return true;
+        if (participant.trackCount <= 0 && participant.uploadedCount <= 0) return false;
+        if (!sessionStartedAtMs) return true;
+
+        return participant.tracks.some((track) => {
+          if (!track.updatedAt) return true;
+          const updatedMs = new Date(track.updatedAt).getTime();
+          return Number.isFinite(updatedMs) && updatedMs >= sessionStartedAtMs;
+        });
+      });
+    },
+    [
+      recorderParticipantId,
+      recordingProgress?.participants,
+      recordingSession?.startedAt,
+      effectiveRequestedParticipantId,
+    ]
+  );
+
+  useEffect(() => {
+    if (sessionMode !== 'studio') return;
+    if (!recordingSession?.stoppedAt) return;
+    const hasLocalPendingUploads =
+      chunkUploadQueue.stats.pending > 0 || chunkUploadQueue.stats.processing > 0;
+    const hasBackendPendingUploads = progressParticipants.some((participant) => participant.pendingCount > 0);
+    if (!hasLocalPendingUploads && !hasBackendPendingUploads) return;
+    setShowUploadStatusModal(true);
+  }, [
+    chunkUploadQueue.stats.pending,
+    chunkUploadQueue.stats.processing,
+    progressParticipants,
+    recordingSession?.stoppedAt,
+    sessionMode,
+  ]);
+
+  useEffect(() => {
+    if (sessionMode === 'studio' && requestedStudioRole === 'guest') {
+      setShowStudioInvitePanel(false);
+      if (requestedGuestToken && !guestClaimReady) return;
+      if (!effectiveRequestedParticipantId) {
+        setSessionError('Guest invite link is missing participant context. Ask host for a fresh invite link.');
+      }
+    }
+  }, [
+    effectiveRequestedParticipantId,
+    guestClaimReady,
+    requestedGuestToken,
+    requestedStudioRole,
+    sessionMode,
+  ]);
+
   const inviteLink =
     typeof window !== 'undefined'
-      ? `${window.location.origin}/studio/${recordingId}?mode=studio&role=${inviteRole}`
+      ? buildStudioInviteLink({
+          origin: window.location.origin,
+          recordingId,
+          role: inviteRole,
+          participantId: createdInviteParticipantIdByRole[inviteRole] ?? null,
+          guestToken: inviteRole === 'guest' ? createdInviteGuestToken : null,
+        })
       : '';
 
-  const localStudioRole: 'host' | 'guest' = canControlRecording ? 'host' : requestedStudioRole ?? 'guest';
+  const localStudioRole: 'host' | 'guest' = canControlRecording ? 'host' : 'guest';
   const localStudioRoleLabel = localStudioRole === 'host' ? 'Host' : 'Guest';
+  const localParticipantProgress = progressParticipants.find((participant) =>
+    recorderParticipantId
+      ? participant.participantId === recorderParticipantId
+      : effectiveRequestedParticipantId
+        ? participant.participantId === effectiveRequestedParticipantId
+        : participant.role === 'host'
+  );
+  const localUploadComplete = localParticipantProgress
+    ? localParticipantProgress.pendingCount === 0
+    : chunkUploadQueue.stats.pending + chunkUploadQueue.stats.processing === 0;
+
+  useEffect(() => {
+    if (sessionMode !== 'studio') return;
+    if (!showUploadStatusModal) return;
+    if (!recordingSession?.stoppedAt) return;
+    if (!localUploadComplete) return;
+
+    if (localStudioRole === 'guest') {
+      router.replace(`/studio/${recordingId}/thanks`);
+      return;
+    }
+  }, [
+    localStudioRole,
+    localUploadComplete,
+    recordingId,
+    recordingSession?.stoppedAt,
+    router,
+    sessionMode,
+    showUploadStatusModal,
+  ]);
+
+  useEffect(() => {
+    if (sessionMode !== 'studio') return;
+    const hasWork = chunkUploadQueue.stats.pending + chunkUploadQueue.stats.processing > 0;
+    if (!hasWork) return;
+    const handler = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [chunkUploadQueue.stats.pending, chunkUploadQueue.stats.processing, sessionMode]);
+
+  async function ensureInviteParticipantId(role: 'guest' | 'host') {
+    const existing = createdInviteParticipantIdByRole[role];
+    if (existing) {
+      return {
+        participantId: existing,
+        guestToken: role === 'guest' ? createdInviteGuestToken ?? undefined : undefined,
+      };
+    }
+
+    if (role === 'host') {
+      const hostId = await ensureLocalHostParticipantId();
+      if (!hostId) {
+        throw new Error('Host participant is not available.');
+      }
+      setCreatedInviteParticipantIdByRole((prev) => ({ ...prev, host: hostId }));
+      return { participantId: hostId };
+    }
+
+    const result = await ParticipantsAPI.create(recordingId, {
+      role,
+      displayName: `${role === 'host' ? 'Host' : 'Guest'} ${Date.now()}`,
+    });
+    const participantId = result.participant.id;
+    const guestToken = tokenFromMagicLink(result.magicLink);
+    setCreatedInviteParticipantIdByRole((prev) => ({ ...prev, [role]: participantId }));
+    setCreatedInviteGuestToken(guestToken);
+    return { participantId, guestToken: guestToken ?? undefined };
+  }
 
   async function handleCopyInviteLink() {
-    if (!inviteLink) return;
+    if (typeof window === 'undefined') return;
     try {
-      await navigator.clipboard.writeText(inviteLink);
+      const invite = await ensureInviteParticipantId(inviteRole);
+      const link = buildStudioInviteLink({
+        origin: window.location.origin,
+        recordingId,
+        role: inviteRole,
+        participantId: invite.participantId,
+        guestToken: inviteRole === 'guest' ? invite.guestToken ?? null : null,
+      });
+      await navigator.clipboard.writeText(link);
       setCopyState('copied');
+      setInviteNotice(null);
     } catch {
       setCopyState('error');
+      setInviteNotice('Could not create/copy invite link.');
     }
   }
 
@@ -1205,6 +1884,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       badge: 'Camera',
       video: active.localVideo,
       muted: true,
+      micOff: !active.isMicEnabled,
     });
 
     if (active.localScreen.kind === 'livekit' ? !!active.localScreen.track : !!active.localScreen.stream) {
@@ -1214,12 +1894,13 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         badge: 'Screen',
         video: active.localScreen,
         muted: true,
+        micOff: !active.isMicEnabled,
       });
     }
 
     tiles.push(...active.tiles);
     return tiles;
-  }, [active.localScreen, active.localVideo, active.tiles, displayName]);
+  }, [active.isMicEnabled, active.localScreen, active.localVideo, active.tiles, displayName]);
 
   if (showPreJoin && sessionMode === 'studio') {
     return (
@@ -1402,37 +2083,132 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   }
 
   if (!showPreJoin && sessionMode === 'studio') {
-    const people = [
-      { id: 'local', label: displayName || 'You', role: localStudioRoleLabel, isLocal: true },
-      ...active.peers.map((peer) => ({
-        id: peer.id,
-        label: peer.label,
-        role: 'Guest',
-        isLocal: false,
-      })),
-    ];
-    const visibleTiles = studioCanvasTiles.slice(0, 2);
-    const queueTotal =
-      chunkUploadQueue.stats.pending +
-      chunkUploadQueue.stats.processing +
-      chunkUploadQueue.stats.completed +
-      chunkUploadQueue.stats.failed;
-    const uploadedPercent =
-      queueTotal === 0
+    const progressPeople =
+      progressParticipants.map((participant) => {
+        const participantChunkTotal = participant.tracks.reduce(
+          (sum, track) => sum + track.chunkTotal,
+          0
+        );
+        const participantChunkUploaded = participant.tracks.reduce(
+          (sum, track) => sum + track.chunkUploaded,
+          0
+        );
+        const pct =
+          participantChunkTotal > 0
+            ? Math.round((participantChunkUploaded / participantChunkTotal) * 100)
+            : participant.trackCount === 0
+              ? 0
+              : Math.round((participant.uploadedCount / participant.trackCount) * 100);
+        return {
+          id: participant.participantId,
+          label: participant.displayName || participant.participantId.slice(0, 8),
+          role: participant.role === 'host' ? 'Host' : 'Guest',
+          percent: pct,
+          note:
+            participant.pendingCount > 0
+              ? `${Math.max(0, 100 - pct)}% remaining`
+              : 'Upload complete',
+        };
+      }) ?? [];
+    const people =
+      progressPeople.length > 0
+        ? progressPeople
+        : [
+            {
+              id: 'local',
+              label: displayName || 'You',
+              role: localStudioRoleLabel,
+              percent: 0,
+              note: isRecording ? 'Recording...' : 'Waiting for upload...',
+            },
+            ...active.peers.map((peer) => ({
+              id: peer.id,
+              label: peer.label,
+              role: 'Guest',
+              percent: 30,
+              note: 'Connected',
+            })),
+          ];
+    const visibleTiles = studioCanvasTiles;
+    const tileCount = visibleTiles.length;
+    const stageGridClass =
+      tileCount >= 4
+        ? 'xl:grid-cols-4 md:grid-cols-2 auto-rows-fr'
+        : tileCount === 3
+          ? 'xl:grid-cols-3 md:grid-cols-2 auto-rows-fr'
+          : tileCount === 2
+            ? 'md:grid-cols-2 auto-rows-fr'
+            : 'grid-cols-1 auto-rows-fr';
+    const shouldFillTiles = true;
+    const tileClassName = 'h-full min-h-0 rounded-2xl border-violet-400/60 bg-black';
+    const queueTotalBytes = chunkUploadQueue.stats.bytesTotal;
+    const queueUploadedPercent =
+      queueTotalBytes === 0
         ? 0
         : Math.min(
             100,
             Math.round(
-              ((chunkUploadQueue.stats.completed + chunkUploadQueue.stats.processing) * 100) /
-                queueTotal
+              ((chunkUploadQueue.stats.bytesUploaded + chunkUploadQueue.stats.bytesProcessing) * 100) /
+                queueTotalBytes
             )
           );
+    const fallbackProgressChunkTotal = progressParticipants.reduce(
+      (sum, participant) =>
+        sum + participant.tracks.reduce((trackSum, track) => trackSum + track.chunkTotal, 0),
+      0
+    );
+    const fallbackProgressChunkUploaded = progressParticipants.reduce(
+      (sum, participant) =>
+        sum + participant.tracks.reduce((trackSum, track) => trackSum + track.chunkUploaded, 0),
+      0
+    );
+    const progressChunkTotal =
+      recordingProgress?.summary.chunksTotal && recordingProgress.summary.chunksTotal > 0
+        ? recordingProgress.summary.chunksTotal
+        : fallbackProgressChunkTotal;
+    const progressChunkUploaded =
+      recordingProgress?.summary.chunksUploaded && recordingProgress.summary.chunksUploaded > 0
+        ? recordingProgress.summary.chunksUploaded
+        : fallbackProgressChunkUploaded;
+    const progressUploadedPercent =
+      progressChunkTotal > 0
+        ? Math.min(100, Math.round((progressChunkUploaded * 100) / progressChunkTotal))
+        : null;
+    const uploadedPercent = Math.max(progressUploadedPercent ?? 0, queueUploadedPercent);
+    const peopleForPanel =
+      progressPeople.length > 0
+        ? progressPeople
+        : people.map((person, index) =>
+            index === 0
+              ? {
+                  ...person,
+                  percent: uploadedPercent,
+                  note: `${uploadedPercent}% uploaded`,
+                }
+              : person
+          );
+    const hasBackendPendingUploads = progressParticipants.some(
+      (participant) => participant.pendingCount > 0
+    );
+    const hasPendingUploads =
+      chunkUploadQueue.stats.pending > 0 ||
+      chunkUploadQueue.stats.processing > 0 ||
+      hasBackendPendingUploads;
+    const hasAnyUploadedEvidence =
+      progressParticipants.length > 0 ||
+      chunkUploadQueue.stats.completed > 0 ||
+      chunkUploadQueue.stats.bytesUploaded > 0;
+    const canOpenProject = !!recordingSession?.stoppedAt && hasAnyUploadedEvidence && !hasPendingUploads;
+    const showUploadChip =
+      isRecording || hasPendingUploads || (!!recordingSession?.stoppedAt && !localUploadComplete);
     const recordingSeconds = recordingSession?.startedAt
       ? Math.max(0, Math.floor((Date.now() - new Date(recordingSession.startedAt).getTime()) / 1000))
       : 0;
     const recordingClock = `${String(Math.floor(recordingSeconds / 60)).padStart(2, '0')}:${String(
       recordingSeconds % 60
     ).padStart(2, '0')}`;
+    const isMicOff = !active.isMicEnabled;
+    const isCamOff = !active.isCameraEnabled;
 
     return (
       <main className={`${spaceGrotesk.className} h-screen overflow-hidden bg-[#07090f] text-slate-100`}>
@@ -1454,7 +2230,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   REC {recordingClock}
                 </span>
               )}
-              {!isRecording && queueTotal > 0 && (
+              {showUploadChip && (
                 <span className="rounded-full bg-violet-500/25 px-3 py-1 text-sm font-semibold text-violet-100">
                   ↑ {uploadedPercent}% Uploading...
                 </span>
@@ -1479,7 +2255,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               </button>
               <button
                 type="button"
-                onClick={() => setIsInviteModalOpen(true)}
+                onClick={() => setShowStudioInvitePanel(true)}
                 className="rounded-full border border-slate-700 bg-[#1a1f29] px-4 py-2 text-sm hover:border-slate-500"
               >
                 Invite
@@ -1520,60 +2296,78 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           <div className="mt-3 flex min-h-0 flex-1 gap-4">
             <section className="flex min-h-0 flex-1 flex-col rounded-3xl bg-[#090b10] p-3">
               <div className="flex min-h-0 flex-1 gap-3">
-                <aside className="hidden w-[380px] shrink-0 rounded-3xl border border-slate-800 bg-[#1b1f26] p-6 xl:flex xl:flex-col">
-                  <div className="mb-8 flex items-center justify-between">
-                    <h2 className="text-[42px] font-semibold leading-none">Invite someone to join remotely</h2>
-                    <button type="button" className="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-300">
-                      ×
-                    </button>
-                  </div>
-                  <div className="space-y-4">
-                    <div className="grid grid-cols-[minmax(0,1fr)_86px_104px] gap-2">
-                      <input
-                        type="text"
-                        readOnly
-                        value={inviteLink}
-                        className="min-w-0 truncate rounded-xl border border-slate-700 bg-[#141922] px-3 py-2 text-sm text-slate-300"
-                      />
-                      <select
-                        value={inviteRole}
-                        onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
-                        className="rounded-xl border border-slate-700 bg-[#141922] px-2 py-2 text-sm"
-                      >
-                        <option value="guest">Guest</option>
-                        <option value="host">Host</option>
-                      </select>
+                {showStudioInvitePanel && (
+                  <aside className="hidden w-[380px] shrink-0 rounded-3xl border border-slate-800 bg-[#1b1f26] p-6 xl:flex xl:flex-col">
+                    <div className="mb-8 flex items-center justify-between">
+                      <h2 className="text-[42px] font-semibold leading-none">Invite someone to join remotely</h2>
                       <button
                         type="button"
-                        onClick={handleCopyInviteLink}
-                        className="rounded-xl bg-[#8b5cf6] px-2 py-2 text-sm font-semibold text-white hover:bg-[#7c4cf0]"
+                        onClick={() => setShowStudioInvitePanel(false)}
+                        className="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-300"
+                        aria-label="Close invite panel"
                       >
-                        {copyState === 'copied' ? 'Copied' : 'Copy'}
+                        ×
                       </button>
                     </div>
-                  </div>
-                  <div className="my-10 text-center text-xs uppercase tracking-wider text-slate-500">New</div>
-                  <p className="text-3xl font-semibold">Record someone next to you</p>
-                  <button
-                    type="button"
-                    className="mt-6 rounded-xl border border-slate-700 bg-[#2a2f39] px-4 py-3 text-lg font-medium text-slate-100"
-                  >
-                    Add an in-person guest
-                  </button>
-                </aside>
+                    <div className="space-y-4">
+                      <div className="grid grid-cols-[minmax(0,1fr)_86px_104px] gap-2">
+                        <input
+                          type="text"
+                          readOnly
+                          value={inviteLink}
+                          className="min-w-0 truncate rounded-xl border border-slate-700 bg-[#141922] px-3 py-2 text-sm text-slate-300"
+                        />
+                        <select
+                          value={inviteRole}
+                          onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
+                          className="rounded-xl border border-slate-700 bg-[#141922] px-2 py-2 text-sm"
+                        >
+                          <option value="guest">Guest</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={handleCopyInviteLink}
+                          className="rounded-xl bg-[#8b5cf6] px-2 py-2 text-sm font-semibold text-white hover:bg-[#7c4cf0]"
+                        >
+                          {copyState === 'copied' ? 'Copied' : 'Copy'}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="my-10 text-center text-xs uppercase tracking-wider text-slate-500">New</div>
+                    <p className="text-3xl font-semibold">Record someone next to you</p>
+                    <button
+                      type="button"
+                      className="mt-6 rounded-xl border border-slate-700 bg-[#2a2f39] px-4 py-3 text-lg font-medium text-slate-100"
+                    >
+                      Add an in-person guest
+                    </button>
+                  </aside>
+                )}
 
-                <div className="flex min-h-0 flex-1 items-center justify-center rounded-3xl bg-[#05070c] p-2">
-                  <div className={`grid w-full max-w-[980px] gap-3 ${visibleTiles.length > 1 ? 'md:grid-cols-2' : 'grid-cols-1'}`}>
-                    {visibleTiles.map((tile) => (
-                      <ParticipantTile
-                        key={tile.key}
-                        tile={tile}
-                        className="aspect-[3/4] rounded-2xl border-violet-400/60 bg-black"
-                        showPin
-                        isPinned={pinnedTileKey === tile.key}
-                        onPin={() => togglePin(tile.key)}
-                      />
-                    ))}
+                <div className="flex min-h-0 flex-1 rounded-3xl bg-[#05070c] p-2">
+                  <div
+                    className={`grid h-full w-full gap-3 ${
+                      showStudioInvitePanel ? 'mx-auto max-w-[980px]' : ''
+                    } ${stageGridClass}`}
+                  >
+                    {visibleTiles.map((tile) => {
+                      const isLocalStudioTile =
+                        tile.key === 'studio-local-camera' || tile.key === 'studio-local-screen';
+                      return (
+                        <ParticipantTile
+                          key={tile.key}
+                          tile={tile}
+                          className={tileClassName}
+                          showPin
+                          isPinned={pinnedTileKey === tile.key}
+                          onPin={() => togglePin(tile.key)}
+                          micPublishEnabled={isLocalStudioTile ? active.isMicEnabled : undefined}
+                          onTogglePublishMic={isLocalStudioTile ? active.toggleMic : undefined}
+                          fill={shouldFillTiles}
+                          showBadge={false}
+                        />
+                      );
+                    })}
                     {visibleTiles.length === 0 && (
                       <div className="flex aspect-[4/3] items-center justify-center rounded-xl border border-dashed border-slate-700 bg-black/40 text-sm text-slate-500">
                         Waiting for camera feed...
@@ -1584,50 +2378,132 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               </div>
 
               <footer className="mt-4 flex justify-center">
-                <div className="flex flex-wrap items-center justify-center gap-2 rounded-2xl border border-slate-800 bg-[#121722] px-3 py-3">
-                  <button
-                    type="button"
-                    onClick={handleToggleRecordingSession}
-                    disabled={!canControlRecording || sessionBusy}
-                    className={`rounded-xl px-5 py-2.5 text-base font-semibold text-white ${
-                      isRecording ? 'bg-rose-500' : 'bg-rose-500/90'
-                    } disabled:opacity-60`}
-                  >
-                    {sessionBusy ? (isRecording ? 'Stopping...' : 'Starting...') : isRecording ? 'Stop' : 'Record'}
-                  </button>
-                  <button type="button" onClick={active.toggleMic} className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Mic</button>
-                  <button type="button" onClick={active.toggleCamera} className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Cam</button>
-                  <button type="button" className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Speaker</button>
-                  <button type="button" className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">React</button>
-                  <button type="button" className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Raise</button>
-                  <button type="button" className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Layout</button>
-                  <button type="button" className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Script</button>
-                  <button type="button" onClick={() => setIsInviteModalOpen(true)} className="rounded-xl bg-[#222834] px-4 py-2.5 text-sm">Share</button>
-                  <button
-                    type="button"
-                    onClick={handleLeave}
-                    disabled={sessionBusy}
-                    className="rounded-xl bg-[#4b1f2a] px-4 py-2.5 text-sm text-rose-100 hover:bg-[#5f2735] disabled:opacity-60"
-                  >
-                    {sessionBusy ? 'Leaving...' : 'Leave'}
-                  </button>
+                <div className="flex flex-wrap items-start justify-center gap-3 rounded-2xl border border-slate-800 bg-[#121722] px-4 py-3">
+                  {localStudioRole === 'host' && (
+                    <>
+                      <div className="flex flex-col items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={handleToggleRecordingSession}
+                          disabled={!canControlRecording || sessionBusy}
+                          className={`rounded-xl px-5 py-2.5 text-base font-semibold text-white ${
+                            isRecording ? 'bg-rose-500' : 'bg-rose-500/90'
+                          } disabled:opacity-60`}
+                        >
+                          {sessionBusy ? (isRecording ? 'Stopping...' : 'Starting...') : isRecording ? 'Stop' : 'Record'}
+                        </button>
+                        <span className="text-[10px] text-slate-400">{isRecording ? 'Stop' : 'Start'}</span>
+                      </div>
+
+                      <div className="h-12 w-px bg-slate-700/70" />
+                    </>
+                  )}
+
+                  <div className="flex flex-col items-center gap-1">
+                    <button
+                      type="button"
+                      className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100"
+                    >
+                      <StudioControlIcon kind="mark" />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Mark Clip</span>
+                  </div>
+
+                  <div className="flex flex-col items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={active.toggleMic}
+                      className={`flex h-12 w-12 items-center justify-center rounded-xl ${
+                        isMicOff ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40' : 'bg-[#222834] text-slate-100'
+                      }`}
+                    >
+                      <StudioControlIcon kind="mic" off={isMicOff} />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Mic</span>
+                  </div>
+
+                  <div className="flex flex-col items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={active.toggleCamera}
+                      className={`flex h-12 w-12 items-center justify-center rounded-xl ${
+                        isCamOff ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40' : 'bg-[#222834] text-slate-100'
+                      }`}
+                    >
+                      <StudioControlIcon kind="cam" off={isCamOff} />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Cam</span>
+                  </div>
+
+                  <div className="flex flex-col items-center gap-1">
+                    <button type="button" className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100">
+                      <StudioControlIcon kind="speaker" />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Speaker</span>
+                  </div>
+                  <div className="flex flex-col items-center gap-1">
+                    <button type="button" className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100">
+                      <StudioControlIcon kind="react" />
+                    </button>
+                    <span className="text-[10px] text-slate-400">React</span>
+                  </div>
+                  <div className="flex flex-col items-center gap-1">
+                    <button type="button" className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100">
+                      <StudioControlIcon kind="raise" />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Raise</span>
+                  </div>
+                  <div className="flex flex-col items-center gap-1">
+                    <button type="button" className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100">
+                      <StudioControlIcon kind="layout" />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Layout</span>
+                  </div>
+                  <div className="flex flex-col items-center gap-1">
+                    <button type="button" className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100">
+                      <StudioControlIcon kind="script" />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Script</span>
+                  </div>
+                  <div className="flex flex-col items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={active.toggleScreen}
+                      className={`flex h-12 w-12 items-center justify-center rounded-xl ${
+                        active.isScreenSharing
+                          ? 'border border-cyan-400/60 bg-cyan-500/20 text-cyan-100'
+                          : 'bg-[#222834] text-slate-100'
+                      }`}
+                    >
+                      <StudioControlIcon kind="share" />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Share</span>
+                  </div>
+                  <div className="flex flex-col items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={handleLeave}
+                      disabled={sessionBusy}
+                      className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#4b1f2a] text-rose-100 hover:bg-[#5f2735] disabled:opacity-60"
+                    >
+                      <StudioControlIcon kind="leave" />
+                    </button>
+                    <span className="text-[10px] text-slate-400">Leave</span>
+                  </div>
                 </div>
               </footer>
 
-              <div className="mt-2 flex items-center justify-center gap-2">
-                <p className="text-center text-[11px] text-slate-400">
-                  Chunk recorder: {chunkRecorder.isRunning ? 'running' : 'idle'} · active {chunkRecorder.activeKinds.length} · audio {chunkStats.audio} · video {chunkStats.video} · screen {chunkStats.screen} · queued {chunkUploadQueue.stats.pending} · uploading {chunkUploadQueue.stats.processing} · failed {chunkUploadQueue.stats.failed} · done {chunkUploadQueue.stats.completed} · {chunkUploadQueue.stats.online ? 'online' : 'offline'} · protocol {chunkUploadProtocol}
-                </p>
-                {chunkUploadQueue.stats.failed > 0 && (
+              {chunkUploadQueue.stats.failed > 0 && (
+                <div className="mt-2 flex items-center justify-center">
                   <button
                     type="button"
                     onClick={() => void chunkUploadQueue.retryFailed()}
                     className="rounded border border-amber-600/70 px-2 py-1 text-[10px] text-amber-300 hover:bg-amber-800/20"
                   >
-                    Retry failed
+                    Retry failed uploads
                   </button>
-                )}
-              </div>
+                </div>
+              )}
             </section>
 
             <div className="flex">
@@ -1652,7 +2528,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   </div>
 
                   <div className="mt-4 space-y-3">
-                    {people.map((person, index) => (
+                    {peopleForPanel.map((person) => (
                       <div key={person.id} className="rounded-xl border border-slate-800 bg-[#1b202a] p-3">
                         <div className="flex items-start gap-3">
                           <div className="h-14 w-14 rounded-md border border-slate-700 bg-slate-900" />
@@ -1664,15 +2540,13 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                               )}
                             </div>
                             <p className="text-sm text-slate-400">{person.role}</p>
-                            <p className="text-xs text-slate-500">
-                              {person.isLocal ? `${uploadedPercent}% uploaded` : index === 0 ? 'Host control' : 'Connected'}
-                            </p>
+                            <p className="text-xs text-slate-500">{person.note}</p>
                           </div>
                         </div>
                         <div className="mt-3 h-1.5 w-full rounded-full bg-slate-800">
                           <div
                             className="h-full rounded-full bg-emerald-400/80"
-                            style={{ width: `${person.isLocal ? Math.max(uploadedPercent, 5) : 30}%` }}
+                            style={{ width: `${Math.max(person.percent, 5)}%` }}
                           />
                         </div>
                       </div>
@@ -1707,6 +2581,19 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
             </div>
           </div>
         </div>
+
+        <UploadStatusModal
+          open={showUploadStatusModal}
+          participants={progressParticipants}
+          canOpenProject={canOpenProject}
+          onClose={() => setShowUploadStatusModal(false)}
+          onGoToProject={() => {
+            setShowUploadStatusModal(false);
+            if (localStudioRole === 'host') {
+              router.push(`/recordings/${recordingId}`);
+            }
+          }}
+        />
 
         {isInviteModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
@@ -1744,7 +2631,6 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     className="rounded-xl border border-slate-700 bg-[#242936] px-3 py-3 text-sm text-slate-100"
                   >
                     <option value="guest">Guest</option>
-                    <option value="host">Host</option>
                   </select>
                   <button
                     type="button"
@@ -1774,7 +2660,6 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     className="rounded-xl border border-slate-700 bg-[#242936] px-3 py-3 text-sm text-slate-100"
                   >
                     <option value="guest">Guest</option>
-                    <option value="host">Host</option>
                   </select>
                   <button
                     type="button"
