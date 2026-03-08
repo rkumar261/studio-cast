@@ -3,6 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as tus from 'tus-js-client';
 import { RecordingsAPI } from '@/lib/api';
+import {
+  reconcileTrackRecoveryItems,
+  selectTrackSerializedBatch,
+  selectTusResumeCandidate,
+  trackExecutionKey,
+} from './queue-logic';
 
 export type ChunkUploadProtocol = 'tus' | 'multipart';
 type ChunkKind = 'audio' | 'video' | 'screen';
@@ -32,6 +38,10 @@ type PersistedQueueItem = {
   attempts: number;
   status: QueueStatus;
   nextAttemptAt: number;
+  resumableTusId?: string;
+  resumableTusUrl?: string;
+  resumableTusChunkId?: string;
+  resumableTusUploadState?: string;
   lastError?: string;
   createdAt: number;
   updatedAt: number;
@@ -54,6 +64,20 @@ type UseChunkUploadQueueArgs = {
   recordingId?: string;
   concurrency?: number;
   maxRetries?: number;
+};
+
+export type TrackChunkRecoverySnapshot = {
+  recordingId: string;
+  trackId: string;
+  highestExistingSeq: number;
+  highestContiguousUploadedSeq: number;
+  resumableTus?: {
+    chunkId: string;
+    seq: number;
+    tusId: string;
+    tusUrl?: string;
+    tusUploadState?: string;
+  };
 };
 
 const DB_NAME = 'studio-cast-chunk-queue';
@@ -156,6 +180,21 @@ function normalizeTusResourceUrl(uploadUrl: string, endpoint: string): string {
   }
 }
 
+function parseTusIdFromUrl(url?: string | null): string | undefined {
+  if (!url) return undefined;
+  try {
+    const cleaned = url.split('?')[0]?.replace(/\/+$/, '');
+    const maybeId = cleaned?.split('/').pop()?.trim();
+    return maybeId || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function tusUrlFromId(tusId: string, endpoint: string): string {
+  return normalizeTusResourceUrl(`${endpoint}${tusId}`, endpoint);
+}
+
 function getStatusFromUploadError(err: unknown): number | null {
   const maybe = err as {
     originalResponse?: {
@@ -178,9 +217,18 @@ function isHardTusFailure(err: unknown): boolean {
 
   const message = (err as Error | undefined)?.message?.toLowerCase() ?? '';
   if (!message) return false;
+  if (message.includes('seq mismatch')) return true;
   if (message.includes('did not include tus upload endpoint')) return true;
   if (message.includes('failed to resume upload') && message.includes('response code: n/a')) return true;
   if (message.includes('failed to fetch')) return true;
+  return false;
+}
+
+function isTusResumeFailure(err: unknown): boolean {
+  const message = (err as Error | undefined)?.message?.toLowerCase() ?? '';
+  if (!message) return false;
+  if (message.includes('failed to resume upload')) return true;
+  if (message.includes('method: head')) return true;
   return false;
 }
 
@@ -192,6 +240,7 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
 
   const dbRef = useRef<IDBDatabase | null>(null);
   const inFlightRef = useRef<Set<string>>(new Set());
+  const inFlightTrackIdsRef = useRef<Set<string>>(new Set());
   const tickTimerRef = useRef<number | null>(null);
   const mountedRef = useRef(false);
   const completedByRecordingRef = useRef<Map<string, { count: number; bytes: number }>>(new Map());
@@ -311,6 +360,17 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
           seq: item.seq,
           bytesExpected: item.bytes,
         });
+        if (initiated.status === 'seq_mismatch') {
+          throw new Error(
+            `Seq mismatch on initiate (track=${item.trackId}, requested=${item.seq}, nextExpected=${initiated.nextExpectedSeq ?? 'unknown'})`
+          );
+        }
+        if (initiated.already || initiated.chunk?.state === 'uploaded') {
+          return;
+        }
+        if (!initiated.chunk?.id) {
+          throw new Error('Chunk initiate response did not include chunk id.');
+        }
 
         await RecordingsAPI.completeChunkMultipart(item.recordingId, initiated.chunk.id, {
           bytesReceived: item.bytes,
@@ -326,6 +386,17 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
         protocol: 'tus',
         bytesExpected: item.bytes,
       });
+      if (initiated.status === 'seq_mismatch') {
+        throw new Error(
+          `Seq mismatch on initiate (track=${item.trackId}, requested=${item.seq}, nextExpected=${initiated.nextExpectedSeq ?? 'unknown'})`
+        );
+      }
+      if (initiated.already || initiated.chunk?.state === 'uploaded') {
+        return;
+      }
+      if (!initiated.chunk?.id) {
+        throw new Error('Chunk initiate response did not include chunk id.');
+      }
 
       const uploadPlan = initiated.uploadPlan;
       const endpoint = normalizeTusEndpoint(uploadPlan?.tusEndpoint);
@@ -333,33 +404,114 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
         throw new Error('Chunk initiate response did not include tus upload endpoint.');
       }
 
-      const tusUrl = await new Promise<string>((resolve, reject) => {
-        const upload = new tus.Upload(item.blob, {
-          endpoint,
-          metadata: {
-            'chunk-id': uploadPlan?.metadata.chunkId ?? initiated.chunk.id,
-            'recording-id': item.recordingId,
-            'track-id': item.trackId,
-            seq: String(item.seq),
-          },
-          uploadSize: item.bytes,
-          removeFingerprintOnSuccess: true,
-          storeFingerprintForResuming: false,
-          withCredentials: false,
-          retryDelays: [300, 600, 1200, 2500],
-          chunkSize: 5 * 1024 * 1024,
-          onShouldRetry: (error) => !isHardTusFailure(error),
-          onError: reject,
-          onProgress: (sent) => {
-            progressBytesByIdRef.current.set(item.id, sent);
-            void refreshStats();
-          },
-          onSuccess: () => {
-            resolve(normalizeTusResourceUrl(upload.url ?? '', endpoint));
-          },
+      const chunkId =
+        item.resumableTusChunkId ??
+        initiated.resumeUploadPlan?.chunkId ??
+        uploadPlan?.metadata.chunkId ??
+        initiated.chunk.id;
+      let persistedTusUrl = item.resumableTusUrl;
+      let persistedTusId = item.resumableTusId;
+      let persistedChunkId = item.resumableTusChunkId;
+      const persistResumableIdentity = async (candidateUrl?: string) => {
+        if (!candidateUrl) return;
+        const normalized = normalizeTusResourceUrl(candidateUrl, endpoint);
+        const tusId = parseTusIdFromUrl(normalized);
+        if (
+          normalized === persistedTusUrl &&
+          tusId === persistedTusId &&
+          chunkId === persistedChunkId
+        ) {
+          return;
+        }
+        persistedTusUrl = normalized;
+        persistedTusId = tusId;
+        persistedChunkId = chunkId;
+        await markItem({
+          ...item,
+          resumableTusId: tusId,
+          resumableTusUrl: normalized,
+          resumableTusChunkId: chunkId,
+          resumableTusUploadState: 'uploading',
+          updatedAt: nowMs(),
         });
-        upload.start();
+      };
+
+      const startTusUpload = (resumeUrl?: string) =>
+        new Promise<string>((resolve, reject) => {
+          const upload = new tus.Upload(item.blob, {
+            endpoint,
+            ...(resumeUrl ? { uploadUrl: normalizeTusResourceUrl(resumeUrl, endpoint) } : {}),
+            metadata: {
+              'chunk-id': chunkId,
+              'recording-id': item.recordingId,
+              'track-id': item.trackId,
+              seq: String(item.seq),
+            },
+            uploadSize: item.bytes,
+            removeFingerprintOnSuccess: true,
+            storeFingerprintForResuming: true,
+            fingerprint: async () => `${item.recordingId}:${item.trackId}:${item.seq}:tus`,
+            retryDelays: [300, 600, 1200, 2500],
+            chunkSize: 5 * 1024 * 1024,
+            onShouldRetry: (error) => !isHardTusFailure(error),
+            onError: (err) => {
+              if (upload.url) {
+                void persistResumableIdentity(upload.url);
+              }
+              reject(err);
+            },
+            onProgress: (sent) => {
+              progressBytesByIdRef.current.set(item.id, sent);
+              if (upload.url) {
+                void persistResumableIdentity(upload.url);
+              }
+              void refreshStats();
+            },
+            onSuccess: () => {
+              if (upload.url) {
+                void persistResumableIdentity(upload.url);
+              }
+              resolve(normalizeTusResourceUrl(upload.url ?? '', endpoint));
+            },
+          });
+
+          if (!resumeUrl) {
+            void upload.findPreviousUploads().then((previousUploads) => {
+              const previous = previousUploads[0];
+              if (previous) upload.resumeFromPreviousUpload(previous);
+              upload.start();
+            }).catch(() => {
+              upload.start();
+            });
+            return;
+          }
+
+          upload.start();
+        });
+
+      let tusUrl = '';
+      const resumeUrl = selectTusResumeCandidate({
+        itemTusUrl: item.resumableTusUrl,
+        itemTusId: item.resumableTusId,
+        resumePlanTusId: initiated.resumeUploadPlan?.tusId,
+        resumePlanTusResourceUrl: initiated.resumeUploadPlan?.tusResourceUrl,
+        resumePlanTusUrl: initiated.resumeUploadPlan?.tusUrl,
+        endpoint,
+        buildTusUrlFromId: tusUrlFromId,
       });
+      if (resumeUrl) {
+        await persistResumableIdentity(resumeUrl);
+      }
+      if (resumeUrl) {
+        try {
+          tusUrl = await startTusUpload(resumeUrl);
+        } catch (err) {
+          if (!isTusResumeFailure(err)) throw err;
+          tusUrl = await startTusUpload();
+        }
+      } else {
+        tusUrl = await startTusUpload();
+      }
 
       await RecordingsAPI.completeChunk(item.recordingId, initiated.chunk.id, {
         protocol: 'tus',
@@ -367,14 +519,16 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
         tusUrl: tusUrl || undefined,
       });
     },
-    [refreshStats, scopeRecordingId]
+    [markItem, refreshStats, scopeRecordingId]
   );
 
   const processItem = useCallback(
     async (item: PersistedQueueItem) => {
       const id = item.id;
-      if (inFlightRef.current.has(id)) return;
+      const trackKey = trackExecutionKey(item);
+      if (inFlightRef.current.has(id) || inFlightTrackIdsRef.current.has(trackKey)) return;
       inFlightRef.current.add(id);
+      inFlightTrackIdsRef.current.add(trackKey);
 
       try {
         const processingItem: PersistedQueueItem = {
@@ -393,10 +547,17 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
       } catch (err) {
         const message = (err as Error)?.message ?? 'Chunk upload failed';
         setLastError(message);
-        const attempts = item.attempts + 1;
+        const latest =
+          dbRef.current == null
+            ? undefined
+            : await withStore<PersistedQueueItem | undefined>(dbRef.current, 'readonly', (store) =>
+                store.get(id)
+              );
+        const base = latest ?? item;
+        const attempts = Math.max(base.attempts, item.attempts + 1);
         const retryBlocked = isHardTusFailure(err);
         const failedItem: PersistedQueueItem = {
-          ...item,
+          ...base,
           attempts,
           status: 'failed',
           lastError: message,
@@ -410,6 +571,7 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
       } finally {
         progressBytesByIdRef.current.delete(id);
         inFlightRef.current.delete(id);
+        inFlightTrackIdsRef.current.delete(trackKey);
       }
     },
     [addCompleted, deleteItem, markItem, maxRetries, refreshStats, runUpload]
@@ -428,15 +590,13 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
     const all = await withStore<PersistedQueueItem[]>(db, 'readonly', (store) => store.getAll());
     const now = nowMs();
 
-    const candidates = all
-      .filter(isItemInScope)
-      .filter((item) => item.nextAttemptAt <= now)
-      .filter((item) => item.status === 'queued' || item.status === 'failed')
-      .filter((item) => !inFlightRef.current.has(item.id))
-      .sort((a, b) => a.seq - b.seq);
-
-    const availableSlots = Math.max(0, concurrency - inFlightRef.current.size);
-    const selected = candidates.slice(0, availableSlots);
+    const selected = selectTrackSerializedBatch({
+      items: all.filter(isItemInScope),
+      now,
+      concurrency,
+      inFlightItemIds: inFlightRef.current,
+      inFlightTrackKeys: inFlightTrackIdsRef.current,
+    });
     await Promise.all(selected.map((item) => processItem(item)));
     await refreshStats();
   }, [args.enabled, concurrency, isItemInScope, processItem, refreshStats]);
@@ -469,6 +629,10 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
         attempts: existing?.attempts ?? 0,
         status: 'queued',
         nextAttemptAt: nowMs(),
+        resumableTusId: existing?.resumableTusId,
+        resumableTusUrl: existing?.resumableTusUrl,
+        resumableTusChunkId: existing?.resumableTusChunkId,
+        resumableTusUploadState: existing?.resumableTusUploadState,
         createdAt: existing?.createdAt ?? nowMs(),
         updatedAt: nowMs(),
       };
@@ -504,6 +668,33 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
     void tick();
   }, [isItemInScope, markItem, refreshStats, tick]);
 
+  const reconcileTrackRecovery = useCallback(
+    async (snapshot: TrackChunkRecoverySnapshot) => {
+      const db = dbRef.current;
+      if (!db) return;
+      if (scopeRecordingId && snapshot.recordingId !== scopeRecordingId) return;
+
+      const all = await withStore<PersistedQueueItem[]>(db, 'readonly', (store) => store.getAll());
+      const recoveryActions = reconcileTrackRecoveryItems({
+        items: all,
+        inFlightItemIds: inFlightRef.current,
+        snapshot,
+        now: nowMs(),
+      });
+
+      if (recoveryActions.deleteIds.length > 0) {
+        await Promise.all(recoveryActions.deleteIds.map((id) => deleteItem(id)));
+      }
+      if (recoveryActions.upserts.length > 0) {
+        await Promise.all(recoveryActions.upserts.map((item) => markItem(item)));
+      }
+
+      await refreshStats();
+      void tick();
+    },
+    [deleteItem, markItem, refreshStats, scopeRecordingId, tick]
+  );
+
   useEffect(() => {
     mountedRef.current = true;
 
@@ -519,6 +710,7 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
 
     return () => {
       mountedRef.current = false;
+      inFlightTrackIdsRef.current.clear();
       if (tickTimerRef.current) {
         window.clearInterval(tickTimerRef.current);
         tickTimerRef.current = null;
@@ -575,6 +767,7 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
   return {
     enqueue,
     retryFailed,
+    reconcileTrackRecovery,
     stats: queueSummary,
     lastError,
   };

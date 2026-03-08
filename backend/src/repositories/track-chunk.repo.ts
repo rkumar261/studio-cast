@@ -87,6 +87,7 @@ export async function hasIncompletePreviousChunk(trackId: string, seq: number): 
 export async function markTrackChunkUploaded(args: {
   chunkId: string;
   bytesReceived?: number;
+  bytesExpected?: number;
   storageKeyRaw?: string;
   etag?: string;
   checksumSha256?: string;
@@ -96,18 +97,95 @@ export async function markTrackChunkUploaded(args: {
     data: {
       state: 'uploaded',
       bytes_received: args.bytesReceived != null ? BigInt(args.bytesReceived) : undefined,
+      bytes_expected: args.bytesExpected != null ? BigInt(args.bytesExpected) : undefined,
       storage_key_raw: args.storageKeyRaw ?? undefined,
+      tus_upload_state: 'completed',
+      failure_reason: null,
+      last_error_at: null,
+      materialized_at: new Date(),
       etag: args.etag ?? undefined,
       checksum_sha256: args.checksumSha256 ?? undefined,
     },
   });
 }
 
-export async function setTrackChunkTusRef(args: { chunkId: string; tusId: string }) {
+export async function markTrackChunkUploading(args: {
+  chunkId: string;
+  tusId?: string;
+  tusResourceUrl?: string;
+  tusUploadState?: string;
+  bytesExpected?: number;
+  bytesReceived?: number;
+}) {
+  const existing = await prisma.track_chunk.findUnique({
+    where: { id: args.chunkId },
+    select: { state: true, tus_upload_state: true },
+  });
+
+  if (existing?.state === 'uploaded') {
+    return prisma.track_chunk.findUnique({ where: { id: args.chunkId } });
+  }
+
+  const nextTusUploadState =
+    existing?.tus_upload_state === 'completed'
+      ? 'completed'
+      : (args.tusUploadState ?? 'uploading');
+
   return prisma.track_chunk.update({
     where: { id: args.chunkId },
     data: {
-      storage_key_raw: `tus-id:${args.tusId}`,
+      state: 'uploading',
+      tus_upload_id: args.tusId ?? undefined,
+      tus_resource_url: args.tusResourceUrl ?? undefined,
+      tus_upload_state: nextTusUploadState,
+      bytes_expected: args.bytesExpected != null ? BigInt(args.bytesExpected) : undefined,
+      bytes_received: args.bytesReceived != null ? BigInt(args.bytesReceived) : undefined,
+      failure_reason: null,
+      last_error_at: null,
     },
+  });
+}
+
+export async function markTrackChunkFailed(args: {
+  chunkId: string;
+  reason: string;
+  bytesReceived?: number;
+  tusUploadState?: string;
+}) {
+  const existing = await prisma.track_chunk.findUnique({
+    where: { id: args.chunkId },
+    select: { state: true },
+  });
+  if (existing?.state === 'uploaded') {
+    return prisma.track_chunk.findUnique({ where: { id: args.chunkId } });
+  }
+
+  return prisma.track_chunk.update({
+    where: { id: args.chunkId },
+    data: {
+      state: 'failed',
+      failure_reason: args.reason.slice(0, 1000),
+      last_error_at: new Date(),
+      tus_upload_state: args.tusUploadState ?? 'failed',
+      bytes_received: args.bytesReceived != null ? BigInt(args.bytesReceived) : undefined,
+    },
+  });
+}
+
+export async function setTrackChunkTusRef(args: {
+  chunkId: string;
+  tusId: string;
+  tusResourceUrl?: string;
+  tusUploadState?: string;
+  bytesExpected?: number;
+  bytesReceived?: number;
+}) {
+  return markTrackChunkUploading({
+    chunkId: args.chunkId,
+    tusId: args.tusId,
+    tusResourceUrl: args.tusResourceUrl,
+    tusUploadState: args.tusUploadState ?? 'created',
+    bytesExpected: args.bytesExpected,
+    bytesReceived: args.bytesReceived,
   });
 }

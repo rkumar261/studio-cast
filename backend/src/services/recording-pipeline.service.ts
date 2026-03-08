@@ -1,24 +1,30 @@
 import { recording_status } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { enqueueStitchJob } from '../repositories/job.repo.js';
+import { evaluateTrackStitchReadiness, evaluateTrackUploadCompleteness } from './track-contiguity.service.js';
 
 type TrackChunkRow = {
+  seq: number;
   state: string;
   storage_key_raw: string | null;
 };
 
 type TrackForStitch = {
   id: string;
+  final_seq: number | null;
+  capture_closed_at: Date | null;
   storage_key_raw: string | null;
   track_chunk: TrackChunkRow[];
 };
 
 function trackReadyForStitch(track: TrackForStitch): boolean {
-  if (track.storage_key_raw) return false;
-  if (track.track_chunk.length === 0) return false;
-  return track.track_chunk.every(
-    (chunk) => chunk.state === 'uploaded' && !!chunk.storage_key_raw
-  );
+  const readiness = evaluateTrackStitchReadiness({
+    storageKeyRaw: track.storage_key_raw,
+    captureClosedAt: track.capture_closed_at,
+    finalSeq: track.final_seq,
+    chunks: track.track_chunk,
+  });
+  return readiness.ready;
 }
 
 async function loadRecordingStopState(recordingId: string) {
@@ -41,16 +47,18 @@ export async function maybeEnqueueStitchJobsForRecording(recordingId: string) {
   const tracks = await prisma.track.findMany({
     where: {
       recording_id: recordingId,
-      track_chunk: {
-        some: {},
-      },
+      capture_closed_at: { not: null },
+      final_seq: { not: null },
     },
     select: {
       id: true,
+      final_seq: true,
+      capture_closed_at: true,
       storage_key_raw: true,
       track_chunk: {
         orderBy: { seq: 'asc' },
         select: {
+          seq: true,
           state: true,
           storage_key_raw: true,
         },
@@ -81,10 +89,13 @@ export async function maybeEnqueueStitchJobForTrack(recordingId: string, trackId
     },
     select: {
       id: true,
+      final_seq: true,
+      capture_closed_at: true,
       storage_key_raw: true,
       track_chunk: {
         orderBy: { seq: 'asc' },
         select: {
+          seq: true,
           state: true,
           storage_key_raw: true,
         },
@@ -107,43 +118,41 @@ export async function maybeMarkRecordingProcessing(recordingId: string) {
   const recording = await loadRecordingStopState(recordingId);
   if (!recording || !recording.stopped_at) return { updated: false };
 
-  const totalChunks = await prisma.track_chunk.count({
-    where: {
-      track: {
-        recording_id: recordingId,
-      },
-    },
-  });
-
-  if (totalChunks === 0) return { updated: false };
-
-  const pendingChunks = await prisma.track_chunk.count({
-    where: {
-      track: {
-        recording_id: recordingId,
-      },
-      OR: [{ state: { not: 'uploaded' } }, { storage_key_raw: null }],
-    },
-  });
-
-  if (pendingChunks > 0) return { updated: false };
-
-  const tracksWithChunks = await prisma.track.findMany({
+  const finalizedTracks = await prisma.track.findMany({
     where: {
       recording_id: recordingId,
-      track_chunk: {
-        some: {},
-      },
+      capture_closed_at: { not: null },
+      final_seq: { not: null },
     },
     select: {
       id: true,
+      final_seq: true,
+      capture_closed_at: true,
       storage_key_raw: true,
+      track_chunk: {
+        orderBy: { seq: 'asc' },
+        select: {
+          seq: true,
+          state: true,
+          storage_key_raw: true,
+        },
+      },
     },
   });
+  if (finalizedTracks.length === 0) return { updated: false };
 
-  if (tracksWithChunks.length === 0) return { updated: false };
+  const allFinalizedChunksMaterialized = finalizedTracks.every((track) => {
+    const completeness = evaluateTrackUploadCompleteness({
+      captureClosedAt: track.capture_closed_at,
+      finalSeq: track.final_seq,
+      chunks: track.track_chunk,
+    });
+    return completeness.complete;
+  });
+  if (!allFinalizedChunksMaterialized) return { updated: false };
 
-  const allTracksStitched = tracksWithChunks.every((track) => !!track.storage_key_raw);
+  const tracksRequiringStitch = finalizedTracks.filter((track) => (track.final_seq ?? 0) > 0);
+  const allTracksStitched = tracksRequiringStitch.every((track) => !!track.storage_key_raw);
   if (!allTracksStitched) return { updated: false };
 
   if (

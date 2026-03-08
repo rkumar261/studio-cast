@@ -51,6 +51,18 @@ export async function signAccessJwt(payload: Record<string, unknown>) {
         .sign(key);
 }
 
+export async function signGuestAccessJwt(payload: {
+    participantId: string;
+    recordingId: string;
+}) {
+    return signAccessJwt({
+        sub: `guest:${payload.participantId}`,
+        principalType: 'guest',
+        participantId: payload.participantId,
+        recordingId: payload.recordingId,
+    });
+}
+
 export async function signRefreshJwt(userId: string) {
     const key = await importPrivateKey(privatePem);
     const now = Math.floor(Date.now() / 1000);

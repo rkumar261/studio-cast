@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { consumeNextSeq, seedSeqFromServerTruth } from './recorder-seq';
 
 type ChunkKind = 'audio' | 'video' | 'screen';
 
@@ -23,6 +24,7 @@ type UseRollingChunkRecorderArgs = {
   enabled: boolean;
   timesliceMs?: number;
   sources: RollingRecorderSource[];
+  initialNextSeqByTrack?: Record<string, number>;
   onChunk: (chunk: RollingRecorderChunk) => void;
   onError?: (message: string) => void;
 };
@@ -74,6 +76,18 @@ export function useRollingChunkRecorder(args: UseRollingChunkRecorderArgs) {
     onErrorRef.current = args.onError;
   }, [args.onError]);
 
+  const initialNextSeqKey = useMemo(() => {
+    const entries = Object.entries(args.initialNextSeqByTrack ?? {}).sort(([a], [b]) => a.localeCompare(b));
+    return entries.map(([trackId, seq]) => `${trackId}:${seq}`).join('|');
+  }, [args.initialNextSeqByTrack]);
+
+  useEffect(() => {
+    seedSeqFromServerTruth({
+      seqByTrack: seqByTrackRef.current,
+      initialNextSeqByTrack: args.initialNextSeqByTrack,
+    });
+  }, [initialNextSeqKey, args.initialNextSeqByTrack]);
+
   const sourceKey = useMemo(() => {
     return args.sources
       .map((source) => `${source.kind}:${source.trackId}:${source.stream.id}`)
@@ -120,9 +134,11 @@ export function useRollingChunkRecorder(args: UseRollingChunkRecorderArgs) {
         recorder.ondataavailable = (event) => {
           const blob = event.data;
           if (!blob || blob.size <= 0) return;
-          const previousSeq = seqByTrackRef.current.get(source.trackId) ?? 0;
-          const nextSeq = previousSeq + 1;
-          seqByTrackRef.current.set(source.trackId, nextSeq);
+          const nextSeq = consumeNextSeq({
+            seqByTrack: seqByTrackRef.current,
+            trackId: source.trackId,
+            initialNextSeqByTrack: args.initialNextSeqByTrack,
+          });
 
           onChunkRef.current({
             kind: source.kind,
@@ -154,7 +170,7 @@ export function useRollingChunkRecorder(args: UseRollingChunkRecorderArgs) {
     return () => {
       teardown();
     };
-  }, [args.enabled, sourceKey, timesliceMs, args.sources]);
+  }, [args.enabled, args.initialNextSeqByTrack, sourceKey, timesliceMs, args.sources]);
 
   return {
     error,

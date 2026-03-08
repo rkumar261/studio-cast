@@ -159,6 +159,7 @@ const routes: FastifyPluginAsync = async (app) => {
       // clear cookies
       reply.clearCookie('access_token', { path: '/', domain: COOKIE_DOMAIN });
       reply.clearCookie('refresh_token', { path: '/', domain: COOKIE_DOMAIN });
+      reply.clearCookie('guest_access_token', { path: '/', domain: COOKIE_DOMAIN });
 
       return reply.code(200).send({
         status: 'success',

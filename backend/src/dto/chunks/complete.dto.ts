@@ -17,6 +17,12 @@ export type CompleteTrackChunkResponse = {
     bytesReceived: number;
     bytesExpected?: number;
     storageKeyRaw?: string;
+    tusUploadId?: string;
+    tusResourceUrl?: string;
+    tusUploadState?: string;
+    failureReason?: string;
+    lastErrorAt?: string;
+    materializedAt?: string;
     etag?: string;
     checksumSha256?: string;
     createdAt: string;

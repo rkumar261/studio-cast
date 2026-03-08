@@ -1,6 +1,7 @@
 import { track_kind, track_state } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import type { RegisterTrackBody, RegisterTrackResponse } from '../dto/tracks/register.dto.js';
+import type { RequestPrincipal } from '../lib/request-principal.js';
 
 type ServiceResult<T> =
   | { code: 'ok'; data: T }
@@ -31,7 +32,7 @@ function toDto(row: {
 
 export async function registerTrackIdentityService(args: {
   recordingId: string;
-  requesterId: string;
+  principal: RequestPrincipal;
   body: RegisterTrackBody;
 }): Promise<ServiceResult<RegisterTrackResponse>> {
   const rec = await prisma.recording.findUnique({
@@ -40,7 +41,11 @@ export async function registerTrackIdentityService(args: {
   });
 
   if (!rec) return { code: 'not_found' };
-  if (rec.userId && rec.userId !== args.requesterId) return { code: 'forbidden' };
+  if (args.principal.kind === 'user') {
+    if (rec.userId && rec.userId !== args.principal.userId) return { code: 'forbidden' };
+  } else if (args.principal.recordingId !== args.recordingId) {
+    return { code: 'forbidden' };
+  }
 
   const participant = await prisma.participant.findUnique({
     where: { id: args.body.participantId },
@@ -49,6 +54,12 @@ export async function registerTrackIdentityService(args: {
 
   if (!participant) return { code: 'participant_not_found' };
   if (participant.recording_id !== args.recordingId) return { code: 'invalid_participant' };
+  if (
+    args.principal.kind === 'guest' &&
+    participant.id !== args.principal.participantId
+  ) {
+    return { code: 'forbidden' };
+  }
 
   const existing = await prisma.track.findFirst({
     where: {

@@ -103,6 +103,39 @@ function getTrack(participant: Participant, source: Track.Source): Track | null 
   return pub?.track ?? null;
 }
 
+function tokenFromMagicLink(magicLink?: string): string | null {
+  if (!magicLink) return null;
+  try {
+    const parsed = new URL(magicLink, window.location.origin);
+    const fromQuery = parsed.searchParams.get('guestToken')?.trim();
+    if (fromQuery) return fromQuery;
+    const segment = parsed.pathname.split('/').filter(Boolean).pop()?.trim();
+    return segment || null;
+  } catch {
+    const segment = magicLink.split('/').filter(Boolean).pop()?.trim();
+    return segment || null;
+  }
+}
+
+function buildStudioInviteLink(args: {
+  origin: string;
+  recordingId: string;
+  role: 'guest' | 'host';
+  participantId?: string | null;
+  guestToken?: string | null;
+}) {
+  const url = new URL(`/studio/${args.recordingId}`, args.origin);
+  url.searchParams.set('mode', 'studio');
+  url.searchParams.set('role', args.role);
+  if (args.participantId) {
+    url.searchParams.set('participantId', args.participantId);
+  }
+  if (args.role === 'guest' && args.guestToken) {
+    url.searchParams.set('guestToken', args.guestToken);
+  }
+  return url.toString();
+}
+
 function useAttachMedia<T extends HTMLMediaElement>(
   mediaRef: React.RefObject<T | null>,
   source?: MediaSource,
@@ -411,6 +444,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       ? 'guest'
       : null;
   const requestedParticipantId = searchParams.get('participantId')?.trim() || null;
+  const requestedGuestToken = searchParams.get('guestToken')?.trim() || null;
 
   const meshMaxPeers = Number(process.env.NEXT_PUBLIC_MESH_MAX_PEERS ?? '4');
 
@@ -451,9 +485,19 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [createdInviteParticipantIdByRole, setCreatedInviteParticipantIdByRole] = useState<
     Partial<Record<'guest' | 'host', string>>
   >({});
+  const [createdInviteGuestToken, setCreatedInviteGuestToken] = useState<string | null>(null);
+  const [claimedGuestParticipantId, setClaimedGuestParticipantId] = useState<string | null>(null);
+  const [guestClaimReady, setGuestClaimReady] = useState(
+    !(sessionMode === 'studio' && requestedStudioRole === 'guest' && !!requestedGuestToken)
+  );
+  const claimedGuestTokenRef = useRef<string | null>(null);
   const [trackIdByKind, setTrackIdByKind] = useState<Partial<Record<RecorderKind, string>>>({});
+  const [recoveredNextSeqByTrack, setRecoveredNextSeqByTrack] = useState<Record<string, number>>({});
+  const [recoveryReadyByTrack, setRecoveryReadyByTrack] = useState<Record<string, boolean>>({});
   const [recorderError, setRecorderError] = useState<string | null>(null);
   const registeringKindsRef = useRef<Set<RecorderKind>>(new Set());
+  const recoveringTrackIdsRef = useRef<Set<string>>(new Set());
+  const latestChunkSeqByTrackRef = useRef<Map<string, number>>(new Map());
   const [showMeetSelfPreview, setShowMeetSelfPreview] = useState(true);
   const [meetSelfPreviewExpanded, setMeetSelfPreviewExpanded] = useState(false);
   const [meetStageFit, setMeetStageFit] = useState<'contain' | 'cover'>('contain');
@@ -519,6 +563,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   const refreshRecordingSession = useCallback(async () => {
     if (sessionMode !== 'studio') return;
+    if (requestedStudioRole === 'guest' && !guestClaimReady) return;
 
     try {
       const res = await RecordingsAPI.getSession(recordingId);
@@ -528,17 +573,46 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     } catch (err) {
       setSessionError((err as Error)?.message ?? 'Failed to refresh recording session.');
     }
-  }, [recordingId, requestedStudioRole, sessionMode]);
+  }, [guestClaimReady, recordingId, requestedStudioRole, sessionMode]);
 
   const refreshRecordingProgress = useCallback(async () => {
     if (sessionMode !== 'studio') return;
+    if (requestedStudioRole === 'guest' && !guestClaimReady) return;
     try {
       const progress = await RecordingsAPI.getProgress(recordingId);
       setRecordingProgress(progress);
     } catch {
       // keep UI resilient; session/queue UI still functions without progress payload
     }
-  }, [recordingId, sessionMode]);
+  }, [guestClaimReady, recordingId, requestedStudioRole, sessionMode]);
+
+  useEffect(() => {
+    if (sessionMode !== 'studio' || requestedStudioRole !== 'guest') return;
+    if (!requestedGuestToken) {
+      setGuestClaimReady(true);
+      return;
+    }
+    if (claimedGuestTokenRef.current === requestedGuestToken) return;
+
+    let cancelled = false;
+    setGuestClaimReady(false);
+    void ParticipantsAPI.claimGuest(requestedGuestToken)
+      .then((result) => {
+        if (cancelled) return;
+        claimedGuestTokenRef.current = requestedGuestToken;
+        setClaimedGuestParticipantId(result.participant.id);
+        setGuestClaimReady(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setGuestClaimReady(false);
+        setSessionError('Guest invite token is invalid or expired. Ask host for a fresh invite link.');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [requestedGuestToken, requestedStudioRole, sessionMode]);
 
   const hasLocalQueueWork =
     sessionMode === 'studio' &&
@@ -606,12 +680,20 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   useEffect(() => {
     setTrackIdByKind({});
+    setRecoveredNextSeqByTrack({});
+    setRecoveryReadyByTrack({});
     setRecorderError(null);
+    setCreatedInviteGuestToken(null);
+    setClaimedGuestParticipantId(null);
+    setGuestClaimReady(!(requestedStudioRole === 'guest' && !!requestedGuestToken));
+    claimedGuestTokenRef.current = null;
     registeringKindsRef.current.clear();
+    recoveringTrackIdsRef.current.clear();
+    latestChunkSeqByTrackRef.current.clear();
     setShowStudioInvitePanel(true);
     setCreatedInviteParticipantIdByRole({});
     setLocalHostParticipantId(null);
-  }, [recordingId]);
+  }, [recordingId, requestedGuestToken, requestedStudioRole]);
 
   const stopPreJoinPreview = useCallback(() => {
     if (preJoinStreamRef.current) {
@@ -1066,9 +1148,14 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     sessionMode,
   ]);
 
+  const effectiveRequestedParticipantId =
+    requestedStudioRole === 'guest' && requestedGuestToken
+      ? claimedGuestParticipantId ?? requestedParticipantId
+      : requestedParticipantId;
+
   const recorderParticipantId =
     requestedStudioRole === 'guest'
-      ? requestedParticipantId
+      ? effectiveRequestedParticipantId
       : recordingSession?.hostParticipantId ??
         localHostParticipantId ??
         createdInviteParticipantIdByRole.host ??
@@ -1076,6 +1163,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   useEffect(() => {
     if (sessionMode !== 'studio' || !isRecording) return;
+    if (requestedStudioRole === 'guest' && !guestClaimReady) return;
     if (!recorderParticipantId) return;
 
     const kinds = Object.keys(recordingStreams) as RecorderKind[];
@@ -1106,10 +1194,12 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         });
     });
   }, [
+    guestClaimReady,
     isRecording,
     recorderParticipantId,
     recordingId,
     recordingStreams,
+    requestedStudioRole,
     sessionMode,
     trackIdByKind,
   ]);
@@ -1132,8 +1222,87 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     return sources;
   }, [recordingStreams, trackIdByKind]);
 
+  const recoverTrackChunkState = useCallback(
+    async (trackId: string) => {
+      if (!trackId || recoveringTrackIdsRef.current.has(trackId)) return;
+      recoveringTrackIdsRef.current.add(trackId);
+
+      try {
+        const response = await RecordingsAPI.getTrackChunkRecovery(recordingId, trackId);
+        const highestExistingSeq = Math.max(0, Math.floor(response.recovery.highestExistingSeq));
+        const highestContiguousUploadedSeq = Math.max(
+          0,
+          Math.floor(response.recovery.highestContiguousUploadedSeq)
+        );
+        const nextSeq = Math.max(1, Math.floor(response.recovery.nextSeq));
+
+        setRecoveredNextSeqByTrack((prev) =>
+          prev[trackId] === nextSeq ? prev : { ...prev, [trackId]: nextSeq }
+        );
+        setRecoveryReadyByTrack((prev) => (prev[trackId] ? prev : { ...prev, [trackId]: true }));
+
+        await chunkUploadQueue.reconcileTrackRecovery({
+          recordingId,
+          trackId,
+          highestExistingSeq,
+          highestContiguousUploadedSeq,
+          resumableTus: response.recovery.resumableTus,
+        });
+
+        setRecorderError((prev) => {
+          if (!prev) return prev;
+          if (!prev.includes('recover track chunk state')) return prev;
+          return null;
+        });
+      } catch (err) {
+        setRecoveryReadyByTrack((prev) => ({ ...prev, [trackId]: false }));
+        setRecorderError(
+          (err as Error)?.message ?? `Failed to recover track chunk state for ${trackId}.`
+        );
+      } finally {
+        recoveringTrackIdsRef.current.delete(trackId);
+      }
+    },
+    [chunkUploadQueue, recordingId]
+  );
+
+  useEffect(() => {
+    if (sessionMode !== 'studio' || !isRecording) return;
+
+    const trackIds = Array.from(new Set(rollingRecorderSources.map((source) => source.trackId)));
+    trackIds.forEach((trackId) => {
+      if (recoveryReadyByTrack[trackId]) return;
+      void recoverTrackChunkState(trackId);
+    });
+  }, [isRecording, recoverTrackChunkState, recoveryReadyByTrack, rollingRecorderSources, sessionMode]);
+
+  useEffect(() => {
+    if (sessionMode !== 'studio') return;
+    const onOnline = () => {
+      if (!isRecording) return;
+      const trackIds = Array.from(new Set(rollingRecorderSources.map((source) => source.trackId)));
+      trackIds.forEach((trackId) => {
+        void recoverTrackChunkState(trackId);
+      });
+    };
+    window.addEventListener('online', onOnline);
+    return () => {
+      window.removeEventListener('online', onOnline);
+    };
+  }, [isRecording, recoverTrackChunkState, rollingRecorderSources, sessionMode]);
+
+  const recoveredRollingRecorderSources = useMemo(
+    () => rollingRecorderSources.filter((source) => recoveryReadyByTrack[source.trackId]),
+    [recoveryReadyByTrack, rollingRecorderSources]
+  );
+
   const onChunkEmitted = useCallback(
     (chunk: RollingRecorderChunk) => {
+      const previous = latestChunkSeqByTrackRef.current.get(chunk.trackId) ?? 0;
+      if (chunk.seq > previous) {
+        latestChunkSeqByTrackRef.current.set(chunk.trackId, chunk.seq);
+      }
+
       void chunkUploadQueue
         .enqueue({
           recordingId,
@@ -1152,14 +1321,40 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     [chunkUploadProtocol, chunkUploadQueue, recordingId]
   );
 
+  const finalizeTrackCaptures = useCallback(async () => {
+    if (sessionMode !== 'studio') return;
+    const trackIds = Array.from(
+      new Set(Object.values(trackIdByKind).filter((value): value is string => !!value))
+    );
+    if (trackIds.length === 0) return;
+
+    const captureClosedAt = new Date().toISOString();
+    await Promise.all(
+      trackIds.map(async (trackId) => {
+        const observedFinalSeq = latestChunkSeqByTrackRef.current.get(trackId) ?? 0;
+        const recoveredNextSeq = recoveredNextSeqByTrack[trackId];
+        const recoveredFinalSeq =
+          typeof recoveredNextSeq === 'number' && Number.isFinite(recoveredNextSeq)
+            ? Math.max(0, Math.floor(recoveredNextSeq) - 1)
+            : 0;
+        const finalSeq = Math.max(observedFinalSeq, recoveredFinalSeq);
+        await RecordingsAPI.finalizeTrack(recordingId, trackId, {
+          finalSeq,
+          captureClosedAt,
+        });
+      })
+    );
+  }, [recordingId, recoveredNextSeqByTrack, sessionMode, trackIdByKind]);
+
   useRollingChunkRecorder({
     enabled:
       sessionMode === 'studio' &&
       isRecording &&
       !!recorderParticipantId &&
-      rollingRecorderSources.length > 0,
+      recoveredRollingRecorderSources.length > 0,
     timesliceMs: 4000,
-    sources: rollingRecorderSources,
+    sources: recoveredRollingRecorderSources,
+    initialNextSeqByTrack: recoveredNextSeqByTrack,
     onChunk: onChunkEmitted,
     onError: setRecorderError,
   });
@@ -1374,6 +1569,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         const response = await RecordingsAPI.stopSession(recordingId);
         setRecordingSession(response.session);
         setCanControlRecording(response.canControl);
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        await finalizeTrackCaptures();
       } catch (err) {
         setSessionError((err as Error)?.message ?? 'Failed to stop recording session before leaving.');
       } finally {
@@ -1410,6 +1607,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       setRecordingSession(response.session);
       setCanControlRecording(response.canControl);
       if (wasRecording) {
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        await finalizeTrackCaptures();
         setShowUploadStatusModal(true);
       }
     } catch (err) {
@@ -1511,7 +1710,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
       return participants.filter((participant) => {
         if (participant.participantId === recorderParticipantId) return true;
-        if (requestedParticipantId && participant.participantId === requestedParticipantId) return true;
+        if (effectiveRequestedParticipantId && participant.participantId === effectiveRequestedParticipantId) return true;
         if (participant.pendingCount > 0) return true;
         if (participant.trackCount <= 0 && participant.uploadedCount <= 0) return false;
         if (!sessionStartedAtMs) return true;
@@ -1527,7 +1726,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       recorderParticipantId,
       recordingProgress?.participants,
       recordingSession?.startedAt,
-      requestedParticipantId,
+      effectiveRequestedParticipantId,
     ]
   );
 
@@ -1550,19 +1749,28 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   useEffect(() => {
     if (sessionMode === 'studio' && requestedStudioRole === 'guest') {
       setShowStudioInvitePanel(false);
-      if (!requestedParticipantId) {
+      if (requestedGuestToken && !guestClaimReady) return;
+      if (!effectiveRequestedParticipantId) {
         setSessionError('Guest invite link is missing participant context. Ask host for a fresh invite link.');
       }
     }
-  }, [requestedParticipantId, requestedStudioRole, sessionMode]);
+  }, [
+    effectiveRequestedParticipantId,
+    guestClaimReady,
+    requestedGuestToken,
+    requestedStudioRole,
+    sessionMode,
+  ]);
 
   const inviteLink =
     typeof window !== 'undefined'
-      ? `${window.location.origin}/studio/${recordingId}?mode=studio&role=${inviteRole}${
-          createdInviteParticipantIdByRole[inviteRole]
-            ? `&participantId=${encodeURIComponent(createdInviteParticipantIdByRole[inviteRole] as string)}`
-            : ''
-        }`
+      ? buildStudioInviteLink({
+          origin: window.location.origin,
+          recordingId,
+          role: inviteRole,
+          participantId: createdInviteParticipantIdByRole[inviteRole] ?? null,
+          guestToken: inviteRole === 'guest' ? createdInviteGuestToken : null,
+        })
       : '';
 
   const localStudioRole: 'host' | 'guest' = canControlRecording ? 'host' : 'guest';
@@ -1570,8 +1778,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const localParticipantProgress = progressParticipants.find((participant) =>
     recorderParticipantId
       ? participant.participantId === recorderParticipantId
-      : requestedParticipantId
-        ? participant.participantId === requestedParticipantId
+      : effectiveRequestedParticipantId
+        ? participant.participantId === effectiveRequestedParticipantId
         : participant.role === 'host'
   );
   const localUploadComplete = localParticipantProgress
@@ -1612,7 +1820,12 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   async function ensureInviteParticipantId(role: 'guest' | 'host') {
     const existing = createdInviteParticipantIdByRole[role];
-    if (existing) return existing;
+    if (existing) {
+      return {
+        participantId: existing,
+        guestToken: role === 'guest' ? createdInviteGuestToken ?? undefined : undefined,
+      };
+    }
 
     if (role === 'host') {
       const hostId = await ensureLocalHostParticipantId();
@@ -1620,7 +1833,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         throw new Error('Host participant is not available.');
       }
       setCreatedInviteParticipantIdByRole((prev) => ({ ...prev, host: hostId }));
-      return hostId;
+      return { participantId: hostId };
     }
 
     const result = await ParticipantsAPI.create(recordingId, {
@@ -1628,15 +1841,23 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       displayName: `${role === 'host' ? 'Host' : 'Guest'} ${Date.now()}`,
     });
     const participantId = result.participant.id;
+    const guestToken = tokenFromMagicLink(result.magicLink);
     setCreatedInviteParticipantIdByRole((prev) => ({ ...prev, [role]: participantId }));
-    return participantId;
+    setCreatedInviteGuestToken(guestToken);
+    return { participantId, guestToken: guestToken ?? undefined };
   }
 
   async function handleCopyInviteLink() {
     if (typeof window === 'undefined') return;
     try {
-      const participantId = await ensureInviteParticipantId(inviteRole);
-      const link = `${window.location.origin}/studio/${recordingId}?mode=studio&role=${inviteRole}&participantId=${encodeURIComponent(participantId)}`;
+      const invite = await ensureInviteParticipantId(inviteRole);
+      const link = buildStudioInviteLink({
+        origin: window.location.origin,
+        recordingId,
+        role: inviteRole,
+        participantId: invite.participantId,
+        guestToken: inviteRole === 'guest' ? invite.guestToken ?? null : null,
+      });
       await navigator.clipboard.writeText(link);
       setCopyState('copied');
       setInviteNotice(null);
