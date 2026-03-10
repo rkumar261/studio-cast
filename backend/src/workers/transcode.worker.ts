@@ -4,6 +4,12 @@ import { job_state, job_type, track_state } from '@prisma/client';
 import { pathToFileURL } from 'node:url';
 import { enqueueAsrJob } from '../repositories/job.repo.js';
 import { reconcileRecordingReadiness } from '../services/recording-readiness.service.js';
+import {
+    markParticipantAssetFailed,
+    markParticipantAssetProcessing,
+    markParticipantAssetReady,
+} from '../services/participant-asset.service.js';
+import { emitTelemetry } from '../lib/telemetry.js';
 
 type JobRow = {
     id: string;
@@ -60,6 +66,7 @@ async function runJob(job: JobRow) {
         select: {
             id: true,
             recording_id: true,
+            participant_id: true,
             kind: true,
             storage_key_raw: true,
             storage_key_final: true,
@@ -73,39 +80,75 @@ async function runJob(job: JobRow) {
         throw err;
     }
 
-    // Do the actual transcode (ffmpeg + upload final to R2)
-    const out = await runTranscodeForTrack({
-        id: track.id,
-        recording_id: track.recording_id,
-        storage_key_raw: track.storage_key_raw,
-        // upload.storage_bucket is on upload model; not needed here
+    await markParticipantAssetProcessing({
+        recordingId: track.recording_id,
+        participantId: track.participant_id,
     });
 
-    // Derive simple fields we can persist with your current schema
-    const codec =
-        out.kind === 'video'
-            ? (out.probe.streams.find((s) => s.codec_type === 'video')?.codec_name ?? null)
-            : (out.probe.streams.find((s) => s.codec_type === 'audio')?.codec_name ?? null);
+    try {
+        // Do the actual transcode (ffmpeg + upload final to R2)
+        const out = await runTranscodeForTrack({
+            id: track.id,
+            recording_id: track.recording_id,
+            storage_key_raw: track.storage_key_raw,
+            // upload.storage_bucket is on upload model; not needed here
+        });
 
-    const duration_ms =
-        typeof out.durationSec === 'number' && isFinite(out.durationSec)
-            ? Math.round(out.durationSec * 1000)
-            : null;
+        // Derive simple fields we can persist with your current schema
+        const codec =
+            out.kind === 'video'
+                ? (out.probe.streams.find((s) => s.codec_type === 'video')?.codec_name ?? null)
+                : (out.probe.streams.find((s) => s.codec_type === 'audio')?.codec_name ?? null);
 
-    // Persist final key + mark processed
-    await prisma.track.update({
-        where: { id: track.id },
-        data: {
-            storage_key_final: out.finalKey,
-            state: track_state.processed,
-            codec: codec ?? undefined,
-            duration_ms: duration_ms ?? undefined,
-        },
-    });
+        const duration_ms =
+            typeof out.durationSec === 'number' && isFinite(out.durationSec)
+                ? Math.round(out.durationSec * 1000)
+                : null;
+        const resolution =
+            typeof out.width === 'number' && typeof out.height === 'number'
+                ? `${out.width}x${out.height}`
+                : null;
 
-    // Enqueue follow-up ASR job.
-    await enqueueAsrJob(track.recording_id, track.id);
-    await reconcileRecordingReadiness(track.recording_id);
+        // Persist final key + mark processed
+        await prisma.track.update({
+            where: { id: track.id },
+            data: {
+                storage_key_final: out.finalKey,
+                state: track_state.processed,
+                codec: codec ?? undefined,
+                duration_ms: duration_ms ?? undefined,
+            },
+        });
+
+        await markParticipantAssetReady({
+            recordingId: track.recording_id,
+            participantId: track.participant_id,
+            storageKey: out.finalKey,
+            previewKey: out.finalKey,
+            durationMs: duration_ms ?? undefined,
+            resolution: resolution ?? undefined,
+            metadata: {
+                sourceTrackId: track.id,
+                sourceKind: track.kind,
+                codec: codec ?? undefined,
+                contentType: out.contentType,
+                width: out.width ?? undefined,
+                height: out.height ?? undefined,
+            },
+            exportSet: out.kind === 'video' ? ['mp4'] : ['wav'],
+        });
+
+        // Enqueue follow-up ASR job.
+        await enqueueAsrJob(track.recording_id, track.id);
+        await reconcileRecordingReadiness(track.recording_id);
+    } catch (err) {
+        await markParticipantAssetFailed({
+            recordingId: track.recording_id,
+            participantId: track.participant_id,
+            reason: (err as Error)?.message ?? 'participant_asset_transcode_failed',
+        }).catch(() => {});
+        throw err;
+    }
 }
 
 async function succeed(jobId: string) {
@@ -132,31 +175,65 @@ async function fail(job: JobRow, err: any) {
 }
 
 export async function runTranscodeWorker() {
-    console.log(`[${WORKER_NAME}] starting…`);
+    emitTelemetry({
+        event: 'worker.started',
+        message: `[${WORKER_NAME}] starting`,
+        worker: WORKER_NAME,
+    });
 
     while (!stopping) {
         try {
             const job = await claimOneTranscodeJob();
             if (job) {
                 try {
-                    console.log(`[${WORKER_NAME}] running job ${job.id}`);
+                    emitTelemetry({
+                        event: 'worker.job.running',
+                        message: `[${WORKER_NAME}] running job`,
+                        worker: WORKER_NAME,
+                        recordingId: job.recording_id,
+                        jobId: job.id,
+                    });
                     await runJob(job);
                     await succeed(job.id);
-                    console.log(`[${WORKER_NAME}] job ${job.id} succeeded`);
+                    emitTelemetry({
+                        event: 'worker.job.succeeded',
+                        message: `[${WORKER_NAME}] job succeeded`,
+                        worker: WORKER_NAME,
+                        recordingId: job.recording_id,
+                        jobId: job.id,
+                    });
                 } catch (err) {
-                    console.error(`[${WORKER_NAME}] job ${job.id} failed`, err);
+                    emitTelemetry({
+                        level: 'error',
+                        event: 'worker.job.failed',
+                        message: `[${WORKER_NAME}] job failed`,
+                        worker: WORKER_NAME,
+                        recordingId: job.recording_id,
+                        jobId: job.id,
+                        err,
+                    });
                     await fail(job, err);
                 }
             }
         } catch (loopErr) {
-            console.error(`[${WORKER_NAME}] loop error`, loopErr);
+            emitTelemetry({
+                level: 'error',
+                event: 'worker.loop.error',
+                message: `[${WORKER_NAME}] loop error`,
+                worker: WORKER_NAME,
+                err: loopErr,
+            });
         }
 
         if (stopping) break;
         await new Promise((r) => setTimeout(r, POLL_MS));
     }
 
-    console.log(`[${WORKER_NAME}] stopping.`);
+    emitTelemetry({
+        event: 'worker.stopped',
+        message: `[${WORKER_NAME}] stopping`,
+        worker: WORKER_NAME,
+    });
 }
 
 // // Allow `node dist/workers/transcode.worker.js` to run the loop
@@ -172,7 +249,13 @@ const isMain = process.argv[1]
 
 if (isMain) {
   runTranscodeWorker().catch((e) => {
-    console.error('[transcode-worker] fatal', e);
+    emitTelemetry({
+      level: 'error',
+      event: 'worker.fatal',
+      message: '[transcode-worker] fatal',
+      worker: WORKER_NAME,
+      err: e,
+    });
     process.exit(1);
   });
 }

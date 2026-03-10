@@ -1,5 +1,7 @@
 export type ClaimGuestParticipantBody = {
   token: string;
+  displayName?: string;
+  email?: string;
 };
 
 export type ClaimGuestParticipantResponse = {
@@ -10,4 +12,10 @@ export type ClaimGuestParticipantResponse = {
     displayName?: string;
     email?: string;
   };
+};
+
+export type BootstrapGuestParticipantBody = {
+  token: string;
+  displayName: string;
+  email?: string;
 };

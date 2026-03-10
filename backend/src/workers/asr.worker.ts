@@ -3,6 +3,13 @@ import { job_state, job_type } from '@prisma/client';
 import { pathToFileURL } from 'node:url';
 import { runAsrForTrack } from '../services/asr.service.js';
 import { reconcileRecordingReadiness } from '../services/recording-readiness.service.js';
+import {
+    beginTranscriptRevision,
+    markTranscriptRevisionFailed,
+    publishTranscriptRevision,
+    resolveTranscriptSourceForTrack,
+} from '../services/transcript-asset.service.js';
+import { emitTelemetry } from '../lib/telemetry.js';
 
 type JobRow = {
     id: string;
@@ -58,6 +65,7 @@ async function runJob(job: JobRow) {
         select: {
             id: true,
             recording_id: true,
+            participant_id: true,
             storage_key_final: true,
             duration_ms: true,
         },
@@ -69,31 +77,48 @@ async function runJob(job: JobRow) {
         throw err;
     }
 
-    // Run ASR via service (currently dummy; later real ASR)
-    const { segments } = await runAsrForTrack({
-        storageKeyFinal: track.storage_key_final,
-        durationMs: track.duration_ms,
+    const source = await resolveTranscriptSourceForTrack({
+        recordingId: track.recording_id,
+        trackId: track.id,
+        participantId: track.participant_id,
+        fallbackTrackStorageKey: track.storage_key_final,
     });
 
-    // Idempotency: clear old segments for this recording+track
-    await prisma.transcript_segment.deleteMany({
-        where: { recording_id: track.recording_id, track_id: track.id },
+    const revision = await beginTranscriptRevision({
+        recordingId: track.recording_id,
+        trackId: source.trackId,
+        sourceType: source.type,
+        sourceAssetId: source.assetId,
+        sourceStorageKey: source.storageKey,
+        language: 'en',
     });
 
-    // Insert new segments
-    await prisma.transcript_segment.createMany({
-        data: segments.map((seg) => ({
-            recording_id: track.recording_id,
-            track_id: track.id,
-            start_ms: seg.startMs,
-            end_ms: seg.endMs,
-            text: seg.text,
-            speaker: seg.speaker ?? null,
-            confidence: seg.confidence ?? null,
-        })),
-    });
+    try {
+        const { segments } = await runAsrForTrack({
+            sourceStorageKey: source.storageKey,
+            sourceType: source.type,
+            durationMs: track.duration_ms,
+            language: 'en',
+        });
 
-    await reconcileRecordingReadiness(track.recording_id);
+        await publishTranscriptRevision({
+            transcriptId: revision.id,
+            recordingId: track.recording_id,
+            trackId: source.trackId,
+            language: 'en',
+            segments,
+            storageKey: null,
+        });
+
+        await reconcileRecordingReadiness(track.recording_id);
+    } catch (err) {
+        const message = (err as Error)?.message ?? 'asr_generation_failed';
+        await markTranscriptRevisionFailed({
+            transcriptId: revision.id,
+            reason: message,
+        }).catch(() => {});
+        throw err;
+    }
 }
 
 async function succeed(jobId: string) {
@@ -117,34 +142,70 @@ async function fail(job: JobRow, err: any) {
             last_error: message.slice(0, 8000),
         },
     });
+
+    await reconcileRecordingReadiness(job.recording_id);
 }
 
 export async function runAsrWorker() {
-    console.log(`[${WORKER_NAME}] starting…`);
+    emitTelemetry({
+        event: 'worker.started',
+        message: `[${WORKER_NAME}] starting`,
+        worker: WORKER_NAME,
+    });
 
     while (!stopping) {
         try {
             const job = await claimOneAsrJob();
             if (job) {
                 try {
-                    console.log(`[${WORKER_NAME}] running job ${job.id}`);
+                    emitTelemetry({
+                        event: 'worker.job.running',
+                        message: `[${WORKER_NAME}] running job`,
+                        worker: WORKER_NAME,
+                        jobId: job.id,
+                        recordingId: job.recording_id,
+                    });
                     await runJob(job);
                     await succeed(job.id);
-                    console.log(`[${WORKER_NAME}] job ${job.id} succeeded`);
+                    emitTelemetry({
+                        event: 'worker.job.succeeded',
+                        message: `[${WORKER_NAME}] job succeeded`,
+                        worker: WORKER_NAME,
+                        jobId: job.id,
+                        recordingId: job.recording_id,
+                    });
                 } catch (err) {
-                    console.error(`[${WORKER_NAME}] job ${job.id} failed`, err);
+                    emitTelemetry({
+                        level: 'error',
+                        event: 'worker.job.failed',
+                        message: `[${WORKER_NAME}] job failed`,
+                        worker: WORKER_NAME,
+                        jobId: job.id,
+                        recordingId: job.recording_id,
+                        err,
+                    });
                     await fail(job, err);
                 }
             }
         } catch (loopErr) {
-            console.error(`[${WORKER_NAME}] loop error`, loopErr);
+            emitTelemetry({
+                level: 'error',
+                event: 'worker.loop.error',
+                message: `[${WORKER_NAME}] loop error`,
+                worker: WORKER_NAME,
+                err: loopErr,
+            });
         }
 
         if (stopping) break;
         await new Promise((r) => setTimeout(r, POLL_MS));
     }
 
-    console.log(`[${WORKER_NAME}] stopping.`);
+    emitTelemetry({
+        event: 'worker.stopped',
+        message: `[${WORKER_NAME}] stopping`,
+        worker: WORKER_NAME,
+    });
 }
 
 // Allow `node dist/workers/asr.worker.js` to run the loop (ESM-style)
@@ -153,7 +214,13 @@ const isMain =
 
 if (isMain) {
     runAsrWorker().catch((e) => {
-        console.error('[asr-worker] fatal', e);
+        emitTelemetry({
+            level: 'error',
+            event: 'worker.fatal',
+            message: '[asr-worker] fatal',
+            worker: WORKER_NAME,
+            err: e,
+        });
         process.exit(1);
     });
 }

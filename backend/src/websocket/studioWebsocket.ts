@@ -1,4 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { RequestPrincipal } from '../lib/request-principal.js';
+import { emitTelemetry } from '../lib/telemetry.js';
 
 export type Role = 'host' | 'guest';
 
@@ -56,7 +58,8 @@ type ClientToServerMessage =
 export function handleStudioWsConnection(
   app: FastifyInstance,
   connectionOrSocket: any,
-  _req: FastifyRequest
+  _req: FastifyRequest,
+  principal: RequestPrincipal
 ) {
   // Support both shapes: { socket: ws } OR ws directly
   const ws =
@@ -107,7 +110,19 @@ export function handleStudioWsConnection(
 
     switch (msg.type) {
       case 'join': {
-        const { roomId, peerId, role } = msg;
+        const { roomId } = msg;
+        if (principal.kind === 'guest' && roomId !== principal.recordingId) {
+          safeSend(ws, { type: 'error', roomId, message: 'Guest is out of room scope' });
+          try {
+            ws.close(1008, 'Forbidden');
+          } catch {
+            /* ignore */
+          }
+          return;
+        }
+
+        const peerId = principal.kind === 'guest' ? principal.participantId : msg.peerId;
+        const role: Role = principal.kind === 'guest' ? 'guest' : msg.role;
         currentRoomId = roomId;
         currentPeerId = peerId;
 
@@ -146,11 +161,28 @@ export function handleStudioWsConnection(
         }
 
         app.log.info({ roomId, peerId, role }, `${logPrefix} peer joined room`);
+        if (role === 'guest') {
+          emitTelemetry({
+            logger: app.log,
+            event: 'guest.joined.session',
+            message: 'Guest joined live recording session',
+            recordingId: roomId,
+            sessionId: roomId,
+            participantId: peerId,
+            role,
+          });
+        }
         break;
       }
 
       case 'signal': {
-        const { roomId, peerId, targetPeerId, payload } = msg;
+        const { roomId, targetPeerId, payload } = msg;
+        if (principal.kind === 'guest' && roomId !== principal.recordingId) {
+          safeSend(ws, { type: 'error', roomId, message: 'Guest is out of room scope' });
+          return;
+        }
+
+        const fromPeerId = principal.kind === 'guest' ? principal.participantId : msg.peerId;
         const room = rooms.get(roomId);
         if (!room) {
           safeSend(ws, {
@@ -164,7 +196,7 @@ export function handleStudioWsConnection(
         const signalMsg = {
           type: 'signal',
           roomId,
-          fromPeerId: peerId,
+          fromPeerId,
           payload,
         } as const;
 
@@ -181,7 +213,7 @@ export function handleStudioWsConnection(
           }
         } else {
           for (const other of room.values()) {
-            if (other.peerId !== peerId) {
+            if (other.peerId !== fromPeerId) {
               safeSend(other.socket, signalMsg);
             }
           }
@@ -190,7 +222,13 @@ export function handleStudioWsConnection(
       }
 
       case 'leave': {
-        const { roomId, peerId } = msg;
+        const { roomId } = msg;
+        if (principal.kind === 'guest' && roomId !== principal.recordingId) {
+          safeSend(ws, { type: 'error', roomId, message: 'Guest is out of room scope' });
+          return;
+        }
+
+        const peerId = principal.kind === 'guest' ? principal.participantId : msg.peerId;
         const room = rooms.get(roomId);
         if (!room) return;
 

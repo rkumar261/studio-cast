@@ -11,6 +11,55 @@ import { findRecordingOwner, listParticipantsByRecording } from '../repositories
 import { prisma } from '../lib/prisma.js';
 import { signGuestAccessJwt } from '../lib/jwt.js';
 
+type GuestParticipantLookup = {
+    id: string;
+    recording_id: string;
+    role: string;
+    display_name: string | null;
+    email: string | null;
+};
+
+export type GuestBootstrapAudit = {
+    participantId: string;
+    recordingId: string;
+    inviteTokenHashPrefix: string;
+    displayName: string;
+    emailProvided: boolean;
+};
+
+function toGuestParticipantResponse(participant: GuestParticipantLookup): ClaimGuestParticipantResponse {
+    return {
+        participant: {
+            id: participant.id,
+            recordingId: participant.recording_id,
+            role: 'guest',
+            displayName: participant.display_name ?? undefined,
+            email: participant.email ?? undefined,
+        },
+    };
+}
+
+async function findGuestParticipantByInviteToken(token: string): Promise<{
+    participant: GuestParticipantLookup | null;
+    tokenHash: string;
+}> {
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const participant = await prisma.participant.findFirst({
+        where: {
+            magic_link_hash: tokenHash,
+            role: 'guest',
+        },
+        select: {
+            id: true,
+            recording_id: true,
+            role: true,
+            display_name: true,
+            email: true,
+        },
+    });
+    return { participant, tokenHash };
+}
+
 export async function createParticipantService(
     recordingId: string,
     requesterId: string | null,
@@ -118,20 +167,7 @@ export async function claimGuestParticipantService(
     const token = body.token?.trim();
     if (!token) return { code: 'invalid_token' };
 
-    const tokenHash = createHash('sha256').update(token).digest('hex');
-    const participant = await prisma.participant.findFirst({
-        where: {
-            magic_link_hash: tokenHash,
-            role: 'guest',
-        },
-        select: {
-            id: true,
-            recording_id: true,
-            role: true,
-            display_name: true,
-            email: true,
-        },
-    });
+    const { participant } = await findGuestParticipantByInviteToken(token);
 
     if (!participant) return { code: 'invalid_token' };
 
@@ -143,14 +179,62 @@ export async function claimGuestParticipantService(
     return {
         code: 'ok',
         guestAccessToken,
+        data: toGuestParticipantResponse(participant),
+    };
+}
+
+export async function bootstrapGuestParticipantService(body: ClaimGuestParticipantBody): Promise<
+    | {
+        code: 'ok';
+        data: ClaimGuestParticipantResponse;
+        guestAccessToken: string;
+        audit: GuestBootstrapAudit;
+    }
+    | { code: 'invalid_token' }
+    | { code: 'invalid_display_name'; message: string }
+> {
+    const token = body.token?.trim();
+    if (!token) return { code: 'invalid_token' };
+
+    const displayName = body.displayName?.trim();
+    if (!displayName) {
+        return { code: 'invalid_display_name', message: 'displayName is required' };
+    }
+
+    const normalizedEmail = body.email?.trim();
+    const { participant, tokenHash } = await findGuestParticipantByInviteToken(token);
+    if (!participant) return { code: 'invalid_token' };
+
+    const updated = await prisma.participant.update({
+        where: { id: participant.id },
         data: {
-            participant: {
-                id: participant.id,
-                recordingId: participant.recording_id,
-                role: participant.role as 'guest',
-                displayName: participant.display_name ?? undefined,
-                email: participant.email ?? undefined,
-            },
+            display_name: displayName,
+            ...(normalizedEmail !== undefined ? { email: normalizedEmail || null } : {}),
+        },
+        select: {
+            id: true,
+            recording_id: true,
+            role: true,
+            display_name: true,
+            email: true,
+        },
+    });
+
+    const guestAccessToken = await signGuestAccessJwt({
+        participantId: updated.id,
+        recordingId: updated.recording_id,
+    });
+
+    return {
+        code: 'ok',
+        guestAccessToken,
+        data: toGuestParticipantResponse(updated),
+        audit: {
+            participantId: updated.id,
+            recordingId: updated.recording_id,
+            inviteTokenHashPrefix: tokenHash.slice(0, 12),
+            displayName,
+            emailProvided: normalizedEmail !== undefined && normalizedEmail.length > 0,
         },
     };
 }

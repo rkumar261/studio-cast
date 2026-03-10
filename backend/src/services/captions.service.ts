@@ -4,7 +4,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { listTranscriptSegmentsByRecordingId } from '../repositories/transcript.repo.js';
+import {
+  getLatestPublishedTranscriptByRecordingId,
+  getLatestPublishedTranscriptBySourceAsset,
+  listTranscriptSegmentsByTranscriptId,
+} from '../repositories/transcript.repo.js';
 import { assertFfmpegAvailable } from '../lib/ffmpeg.js';
 import { resolveStorageKeyToLocal, uploadFinalToR2 } from '../lib/storage.js';
 
@@ -12,22 +16,44 @@ export type CaptionRenderOpts = {
   recordingId: string;
   exportType: export_type;        // should be mp4_captions here
   sourceStorageKey: string;       // video file to burn captions into
+  sourceAsset?: {
+    combinedAssetId?: string;
+    participantAssetId?: string;
+  };
 };
 
 export async function renderCaptionsExportForRecording(
   opts: CaptionRenderOpts,
-): Promise<{ finalKey: string }> {
+): Promise<{ finalKey: string; transcriptId: string; transcriptRevision: number }> {
   const { recordingId, exportType, sourceStorageKey } = opts;
 
   // Only relevant for mp4_captions right now
   if (exportType !== export_type.mp4_captions) {
-    return { finalKey: sourceStorageKey };
+    throw new Error('captions_invalid_export_type');
   }
 
-  // Load transcript segments and render subtitle burn-in output.
-  const segments = await listTranscriptSegmentsByRecordingId(recordingId);
+  // Caption source rule:
+  // 1) Use a published transcript (`state=ready` + `published_at`) scoped to source asset when provided.
+  // 2) Otherwise use latest published transcript for recording.
+  const scopedSourceAssetId = opts.sourceAsset?.participantAssetId ?? opts.sourceAsset?.combinedAssetId;
+  const transcript = scopedSourceAssetId
+    ? await getLatestPublishedTranscriptBySourceAsset({
+        recordingId,
+        sourceAssetId: scopedSourceAssetId,
+      })
+    : await getLatestPublishedTranscriptByRecordingId(recordingId);
+
+  if (!transcript) {
+    throw new Error(
+      scopedSourceAssetId
+        ? 'captions_transcript_not_publishable_for_source'
+        : 'captions_transcript_not_publishable',
+    );
+  }
+
+  const segments = await listTranscriptSegmentsByTranscriptId(transcript.id);
   if (segments.length === 0) {
-    throw new Error('captions_no_transcript_segments');
+    throw new Error('captions_no_segments_for_published_transcript');
   }
 
   const subtitlePath = path.join(os.tmpdir(), `studio-cast-${recordingId}-${Date.now()}.srt`);
@@ -42,7 +68,11 @@ export async function renderCaptionsExportForRecording(
     await burnInCaptions(source.localPath, subtitlePath, outputPath);
     await uploadFinalToR2(outputPath, finalKey, 'video/mp4');
 
-    return { finalKey };
+    return {
+      finalKey,
+      transcriptId: transcript.id,
+      transcriptRevision: transcript.revision,
+    };
   } finally {
     await source.cleanup().catch(() => {});
     await fs.unlink(subtitlePath).catch(() => {});

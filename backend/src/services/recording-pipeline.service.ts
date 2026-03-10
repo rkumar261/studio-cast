@@ -2,6 +2,7 @@ import { recording_status } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { enqueueStitchJob } from '../repositories/job.repo.js';
 import { evaluateTrackStitchReadiness, evaluateTrackUploadCompleteness } from './track-contiguity.service.js';
+import { emitTelemetry } from '../lib/telemetry.js';
 
 type TrackChunkRow = {
   seq: number;
@@ -70,7 +71,16 @@ export async function maybeEnqueueStitchJobsForRecording(recordingId: string) {
   for (const track of tracks) {
     if (!trackReadyForStitch(track)) continue;
     const result = await enqueueStitchJob(recordingId, track.id);
-    if (result.created) queuedTrackIds.push(track.id);
+    if (result.created) {
+      queuedTrackIds.push(track.id);
+      emitTelemetry({
+        event: 'stitch.job.queued',
+        message: 'Stitch job queued for finalized track',
+        recordingId,
+        trackId: track.id,
+        trigger: 'recording_reconcile',
+      });
+    }
   }
 
   return { queuedTrackIds };
@@ -108,6 +118,15 @@ export async function maybeEnqueueStitchJobForTrack(recordingId: string, trackId
   }
 
   const result = await enqueueStitchJob(recordingId, track.id);
+  if (result.created) {
+    emitTelemetry({
+      event: 'stitch.job.queued',
+      message: 'Stitch job queued for track',
+      recordingId,
+      trackId: track.id,
+      trigger: 'chunk_completion',
+    });
+  }
   return {
     queued: result.created,
     reason: result.created ? ('queued' as const) : ('already_exists' as const),
@@ -162,6 +181,14 @@ export async function maybeMarkRecordingProcessing(recordingId: string) {
     await prisma.recording.update({
       where: { id: recordingId },
       data: { status: recording_status.processing },
+    });
+
+    emitTelemetry({
+      event: 'recording.processing.entered',
+      message: 'Recording moved from upload to processing',
+      recordingId,
+      sessionId: recordingId,
+      status: recording_status.processing,
     });
 
     return { updated: true };

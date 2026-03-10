@@ -15,7 +15,7 @@ const OAUTH_TMP_MAX_AGE = 60 * 5; // 5 minutes
 const routes: FastifyPluginAsync = async (app) => {
   /**
    * Step 1: Start Google OAuth with PKCE (S256)
-   * - Create state + PKCE code_verifier/code_challenge
+   * - Create state +  PKCE code_verifier/code_challenge
    * - Store state & verifier in HttpOnly cookies (short TTL)
    * - Redirect to Google with code_challenge & S256
    */

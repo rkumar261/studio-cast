@@ -7,8 +7,15 @@ export type ExportDto = {
     recordingId: string;
     type: ExportType;
     state: ExportState;
+    combinedAssetId?: string;
+    participantAssetId?: string;
+    transcriptId?: string;
     storageKey?: string;
     lastError?: string;
+    failureReason?: string;
+    startedAt?: string;
+    readyAt?: string;
+    failedAt?: string;
     createdAt: string;
     updatedAt: string;
 };

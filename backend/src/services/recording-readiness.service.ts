@@ -1,6 +1,7 @@
 import { export_state, export_type, job_state, recording_status, track_state } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { createJob } from '../repositories/job.repo.js';
+import { reconcileCombinedAssetForRecording } from './combined-asset.service.js';
 
 export const REQUIRED_EXPORT_TYPES = [
   export_type.wav,
@@ -46,6 +47,7 @@ function pickCanonicalRequiredExport(
     state: export_state;
     updated_at: Date;
     created_at: Date;
+    combined_asset_id?: string | null;
   }>,
   type: export_type
 ) {
@@ -54,13 +56,25 @@ function pickCanonicalRequiredExport(
     .sort((a, b) => b.updated_at.getTime() - a.updated_at.getTime())[0];
 }
 
-async function upsertRequiredExportArtifacts(recordingId: string) {
+async function upsertRequiredExportArtifacts(args: {
+  recordingId: string;
+  combinedAssetId: string;
+}) {
+  const { recordingId, combinedAssetId } = args;
   const rows = await prisma.export_artifact.findMany({
     where: {
       recording_id: recordingId,
       type: { in: [...REQUIRED_EXPORT_TYPES] },
     },
     orderBy: { created_at: 'asc' },
+    select: {
+      id: true,
+      type: true,
+      state: true,
+      updated_at: true,
+      created_at: true,
+      combined_asset_id: true,
+    },
   });
 
   const ensured: Array<{
@@ -69,17 +83,45 @@ async function upsertRequiredExportArtifacts(recordingId: string) {
     state: export_state;
     updated_at: Date;
     created_at: Date;
+    combined_asset_id: string | null;
   }> = [...rows];
 
   for (const requiredType of REQUIRED_EXPORT_TYPES) {
     const canonical = pickCanonicalRequiredExport(ensured, requiredType);
-    if (canonical) continue;
+    const shouldLinkCombined =
+      requiredType === export_type.mp4 || requiredType === export_type.mp4_captions;
+
+    if (canonical) {
+      if (
+        shouldLinkCombined &&
+        canonical.combined_asset_id !== combinedAssetId
+      ) {
+        const updated = await prisma.export_artifact.update({
+          where: { id: canonical.id },
+          data: {
+            combined_asset_id: combinedAssetId,
+          },
+          select: {
+            id: true,
+            type: true,
+            state: true,
+            updated_at: true,
+            created_at: true,
+            combined_asset_id: true,
+          },
+        });
+        const idx = ensured.findIndex((row) => row.id === canonical.id);
+        if (idx >= 0) ensured[idx] = updated;
+      }
+      continue;
+    }
 
     const created = await prisma.export_artifact.create({
       data: {
         recording_id: recordingId,
         type: requiredType,
         state: export_state.queued,
+        combined_asset_id: shouldLinkCombined ? combinedAssetId : null,
       },
       select: {
         id: true,
@@ -87,6 +129,7 @@ async function upsertRequiredExportArtifacts(recordingId: string) {
         state: true,
         updated_at: true,
         created_at: true,
+        combined_asset_id: true,
       },
     });
 
@@ -99,6 +142,7 @@ async function upsertRequiredExportArtifacts(recordingId: string) {
     state: export_state;
     updated_at: Date;
     created_at: Date;
+    combined_asset_id: string | null;
   }>;
 }
 
@@ -115,10 +159,6 @@ export async function reconcileRecordingReadiness(recordingId: string) {
           state: true,
           storage_key_final: true,
         },
-      },
-      transcript_segment: {
-        select: { id: true },
-        take: 1,
       },
     },
   });
@@ -141,12 +181,18 @@ export async function reconcileRecordingReadiness(recordingId: string) {
     return { code: 'skipped' as const, reason: 'tracks_not_processed' as const };
   }
 
-  const hasTranscript = recording.transcript_segment.length > 0;
-  if (!hasTranscript) {
-    return { code: 'skipped' as const, reason: 'transcript_not_ready' as const };
+  const combined = await reconcileCombinedAssetForRecording({ recordingId });
+  if (combined.code === 'skipped') {
+    return { code: 'skipped' as const, reason: 'combined_not_ready' as const };
+  }
+  if (combined.code === 'failed') {
+    return { code: 'skipped' as const, reason: 'combined_failed' as const };
   }
 
-  const requiredExports = await upsertRequiredExportArtifacts(recordingId);
+  const requiredExports = await upsertRequiredExportArtifacts({
+    recordingId,
+    combinedAssetId: combined.asset.id,
+  });
 
   for (const artifact of requiredExports) {
     if (artifact.state === export_state.queued) {

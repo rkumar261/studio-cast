@@ -109,11 +109,22 @@ export function reconcileTrackRecoveryItems<T extends QueueRecoveryItemCore>(arg
 
   const upsertById = new Map<string, T>();
   for (const item of targetItems) {
+    if (item.seq <= args.snapshot.highestContiguousUploadedSeq) continue;
+    if (args.inFlightItemIds.has(item.id)) continue;
+
+    if (item.status === 'processing') {
+      upsertById.set(item.id, {
+        ...item,
+        status: 'queued',
+        nextAttemptAt: args.now,
+        updatedAt: args.now,
+      });
+      continue;
+    }
+
     if (
       item.seq <= args.snapshot.highestExistingSeq &&
-      item.seq > args.snapshot.highestContiguousUploadedSeq &&
-      item.status === 'failed' &&
-      !args.inFlightItemIds.has(item.id)
+      item.status === 'failed'
     ) {
       upsertById.set(item.id, {
         ...item,

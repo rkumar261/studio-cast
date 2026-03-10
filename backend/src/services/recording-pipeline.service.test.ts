@@ -39,6 +39,23 @@ function finalizedTrack(input: {
   };
 }
 
+function unfinalizedTrack(input: {
+  id: string;
+  chunks: Array<{ seq: number; state: string; storageKeyRaw?: string | null }>;
+}): TrackShape {
+  return {
+    id: input.id,
+    final_seq: null,
+    capture_closed_at: null,
+    storage_key_raw: null,
+    track_chunk: input.chunks.map((chunk) => ({
+      seq: chunk.seq,
+      state: chunk.state,
+      storage_key_raw: chunk.storageKeyRaw ?? `recordings/rec-1/tracks/${input.id}/chunks/${chunk.seq}.webm`,
+    })),
+  };
+}
+
 test('finalized track stitches only after chunks 1..finalSeq are uploaded', async () => {
   const restores: Array<() => void> = [];
   const jobs: any[] = [];
@@ -111,6 +128,48 @@ test('finalized track stitches only after chunks 1..finalSeq are uploaded', asyn
 
     const after = await maybeEnqueueStitchJobsForRecording('rec-1');
     assert.deepEqual(after.queuedTrackIds, ['track-1']);
+  } finally {
+    for (const restore of restores.reverse()) restore();
+  }
+});
+
+test('non-finalized track is not stitch-ready even when chunks exist', async () => {
+  const restores: Array<() => void> = [];
+  const jobs: any[] = [];
+  const tracks: TrackShape[] = [
+    unfinalizedTrack({
+      id: 'track-open',
+      chunks: [
+        { seq: 1, state: 'uploaded' },
+        { seq: 2, state: 'uploaded' },
+      ],
+    }),
+  ];
+
+  try {
+    restores.push(
+      stubMethod(
+        prisma.recording,
+        'findUnique',
+        (async () => ({
+          id: 'rec-1',
+          status: 'uploading',
+          stopped_at: new Date(),
+        }))
+      )
+    );
+    restores.push(
+      stubMethod(
+        prisma.track,
+        'findMany',
+        (async () => tracks)
+      )
+    );
+    restores.push(stubMethod(prisma.job, 'findMany', async () => jobs));
+    restores.push(stubMethod(prisma.job, 'create', async () => ({} as any)));
+
+    const result = await maybeEnqueueStitchJobsForRecording('rec-1');
+    assert.deepEqual(result.queuedTrackIds, []);
   } finally {
     for (const restore of restores.reverse()) restore();
   }

@@ -29,4 +29,6 @@ export type CompleteTrackChunkResponse = {
     updatedAt: string;
   };
   already?: boolean;
+  nextExpectedSeq?: number;
+  highestContiguousUploadedSeq?: number;
 };

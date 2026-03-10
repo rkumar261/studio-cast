@@ -69,6 +69,13 @@ type StudioControlIconKind =
   | 'share'
   | 'leave';
 
+type HostStudioLifecyclePhase =
+  | 'recording'
+  | 'stopping'
+  | 'uploading'
+  | 'upload_complete'
+  | 'processing_handoff';
+
 const spaceGrotesk = Space_Grotesk({
   subsets: ['latin'],
   weight: ['400', '500', '600', '700'],
@@ -445,6 +452,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       : null;
   const requestedParticipantId = searchParams.get('participantId')?.trim() || null;
   const requestedGuestToken = searchParams.get('guestToken')?.trim() || null;
+  const isGuestStudioFlow = sessionMode === 'studio' && requestedStudioRole === 'guest';
 
   const meshMaxPeers = Number(process.env.NEXT_PUBLIC_MESH_MAX_PEERS ?? '4');
 
@@ -453,6 +461,11 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [pinnedTileKey, setPinnedTileKey] = useState<string | null>(null);
   const [showPreJoin, setShowPreJoin] = useState(sessionMode === 'studio');
   const [displayName, setDisplayName] = useState('');
+  const [guestEmail, setGuestEmail] = useState('');
+  const [guestPreJoinStep, setGuestPreJoinStep] = useState<'welcome' | 'prejoin'>(
+    isGuestStudioFlow ? 'welcome' : 'prejoin'
+  );
+  const [guestJoinError, setGuestJoinError] = useState<string | null>(null);
   const [usingHeadphones, setUsingHeadphones] = useState(true);
   const [preJoinStatus, setPreJoinStatus] = useState<'idle' | 'starting' | 'ready' | 'error'>('idle');
   const [preJoinError, setPreJoinError] = useState<string | null>(null);
@@ -488,9 +501,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [createdInviteGuestToken, setCreatedInviteGuestToken] = useState<string | null>(null);
   const [claimedGuestParticipantId, setClaimedGuestParticipantId] = useState<string | null>(null);
   const [guestClaimReady, setGuestClaimReady] = useState(
-    !(sessionMode === 'studio' && requestedStudioRole === 'guest' && !!requestedGuestToken)
+    !isGuestStudioFlow || !requestedGuestToken
   );
-  const claimedGuestTokenRef = useRef<string | null>(null);
   const [trackIdByKind, setTrackIdByKind] = useState<Partial<Record<RecorderKind, string>>>({});
   const [recoveredNextSeqByTrack, setRecoveredNextSeqByTrack] = useState<Record<string, number>>({});
   const [recoveryReadyByTrack, setRecoveryReadyByTrack] = useState<Record<string, boolean>>({});
@@ -524,8 +536,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [isCameraEnabled, setIsCameraEnabled] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const isRecording = !!recordingSession?.startedAt && !recordingSession?.stoppedAt;
-  const chunkUploadProtocol: ChunkUploadProtocol =
-    process.env.NEXT_PUBLIC_STUDIO_CHUNK_MULTIPART_ENABLED === '1' ? 'multipart' : 'tus';
+  const chunkUploadProtocol: ChunkUploadProtocol = 'tus';
   const chunkUploadQueue = useChunkUploadQueue({
     enabled: sessionMode === 'studio',
     recordingId,
@@ -586,50 +597,29 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     }
   }, [guestClaimReady, recordingId, requestedStudioRole, sessionMode]);
 
-  useEffect(() => {
-    if (sessionMode !== 'studio' || requestedStudioRole !== 'guest') return;
-    if (!requestedGuestToken) {
-      setGuestClaimReady(true);
-      return;
-    }
-    if (claimedGuestTokenRef.current === requestedGuestToken) return;
-
-    let cancelled = false;
-    setGuestClaimReady(false);
-    void ParticipantsAPI.claimGuest(requestedGuestToken)
-      .then((result) => {
-        if (cancelled) return;
-        claimedGuestTokenRef.current = requestedGuestToken;
-        setClaimedGuestParticipantId(result.participant.id);
-        setGuestClaimReady(true);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setGuestClaimReady(false);
-        setSessionError('Guest invite token is invalid or expired. Ask host for a fresh invite link.');
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [requestedGuestToken, requestedStudioRole, sessionMode]);
-
   const hasLocalQueueWork =
     sessionMode === 'studio' &&
     (chunkUploadQueue.stats.pending > 0 || chunkUploadQueue.stats.processing > 0);
   const hasBackendPendingFromProgress = (recordingProgress?.participants ?? []).some(
     (participant) => participant.pendingCount > 0
   );
+  const shouldPollDuringHostHandoff =
+    sessionMode === 'studio' && canControlRecording && !!recordingSession?.stoppedAt;
   const shouldPollStudioSession =
     sessionMode === 'studio' &&
-    (!recordingSession?.stoppedAt || isRecording || hasLocalQueueWork || showUploadStatusModal);
+    (!recordingSession?.stoppedAt ||
+      isRecording ||
+      hasLocalQueueWork ||
+      showUploadStatusModal ||
+      shouldPollDuringHostHandoff);
   const shouldPollStudioProgress =
     sessionMode === 'studio' &&
     (!recordingSession?.stoppedAt ||
       isRecording ||
       hasLocalQueueWork ||
       hasBackendPendingFromProgress ||
-      showUploadStatusModal);
+      showUploadStatusModal ||
+      shouldPollDuringHostHandoff);
 
   useEffect(() => {
     if (sessionMode !== 'studio') return;
@@ -685,15 +675,20 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     setRecorderError(null);
     setCreatedInviteGuestToken(null);
     setClaimedGuestParticipantId(null);
-    setGuestClaimReady(!(requestedStudioRole === 'guest' && !!requestedGuestToken));
-    claimedGuestTokenRef.current = null;
+    setGuestJoinError(null);
+    setGuestEmail('');
+    setGuestPreJoinStep(isGuestStudioFlow ? 'welcome' : 'prejoin');
+    setGuestClaimReady(!isGuestStudioFlow || !requestedGuestToken);
     registeringKindsRef.current.clear();
     recoveringTrackIdsRef.current.clear();
     latestChunkSeqByTrackRef.current.clear();
     setShowStudioInvitePanel(true);
     setCreatedInviteParticipantIdByRole({});
     setLocalHostParticipantId(null);
-  }, [recordingId, requestedGuestToken, requestedStudioRole]);
+  }, [isGuestStudioFlow, recordingId, requestedGuestToken]);
+
+  const shouldRunStudioPreJoinChecks =
+    sessionMode === 'studio' && (!isGuestStudioFlow || guestPreJoinStep === 'prejoin');
 
   const stopPreJoinPreview = useCallback(() => {
     if (preJoinStreamRef.current) {
@@ -769,6 +764,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   }, [enumerateDevices, selectedCameraId, selectedMicId, stopPreJoinPreview]);
 
   useEffect(() => {
+    if (sessionMode === 'studio' && showPreJoin && !shouldRunStudioPreJoinChecks) {
+      stopPreJoinPreview();
+      return;
+    }
     if (!showPreJoin) {
       if (sessionMode !== 'meet') {
         stopPreJoinPreview();
@@ -780,7 +779,13 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     return () => {
       stopPreJoinPreview();
     };
-  }, [sessionMode, showPreJoin, startPreJoinPreview, stopPreJoinPreview]);
+  }, [
+    sessionMode,
+    shouldRunStudioPreJoinChecks,
+    showPreJoin,
+    startPreJoinPreview,
+    stopPreJoinPreview,
+  ]);
 
   useEffect(() => {
     const element = preJoinVideoRef.current;
@@ -1552,13 +1557,60 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   }
 
   async function handleJoinFromPreJoin() {
+    setGuestJoinError(null);
     setJoiningFromPreJoin(true);
-    const ok = await handleJoin();
-    if (ok) {
-      stopPreJoinPreview();
-      setShowPreJoin(false);
+    try {
+      if (isGuestStudioFlow) {
+        const trimmedDisplayName = displayName.trim();
+        if (!requestedGuestToken) {
+          setGuestClaimReady(false);
+          setGuestJoinError('Guest invite token is missing. Ask host for a fresh invite link.');
+          return;
+        }
+        if (!trimmedDisplayName) {
+          setGuestClaimReady(false);
+          setGuestJoinError('Name is required to join as a guest.');
+          return;
+        }
+
+        const normalizedEmail = guestEmail.trim();
+        const result = await ParticipantsAPI.bootstrapGuest({
+          token: requestedGuestToken,
+          displayName: trimmedDisplayName,
+          ...(normalizedEmail ? { email: normalizedEmail } : {}),
+        });
+        setDisplayName(result.participant.displayName?.trim() || trimmedDisplayName);
+        setClaimedGuestParticipantId(result.participant.id);
+        setGuestClaimReady(true);
+      }
+
+      const ok = await handleJoin();
+      if (ok) {
+        stopPreJoinPreview();
+        setShowPreJoin(false);
+      }
+    } catch (err) {
+      const guestJoinErr = err as Error & { code?: string; status?: number };
+      const code = String(guestJoinErr.code ?? '');
+      const status = Number(guestJoinErr.status ?? 0);
+      if (code === 'invalid_token' || status === 401) {
+        setGuestJoinError('Guest invite token is invalid or expired. Ask host for a fresh invite link.');
+      } else if (code === 'invalid_display_name') {
+        setGuestJoinError('Name is required to join as a guest.');
+      } else {
+        setGuestJoinError(guestJoinErr.message ?? 'Failed to join the studio as guest.');
+      }
+      if (isGuestStudioFlow) {
+        setGuestClaimReady(false);
+      }
+    } finally {
+      setJoiningFromPreJoin(false);
     }
-    setJoiningFromPreJoin(false);
+  }
+
+  function handleGuestWelcomeContinue() {
+    setGuestJoinError(null);
+    setGuestPreJoinStep('prejoin');
   }
 
   async function handleLeave() {
@@ -1732,6 +1784,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   useEffect(() => {
     if (sessionMode !== 'studio') return;
+    if (requestedStudioRole !== 'guest') return;
     if (!recordingSession?.stoppedAt) return;
     const hasLocalPendingUploads =
       chunkUploadQueue.stats.pending > 0 || chunkUploadQueue.stats.processing > 0;
@@ -1742,6 +1795,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     chunkUploadQueue.stats.pending,
     chunkUploadQueue.stats.processing,
     progressParticipants,
+    requestedStudioRole,
     recordingSession?.stoppedAt,
     sessionMode,
   ]);
@@ -1785,6 +1839,118 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const localUploadComplete = localParticipantProgress
     ? localParticipantProgress.pendingCount === 0
     : chunkUploadQueue.stats.pending + chunkUploadQueue.stats.processing === 0;
+  const uploadCompletion = useMemo(() => {
+    const participantsWithUploads = progressParticipants.filter(
+      (participant) =>
+        participant.trackCount > 0 || participant.uploadedCount > 0 || participant.pendingCount > 0
+    );
+    const participantsTotal = participantsWithUploads.length;
+    const participantsCompleted = participantsWithUploads.filter(
+      (participant) => participant.trackCount > 0 && participant.pendingCount === 0
+    ).length;
+    const tracksTotal = participantsWithUploads.reduce(
+      (sum, participant) => sum + participant.trackCount,
+      0
+    );
+    const tracksUploaded = participantsWithUploads.reduce(
+      (sum, participant) => sum + participant.uploadedCount,
+      0
+    );
+
+    const fallbackChunkTotal = participantsWithUploads.reduce(
+      (sum, participant) =>
+        sum + participant.tracks.reduce((trackSum, track) => trackSum + track.chunkTotal, 0),
+      0
+    );
+    const fallbackChunkUploaded = participantsWithUploads.reduce(
+      (sum, participant) =>
+        sum + participant.tracks.reduce((trackSum, track) => trackSum + track.chunkUploaded, 0),
+      0
+    );
+    const chunksTotal =
+      recordingProgress?.summary.chunksTotal && recordingProgress.summary.chunksTotal > 0
+        ? recordingProgress.summary.chunksTotal
+        : fallbackChunkTotal;
+    const chunksUploaded =
+      recordingProgress?.summary.chunksUploaded && recordingProgress.summary.chunksUploaded > 0
+        ? recordingProgress.summary.chunksUploaded
+        : fallbackChunkUploaded;
+
+    const hasBackendPendingUploads = participantsWithUploads.some(
+      (participant) => participant.pendingCount > 0
+    );
+    const hasLocalPendingUploads =
+      chunkUploadQueue.stats.pending > 0 || chunkUploadQueue.stats.processing > 0;
+    const hasPendingUploads = hasLocalPendingUploads || hasBackendPendingUploads;
+    const hasTrackEvidence =
+      tracksTotal > 0 ||
+      tracksUploaded > 0 ||
+      chunksUploaded > 0 ||
+      chunkUploadQueue.stats.completed > 0 ||
+      chunkUploadQueue.stats.bytesUploaded > 0;
+    const allParticipantTracksUploaded =
+      tracksTotal > 0 && tracksUploaded >= tracksTotal && participantsTotal > 0;
+    const uploadsComplete =
+      !!recordingSession?.stoppedAt &&
+      hasTrackEvidence &&
+      allParticipantTracksUploaded &&
+      !hasPendingUploads;
+
+    return {
+      participantsTotal,
+      participantsCompleted,
+      tracksTotal,
+      tracksUploaded,
+      chunksTotal,
+      chunksUploaded,
+      hasPendingUploads,
+      hasTrackEvidence,
+      uploadsComplete,
+    };
+  }, [
+    chunkUploadQueue.stats.bytesUploaded,
+    chunkUploadQueue.stats.completed,
+    chunkUploadQueue.stats.pending,
+    chunkUploadQueue.stats.processing,
+    progressParticipants,
+    recordingProgress?.summary.chunksTotal,
+    recordingProgress?.summary.chunksUploaded,
+    recordingSession?.stoppedAt,
+  ]);
+  const hasPendingUploads = uploadCompletion.hasPendingUploads;
+  const canOpenProject = uploadCompletion.uploadsComplete;
+  const hostStudioLifecyclePhase = useMemo<HostStudioLifecyclePhase | null>(() => {
+    if (sessionMode !== 'studio' || showPreJoin || localStudioRole !== 'host') return null;
+    if (isRecording) {
+      return sessionBusy ? 'stopping' : 'recording';
+    }
+    if (!recordingSession?.stoppedAt) {
+      return sessionBusy ? 'stopping' : 'recording';
+    }
+    if (hasPendingUploads || !uploadCompletion.hasTrackEvidence || !uploadCompletion.uploadsComplete) {
+      return 'uploading';
+    }
+    if (recordingProgress?.phase === 'processing' || recordingProgress?.phase === 'ready') {
+      return 'processing_handoff';
+    }
+    return 'upload_complete';
+  }, [
+    hasPendingUploads,
+    isRecording,
+    localStudioRole,
+    uploadCompletion.hasTrackEvidence,
+    uploadCompletion.uploadsComplete,
+    recordingProgress?.phase,
+    recordingSession?.stoppedAt,
+    sessionBusy,
+    sessionMode,
+    showPreJoin,
+  ]);
+  const hostUploadOverlayOpen =
+    localStudioRole === 'host' &&
+    hostStudioLifecyclePhase !== null &&
+    hostStudioLifecyclePhase !== 'recording';
+  const uploadOverlayOpen = hostUploadOverlayOpen || showUploadStatusModal;
 
   useEffect(() => {
     if (sessionMode !== 'studio') return;
@@ -1808,7 +1974,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   useEffect(() => {
     if (sessionMode !== 'studio') return;
-    const hasWork = chunkUploadQueue.stats.pending + chunkUploadQueue.stats.processing > 0;
+    const hasWork =
+      chunkUploadQueue.stats.pending + chunkUploadQueue.stats.processing > 0 ||
+      hostStudioLifecyclePhase === 'stopping' ||
+      hostStudioLifecyclePhase === 'uploading';
     if (!hasWork) return;
     const handler = (event: BeforeUnloadEvent) => {
       event.preventDefault();
@@ -1816,7 +1985,12 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [chunkUploadQueue.stats.pending, chunkUploadQueue.stats.processing, sessionMode]);
+  }, [
+    chunkUploadQueue.stats.pending,
+    chunkUploadQueue.stats.processing,
+    hostStudioLifecyclePhase,
+    sessionMode,
+  ]);
 
   async function ensureInviteParticipantId(role: 'guest' | 'host') {
     const existing = createdInviteParticipantIdByRole[role];
@@ -1903,6 +2077,58 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   }, [active.isMicEnabled, active.localScreen, active.localVideo, active.tiles, displayName]);
 
   if (showPreJoin && sessionMode === 'studio') {
+    const isGuestWelcomeStep = isGuestStudioFlow && guestPreJoinStep === 'welcome';
+    const guestNameMissing = isGuestStudioFlow && displayName.trim().length === 0;
+
+    if (isGuestWelcomeStep) {
+      return (
+        <main className={`${spaceGrotesk.className} min-h-screen bg-[#090b10] text-slate-100`}>
+          <div className="mx-auto flex min-h-screen w-full max-w-[980px] flex-col px-6 py-6">
+            <header className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Link href="/" className="text-slate-400 hover:text-slate-100">
+                  ←
+                </Link>
+                <p className="text-2xl font-semibold tracking-[0.2em]">RIVERSIDE</p>
+              </div>
+            </header>
+
+            <section className="flex flex-1 items-center justify-center py-10">
+              <div className="w-full max-w-2xl rounded-3xl border border-slate-800 bg-[#121620] p-10">
+                <span className="inline-flex rounded-full border border-violet-400/40 bg-violet-500/10 px-4 py-2 text-sm text-violet-100">
+                  Guest Invite
+                </span>
+                <h1 className="mt-5 text-5xl font-semibold leading-tight">
+                  Join this recording as a guest
+                </h1>
+                <p className="mt-4 text-xl text-slate-300">
+                  You are joining as a guest participant. No account login is required for this invite.
+                </p>
+                <p className="mt-2 text-base text-slate-400">
+                  Continue to enter your details, run device checks, and join the studio session.
+                </p>
+
+                {!requestedGuestToken && (
+                  <p className="mt-5 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                    Guest invite token is missing. Ask host for a fresh invite link.
+                  </p>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleGuestWelcomeContinue}
+                  disabled={!requestedGuestToken}
+                  className="mt-7 w-full rounded-xl bg-[#8b5cf6] px-4 py-3 text-xl font-semibold text-white hover:bg-[#7c4cf0] disabled:opacity-60"
+                >
+                  Continue as guest
+                </button>
+              </div>
+            </section>
+          </div>
+        </main>
+      );
+    }
+
     return (
       <main className={`${spaceGrotesk.className} min-h-screen bg-[#090b10] text-slate-100`}>
         <div className="mx-auto flex min-h-screen w-full max-w-[1450px] flex-col px-6 py-6">
@@ -1929,7 +2155,11 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 <span className="inline-flex rounded-full border border-rose-400/40 bg-rose-500/10 px-4 py-2 text-sm text-rose-200">
                   REC
                 </span>
-                <p className="text-2xl text-slate-400">You&apos;re about to join {displayName || 'your'} studio</p>
+                <p className="text-2xl text-slate-400">
+                  {isGuestStudioFlow
+                    ? 'You are about to join this studio as a guest'
+                    : `You're about to join ${displayName || 'your'} studio`}
+                </p>
                 <h1 className="text-6xl font-semibold leading-tight">Let&apos;s check your cam and mic</h1>
 
                 <div className="space-y-3">
@@ -1939,10 +2169,22 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                       value={displayName}
                       onChange={(event) => setDisplayName(event.target.value)}
                       className="min-w-0 flex-1 bg-transparent text-xl outline-none placeholder:text-slate-500"
-                      placeholder="Your display name"
+                      placeholder={isGuestStudioFlow ? 'Your name (required)' : 'Your display name'}
                     />
                     <span className="rounded-lg bg-[#2a2f39] px-3 py-1 text-sm text-slate-200">{localStudioRoleLabel}</span>
                   </label>
+
+                  {isGuestStudioFlow && (
+                    <label className="flex items-center gap-2 rounded-xl border border-slate-700 bg-[#1a1e26] px-4 py-3">
+                      <input
+                        type="email"
+                        value={guestEmail}
+                        onChange={(event) => setGuestEmail(event.target.value)}
+                        className="min-w-0 flex-1 bg-transparent text-xl outline-none placeholder:text-slate-500"
+                        placeholder="Email (optional)"
+                      />
+                    </label>
+                  )}
 
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <button
@@ -1972,15 +2214,26 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   <button
                     type="button"
                     onClick={handleJoinFromPreJoin}
-                    disabled={preJoinStatus !== 'ready' || joiningFromPreJoin}
+                    disabled={preJoinStatus !== 'ready' || joiningFromPreJoin || guestNameMissing}
                     className="w-full rounded-xl bg-[#8b5cf6] px-4 py-3 text-xl font-semibold text-white hover:bg-[#7c4cf0] disabled:opacity-60"
                   >
-                    {joiningFromPreJoin ? 'Joining studio...' : 'Join studio'}
+                    {joiningFromPreJoin
+                      ? 'Joining studio...'
+                      : isGuestStudioFlow
+                        ? 'Join as guest'
+                        : 'Join studio'}
                   </button>
 
                   <p className="text-lg text-slate-400">
-                    You are joining as a {localStudioRole === 'host' ? 'host' : 'guest'}
+                    {isGuestStudioFlow
+                      ? 'Joining as guest participant'
+                      : `You are joining as a ${localStudioRole === 'host' ? 'host' : 'guest'}`}
                   </p>
+                  {guestJoinError && (
+                    <p className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                      {guestJoinError}
+                    </p>
+                  )}
                   {preJoinError && (
                     <p className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
                       {preJoinError}
@@ -2187,20 +2440,22 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 }
               : person
           );
-    const hasBackendPendingUploads = progressParticipants.some(
-      (participant) => participant.pendingCount > 0
-    );
-    const hasPendingUploads =
-      chunkUploadQueue.stats.pending > 0 ||
-      chunkUploadQueue.stats.processing > 0 ||
-      hasBackendPendingUploads;
-    const hasAnyUploadedEvidence =
-      progressParticipants.length > 0 ||
-      chunkUploadQueue.stats.completed > 0 ||
-      chunkUploadQueue.stats.bytesUploaded > 0;
-    const canOpenProject = !!recordingSession?.stoppedAt && hasAnyUploadedEvidence && !hasPendingUploads;
     const showUploadChip =
-      isRecording || hasPendingUploads || (!!recordingSession?.stoppedAt && !localUploadComplete);
+      localStudioRole === 'host'
+        ? hostStudioLifecyclePhase !== null && hostStudioLifecyclePhase !== 'recording'
+        : isRecording || hasPendingUploads || (!!recordingSession?.stoppedAt && !localUploadComplete);
+    const uploadChipLabel =
+      localStudioRole === 'host'
+        ? hostStudioLifecyclePhase === 'stopping'
+          ? 'Stopping...'
+          : hostStudioLifecyclePhase === 'uploading'
+            ? `↑ ${uploadedPercent}% Uploading...`
+            : hostStudioLifecyclePhase === 'upload_complete'
+              ? '✓ Upload complete'
+              : hostStudioLifecyclePhase === 'processing_handoff'
+                ? '→ Processing handoff'
+                : null
+        : `↑ ${uploadedPercent}% Uploading...`;
     const recordingSeconds = recordingSession?.startedAt
       ? Math.max(0, Math.floor((Date.now() - new Date(recordingSession.startedAt).getTime()) / 1000))
       : 0;
@@ -2232,7 +2487,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               )}
               {showUploadChip && (
                 <span className="rounded-full bg-violet-500/25 px-3 py-1 text-sm font-semibold text-violet-100">
-                  ↑ {uploadedPercent}% Uploading...
+                  {uploadChipLabel}
                 </span>
               )}
               <button
@@ -2583,11 +2838,40 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         </div>
 
         <UploadStatusModal
-          open={showUploadStatusModal}
+          open={uploadOverlayOpen}
           participants={progressParticipants}
           canOpenProject={canOpenProject}
-          onClose={() => setShowUploadStatusModal(false)}
+          phase={localStudioRole === 'host' ? hostStudioLifecyclePhase ?? undefined : undefined}
+          summary={
+            uploadCompletion.hasTrackEvidence || uploadCompletion.participantsTotal > 0
+              ? {
+                  participantsTotal: uploadCompletion.participantsTotal,
+                  participantsCompleted: uploadCompletion.participantsCompleted,
+                  tracksTotal: uploadCompletion.tracksTotal,
+                  tracksUploaded: uploadCompletion.tracksUploaded,
+                  chunksTotal: uploadCompletion.chunksTotal,
+                  chunksUploaded: uploadCompletion.chunksUploaded,
+                }
+              : undefined
+          }
+          keepPageOpenHint={
+            localStudioRole === 'host'
+              ? hostStudioLifecyclePhase === 'stopping' || hostStudioLifecyclePhase === 'uploading'
+              : showUploadStatusModal
+          }
+          canDismiss={
+            localStudioRole === 'host'
+              ? hostStudioLifecyclePhase === 'upload_complete' ||
+                hostStudioLifecyclePhase === 'processing_handoff'
+              : true
+          }
+          onClose={() => {
+            if (localStudioRole !== 'host') {
+              setShowUploadStatusModal(false);
+            }
+          }}
           onGoToProject={() => {
+            if (!canOpenProject) return;
             setShowUploadStatusModal(false);
             if (localStudioRole === 'host') {
               router.push(`/recordings/${recordingId}`);

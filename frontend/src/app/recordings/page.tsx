@@ -3,18 +3,74 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { RecordingsAPI, type ListRecordingsResponse } from '@/lib/api';
+import { RecordingsAPI, type ListRecordingsResponse, type ProjectAssetState } from '@/lib/api';
+
+type ProjectCardSummary = {
+  combinedState: ProjectAssetState;
+  participantReady: number;
+  participantTotal: number;
+  exportsReady: number;
+  exportsTotal: number;
+};
+
+function stateBadgeClass(state: ProjectAssetState) {
+  if (state === 'ready') return 'border-emerald-600/50 bg-emerald-500/10 text-emerald-200';
+  if (state === 'processing') return 'border-cyan-600/50 bg-cyan-500/10 text-cyan-200';
+  if (state === 'failed') return 'border-red-600/50 bg-red-500/10 text-red-200';
+  if (state === 'pending') return 'border-amber-600/50 bg-amber-500/10 text-amber-200';
+  return 'border-slate-700 bg-slate-950 text-slate-300';
+}
+
+function stateLabel(state: ProjectAssetState) {
+  if (state === 'ready') return 'Ready';
+  if (state === 'processing') return 'Processing';
+  if (state === 'failed') return 'Failed';
+  if (state === 'pending') return 'Pending';
+  return 'Missing';
+}
 
 export default function RecordingsPage() {
   const router = useRouter();
   const [data, setData] = useState<ListRecordingsResponse | null>(null);
+  const [summaries, setSummaries] = useState<Record<string, ProjectCardSummary>>({});
   const [title, setTitle] = useState('');
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  async function loadSummaries(items: ListRecordingsResponse['items']) {
+    const rows = await Promise.all(
+      items.map(async (item) => {
+        try {
+          const graph = await RecordingsAPI.getProjectAssets(item.id);
+          return [
+            item.id,
+            {
+              combinedState: graph.combinedAsset.state,
+              participantReady: graph.participantAssets.filter((a) => a.state === 'ready').length,
+              participantTotal: graph.participantAssets.length,
+              exportsReady: graph.exports.ready,
+              exportsTotal: graph.exports.requiredTotal,
+            } satisfies ProjectCardSummary,
+          ] as const;
+        } catch {
+          return [item.id, null] as const;
+        }
+      })
+    );
+
+    setSummaries((prev) => {
+      const next = { ...prev };
+      for (const [id, summary] of rows) {
+        if (summary) next[id] = summary;
+      }
+      return next;
+    });
+  }
+
   async function load(cursor?: string) {
     const res = await RecordingsAPI.listMine(20, cursor);
     setData(res);
+    loadSummaries(res.items ?? []);
   }
 
   useEffect(() => {
@@ -82,6 +138,26 @@ export default function RecordingsPage() {
                   key={r.id}
                   className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4"
                 >
+                  {(() => {
+                    const summary = summaries[r.id];
+                    return (
+                      <div className="mb-3 grid gap-2 rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-slate-400">Primary output</span>
+                          <span className={`rounded-full border px-2 py-0.5 ${stateBadgeClass(summary?.combinedState ?? 'missing')}`}>
+                            {stateLabel(summary?.combinedState ?? 'missing')}
+                          </span>
+                        </div>
+                        <div className="text-slate-300">
+                          Participant outputs: {summary?.participantReady ?? 0}/{summary?.participantTotal ?? 0} ready
+                        </div>
+                        <div className="text-slate-300">
+                          Required exports: {summary?.exportsReady ?? 0}/{summary?.exportsTotal ?? 0} ready
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="space-y-1">
                       <Link

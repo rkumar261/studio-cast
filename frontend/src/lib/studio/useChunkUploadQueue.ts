@@ -10,7 +10,9 @@ import {
   trackExecutionKey,
 } from './queue-logic';
 
-export type ChunkUploadProtocol = 'tus' | 'multipart';
+// Live studio recording uploads are canonicalized to TUS-only.
+export type ChunkUploadProtocol = 'tus';
+type PersistedChunkUploadProtocol = 'tus' | 'multipart';
 type ChunkKind = 'audio' | 'video' | 'screen';
 type QueueStatus = 'queued' | 'processing' | 'failed';
 
@@ -31,7 +33,7 @@ type PersistedQueueItem = {
   trackId: string;
   seq: number;
   kind: ChunkKind;
-  protocol: ChunkUploadProtocol;
+  protocol: PersistedChunkUploadProtocol;
   blob: Blob;
   bytes: number;
   emittedAt: number;
@@ -354,30 +356,10 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
       if (scopeRecordingId && item.recordingId !== scopeRecordingId) {
         throw new Error('Queue item belongs to a different recording scope.');
       }
-      if (item.protocol === 'multipart') {
-        const initiated = await RecordingsAPI.initiateChunkMultipart(item.recordingId, {
-          trackId: item.trackId,
-          seq: item.seq,
-          bytesExpected: item.bytes,
-        });
-        if (initiated.status === 'seq_mismatch') {
-          throw new Error(
-            `Seq mismatch on initiate (track=${item.trackId}, requested=${item.seq}, nextExpected=${initiated.nextExpectedSeq ?? 'unknown'})`
-          );
-        }
-        if (initiated.already || initiated.chunk?.state === 'uploaded') {
-          return;
-        }
-        if (!initiated.chunk?.id) {
-          throw new Error('Chunk initiate response did not include chunk id.');
-        }
-
-        await RecordingsAPI.completeChunkMultipart(item.recordingId, initiated.chunk.id, {
-          bytesReceived: item.bytes,
-          etag: `chunk-${item.seq}`,
-          storageKeyRaw: `recordings/${item.recordingId}/tracks/${item.trackId}/chunks/${item.seq}.webm`,
-        });
-        return;
+      if (item.protocol !== 'tus') {
+        throw new Error(
+          'Live studio chunk transport is TUS-only. Multipart queue items are deprecated and blocked.'
+        );
       }
 
       const initiated = await RecordingsAPI.initiateChunk(item.recordingId, {

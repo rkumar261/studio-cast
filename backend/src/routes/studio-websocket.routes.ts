@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import websocketPlugin from '@fastify/websocket';
 import { authGuard } from '../middlewares/auth.guard.js';
 import { handleStudioWsConnection } from '../websocket/studioWebsocket.js';
+import { getRequestPrincipal } from '../lib/request-principal.js';
 
 export default async function studioWebsocketRoutes(app: FastifyInstance) {
   await app.register(websocketPlugin);
@@ -13,9 +14,9 @@ export default async function studioWebsocketRoutes(app: FastifyInstance) {
       preHandler: authGuard,
     },
     (connection, req: FastifyRequest) => {
-      const requesterId = (req as any).user?.id as string | undefined;
+      const principal = getRequestPrincipal(req);
 
-      if (!requesterId) {
+      if (!principal) {
         // authGuard should prevent this, but be defensive
         try {
           (connection as any).socket?.close(1008, 'Unauthorized');
@@ -26,7 +27,7 @@ export default async function studioWebsocketRoutes(app: FastifyInstance) {
       }
 
       // pass app, connection, req – matches handleStudioWsConnection
-      handleStudioWsConnection(app, connection, req);
+      handleStudioWsConnection(app, connection, req, principal);
     }
   );
 }
