@@ -68,6 +68,7 @@ type StudioControlIconKind =
   | 'script'
   | 'share'
   | 'leave';
+type StudioSidebarIconKind = 'people' | 'chat' | 'brand' | 'text' | 'media';
 
 type HostStudioLifecyclePhase =
   | 'recording'
@@ -439,6 +440,63 @@ function StudioControlIcon({ kind, off = false }: { kind: StudioControlIconKind;
   );
 }
 
+function StudioSidebarIcon({ kind }: { kind: StudioSidebarIconKind }) {
+  const icon = (() => {
+    switch (kind) {
+      case 'people':
+        return (
+          <>
+            <circle cx="9" cy="9" r="2.5" />
+            <circle cx="16" cy="10" r="2" />
+            <path d="M4.5 18a4.5 4.5 0 0 1 9 0" />
+            <path d="M13 18a3.5 3.5 0 0 1 7 0" />
+          </>
+        );
+      case 'chat':
+        return (
+          <>
+            <path d="M5 6h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H10l-5 4v-4H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z" />
+            <path d="M8 10h8M8 13h6" />
+          </>
+        );
+      case 'brand':
+        return (
+          <>
+            <rect x="4" y="6" width="16" height="12" rx="2" />
+            <circle cx="9" cy="10" r="1.5" />
+            <path d="m20 15-4.2-4.2L10 16" />
+          </>
+        );
+      case 'text':
+        return (
+          <>
+            <path d="M5 6h14M12 6v12" />
+            <path d="M9 18h6" />
+          </>
+        );
+      case 'media':
+        return <path d="M15 5v10.7a2.7 2.7 0 1 1-2.2-2.6V8h6V5z" />;
+      default:
+        return null;
+    }
+  })();
+
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {icon}
+    </svg>
+  );
+}
+
 export default function StudioRecordingPage({ params }: StudioPageProps) {
   const { recordingId } = use(params);
   const router = useRouter();
@@ -484,6 +542,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [showStudioInvitePanel, setShowStudioInvitePanel] = useState(true);
   const [showStudioPeoplePanel, setShowStudioPeoplePanel] = useState(true);
+  const [showAddParticipantPanel, setShowAddParticipantPanel] = useState(false);
   const [inviteRole, setInviteRole] = useState<'guest' | 'host'>('guest');
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteNotice, setInviteNotice] = useState<string | null>(null);
@@ -1661,7 +1720,6 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       if (wasRecording) {
         await new Promise((resolve) => window.setTimeout(resolve, 250));
         await finalizeTrackCaptures();
-        setShowUploadStatusModal(true);
       }
     } catch (err) {
       setSessionError((err as Error)?.message ?? 'Failed to update recording session.');
@@ -1950,7 +2008,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     localStudioRole === 'host' &&
     hostStudioLifecyclePhase !== null &&
     hostStudioLifecyclePhase !== 'recording';
-  const uploadOverlayOpen = hostUploadOverlayOpen || showUploadStatusModal;
+  const uploadOverlayOpen =
+    localStudioRole === 'host'
+      ? hostUploadOverlayOpen
+      : showUploadStatusModal;
 
   useEffect(() => {
     if (sessionMode !== 'studio') return;
@@ -2440,13 +2501,24 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 }
               : person
           );
+    const hasLiveUploadActivity =
+      chunkUploadQueue.stats.completed > 0 ||
+      chunkUploadQueue.stats.processing > 0 ||
+      chunkUploadQueue.stats.pending > 0 ||
+      uploadedPercent > 0;
+    const hostShouldShowUploadChip =
+      (isRecording && hasLiveUploadActivity) ||
+      (hostStudioLifecyclePhase !== null && hostStudioLifecyclePhase !== 'recording') ||
+      (!!recordingSession?.stoppedAt && !canOpenProject);
     const showUploadChip =
       localStudioRole === 'host'
-        ? hostStudioLifecyclePhase !== null && hostStudioLifecyclePhase !== 'recording'
+        ? hostShouldShowUploadChip
         : isRecording || hasPendingUploads || (!!recordingSession?.stoppedAt && !localUploadComplete);
     const uploadChipLabel =
       localStudioRole === 'host'
-        ? hostStudioLifecyclePhase === 'stopping'
+        ? isRecording && hasLiveUploadActivity
+          ? `↑ ${uploadedPercent}% Uploading...`
+          : hostStudioLifecyclePhase === 'stopping'
           ? 'Stopping...'
           : hostStudioLifecyclePhase === 'uploading'
             ? `↑ ${uploadedPercent}% Uploading...`
@@ -2454,7 +2526,9 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               ? '✓ Upload complete'
               : hostStudioLifecyclePhase === 'processing_handoff'
                 ? '→ Processing handoff'
-                : null
+                : !!recordingSession?.stoppedAt && !canOpenProject
+                  ? `↑ ${uploadedPercent}% Uploading...`
+                  : null
         : `↑ ${uploadedPercent}% Uploading...`;
     const recordingSeconds = recordingSession?.startedAt
       ? Math.max(0, Math.floor((Date.now() - new Date(recordingSession.startedAt).getTime()) / 1000))
@@ -2464,18 +2538,24 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     ).padStart(2, '0')}`;
     const isMicOff = !active.isMicEnabled;
     const isCamOff = !active.isCameraEnabled;
+    const shouldReserveUploadBarSpace = localStudioRole === 'host' && uploadOverlayOpen;
+    const floatingUploadLayout = {
+      leftInset: 54,
+      rightInset: showStudioPeoplePanel ? 510 : 170,
+      bottomInset: 150,
+    };
 
     return (
       <main className={`${spaceGrotesk.className} h-screen overflow-hidden bg-[#07090f] text-slate-100`}>
         <div className="mx-auto flex h-full w-full max-w-[1600px] flex-col px-5 py-4">
-          <header className="flex items-center justify-between rounded-2xl bg-[#0f131a] px-4 py-3">
+          <header className="flex items-center justify-between rounded-2xl border border-[#1a1f2a] bg-[#0f131a] px-4 py-3">
             <div className="flex min-w-0 items-center gap-3">
-              <Link href="/" className="text-slate-300 hover:text-white">
+              <Link href="/" className="rounded-full p-1 text-slate-300 hover:bg-[#1b2130] hover:text-white">
                 ←
               </Link>
-              <p className="text-xl font-semibold tracking-[0.2em]">RIVERSIDE</p>
+              <p className="text-xl font-semibold tracking-[0.2em] text-slate-100">RIVERSIDE</p>
               <span className="text-slate-600">|</span>
-              <p className="truncate text-base text-slate-300">{displayName || 'Host'} KUMAR&apos;s Studio</p>
+              <p className="truncate text-base text-slate-400">{displayName || 'Host'} KUMAR&apos;s Studio</p>
               <p className="truncate text-xl font-semibold text-slate-100">Untitled Recording</p>
             </div>
 
@@ -2486,32 +2566,38 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 </span>
               )}
               {showUploadChip && (
-                <span className="rounded-full bg-violet-500/25 px-3 py-1 text-sm font-semibold text-violet-100">
+                <span className="rounded-2xl bg-violet-500/35 px-4 py-2 text-sm font-semibold text-violet-100">
                   {uploadChipLabel}
                 </span>
               )}
               <button
                 type="button"
-                className="rounded-full border border-slate-700 bg-[#1a1f29] px-4 py-2 text-sm hover:border-slate-500"
+                className="flex items-center rounded-2xl border border-[#2a2f3b] bg-[#1c212e] px-4 py-2 text-sm font-medium hover:border-slate-500"
               >
-                + Live stream
+                <span className="mr-1.5 text-lg">+</span>
+                Live stream
               </button>
               <button
                 type="button"
-                className="h-10 w-10 rounded-full border border-slate-700 bg-[#1a1f29] text-sm"
+                className="flex h-10 w-10 items-center justify-center rounded-2xl border border-[#2a2f3b] bg-[#1c212e] text-sm"
               >
                 ?
               </button>
               <button
                 type="button"
-                className="h-10 w-10 rounded-full border border-slate-700 bg-[#1a1f29] text-sm"
+                className="flex h-10 w-10 items-center justify-center rounded-2xl border border-[#2a2f3b] bg-[#1c212e] text-sm"
               >
                 ⚙
               </button>
               <button
                 type="button"
-                onClick={() => setShowStudioInvitePanel(true)}
-                className="rounded-full border border-slate-700 bg-[#1a1f29] px-4 py-2 text-sm hover:border-slate-500"
+                onClick={() => {
+                  setIsInviteModalOpen(true);
+                  setShowAddParticipantPanel(false);
+                  setInviteNotice(null);
+                  setCopyState('idle');
+                }}
+                className="rounded-2xl border border-[#2a2f3b] bg-[#1c212e] px-4 py-2 text-sm font-medium hover:border-slate-500"
               >
                 Invite
               </button>
@@ -2550,51 +2636,55 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
           <div className="mt-3 flex min-h-0 flex-1 gap-4">
             <section className="flex min-h-0 flex-1 flex-col rounded-3xl bg-[#090b10] p-3">
-              <div className="flex min-h-0 flex-1 gap-3">
+              <div className={`flex min-h-0 flex-1 gap-3 ${shouldReserveUploadBarSpace ? 'mb-20' : ''}`}>
                 {showStudioInvitePanel && (
-                  <aside className="hidden w-[380px] shrink-0 rounded-3xl border border-slate-800 bg-[#1b1f26] p-6 xl:flex xl:flex-col">
-                    <div className="mb-8 flex items-center justify-between">
-                      <h2 className="text-[42px] font-semibold leading-none">Invite someone to join remotely</h2>
+                  <aside className="hidden w-[400px] shrink-0 rounded-3xl border border-[#2b303d] bg-[#1e222b] p-6 xl:flex xl:flex-col">
+                    <div className="mb-8 flex items-start justify-between">
+                      <h2 className="max-w-[260px] text-[44px] font-semibold leading-[0.98] text-slate-100">
+                        Invite someone to join remotely
+                      </h2>
                       <button
                         type="button"
                         onClick={() => setShowStudioInvitePanel(false)}
-                        className="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-300"
+                        className="rounded-full border border-slate-700 p-2 text-sm text-slate-300 hover:border-slate-500"
                         aria-label="Close invite panel"
                       >
                         ×
                       </button>
                     </div>
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-[minmax(0,1fr)_86px_104px] gap-2">
-                        <input
-                          type="text"
-                          readOnly
-                          value={inviteLink}
-                          className="min-w-0 truncate rounded-xl border border-slate-700 bg-[#141922] px-3 py-2 text-sm text-slate-300"
-                        />
-                        <select
-                          value={inviteRole}
-                          onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
-                          className="rounded-xl border border-slate-700 bg-[#141922] px-2 py-2 text-sm"
-                        >
-                          <option value="guest">Guest</option>
-                        </select>
-                        <button
-                          type="button"
-                          onClick={handleCopyInviteLink}
-                          className="rounded-xl bg-[#8b5cf6] px-2 py-2 text-sm font-semibold text-white hover:bg-[#7c4cf0]"
-                        >
-                          {copyState === 'copied' ? 'Copied' : 'Copy'}
-                        </button>
-                      </div>
+                    <div className="grid grid-cols-[minmax(0,1fr)_86px_104px] gap-2">
+                      <input
+                        type="text"
+                        readOnly
+                        value={inviteLink}
+                        className="min-w-0 truncate rounded-xl border border-[#333949] bg-[#202633] px-3 py-2 text-sm text-slate-300"
+                      />
+                      <select
+                        value={inviteRole}
+                        onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
+                        className="rounded-xl border border-[#333949] bg-[#202633] px-2 py-2 text-sm"
+                      >
+                        <option value="guest">Guest</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={handleCopyInviteLink}
+                        className="rounded-xl bg-[#8b5cf6] px-2 py-2 text-sm font-semibold text-white hover:bg-[#7c4cf0]"
+                      >
+                        {copyState === 'copied' ? 'Copied' : 'Copy link'}
+                      </button>
                     </div>
-                    <div className="my-10 text-center text-xs uppercase tracking-wider text-slate-500">New</div>
-                    <p className="text-3xl font-semibold">Record someone next to you</p>
+                    <div className="my-10 flex items-center gap-3 text-slate-500">
+                      <div className="h-px flex-1 bg-[#303646]" />
+                      <span className="rounded-full border border-[#3d4456] px-3 py-1 text-[11px] uppercase tracking-[0.18em]">New</span>
+                      <div className="h-px flex-1 bg-[#303646]" />
+                    </div>
+                    <p className="text-4xl font-semibold leading-tight text-slate-100">Record someone next to you</p>
                     <button
                       type="button"
-                      className="mt-6 rounded-xl border border-slate-700 bg-[#2a2f39] px-4 py-3 text-lg font-medium text-slate-100"
+                      className="mt-6 rounded-xl border border-[#3a4051] bg-[#2f3542] px-4 py-3 text-lg font-medium text-slate-100"
                     >
-                      Add an in-person guest
+                      Add an in-person guest <span className="ml-1 text-lime-300">⚡</span>
                     </button>
                   </aside>
                 )}
@@ -2763,19 +2853,22 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
             <div className="flex">
               {showStudioPeoplePanel && (
-                <aside className="w-[330px] rounded-3xl border border-slate-800 bg-[#171b23] p-4">
+                <aside className="w-[336px] rounded-3xl border border-[#252b38] bg-[#1a1f28] p-4">
                   <div className="flex items-center justify-between">
-                    <h2 className="text-4xl font-semibold">People</h2>
+                    <h2 className="text-5xl font-semibold leading-none text-slate-100">People</h2>
                     <button
                       type="button"
-                      onClick={() => setShowStudioPeoplePanel(false)}
-                      className="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-400"
+                      onClick={() => {
+                        setShowStudioPeoplePanel(false);
+                        setShowAddParticipantPanel(false);
+                      }}
+                      className="rounded-full border border-slate-700 p-2 text-sm text-slate-400 hover:border-slate-500"
                     >
                       ×
                     </button>
                   </div>
 
-                  <div className="mt-4 rounded-xl border border-slate-800 bg-[#1b202a] p-3">
+                  <div className="mt-4 rounded-xl border border-[#2f3544] bg-[#242a36] p-3">
                     <div className="flex items-center justify-between">
                       <p className="text-sm text-slate-300">Recording info</p>
                       <span className="text-slate-500">⌄</span>
@@ -2784,9 +2877,9 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
                   <div className="mt-4 space-y-3">
                     {peopleForPanel.map((person) => (
-                      <div key={person.id} className="rounded-xl border border-slate-800 bg-[#1b202a] p-3">
+                      <div key={person.id} className="rounded-xl border border-[#2f3544] bg-[#242a36] p-3">
                         <div className="flex items-start gap-3">
-                          <div className="h-14 w-14 rounded-md border border-slate-700 bg-slate-900" />
+                          <div className="h-14 w-14 rounded-md border border-[#3a4153] bg-slate-900" />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center justify-between gap-2">
                               <p className="truncate text-xl font-semibold text-slate-100">{person.label}</p>
@@ -2798,9 +2891,9 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                             <p className="text-xs text-slate-500">{person.note}</p>
                           </div>
                         </div>
-                        <div className="mt-3 h-1.5 w-full rounded-full bg-slate-800">
+                        <div className="mt-3 h-1.5 w-full rounded-full bg-[#2f3748]">
                           <div
-                            className="h-full rounded-full bg-emerald-400/80"
+                            className="h-full rounded-full bg-emerald-300/90"
                             style={{ width: `${Math.max(person.percent, 5)}%` }}
                           />
                         </div>
@@ -2808,30 +2901,98 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     ))}
                   </div>
 
+                  {showAddParticipantPanel && (
+                    <div className="mt-4 rounded-xl border border-[#2f3544] bg-[#242a36] p-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsInviteModalOpen(true);
+                          setInviteNotice(null);
+                          setCopyState('idle');
+                          setShowAddParticipantPanel(false);
+                        }}
+                        className="w-full rounded-xl bg-[#3a3f4a] px-4 py-3 text-left hover:bg-[#464e5f]"
+                      >
+                        <p className="text-lg font-semibold text-slate-100">Remote guest</p>
+                        <p className="text-sm text-slate-400">Send a link to someone joining from another device</p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowStudioInvitePanel(true);
+                          setShowAddParticipantPanel(false);
+                        }}
+                        className="mt-3 w-full rounded-xl px-1 py-1 text-left"
+                      >
+                        <p className="text-lg font-medium text-slate-200">
+                          In-person guest <span className="ml-1 text-lime-300">⚡</span>
+                        </p>
+                        <p className="text-sm text-slate-400">Someone recording next to you on the same device</p>
+                      </button>
+                    </div>
+                  )}
+
                   <button
                     type="button"
-                    onClick={() => setIsInviteModalOpen(true)}
-                    className="mt-4 w-full rounded-xl border border-slate-700 bg-[#1b202a] px-3 py-2 text-sm text-slate-100 hover:border-slate-500"
+                    onClick={() => setShowAddParticipantPanel((prev) => !prev)}
+                    className="mt-4 w-full rounded-xl border border-[#3a4051] bg-[#252b37] px-3 py-2.5 text-lg text-slate-100 hover:border-slate-500"
                   >
                     + Add participant
                   </button>
                 </aside>
               )}
 
-              <div className="ml-3 flex w-16 shrink-0 flex-col items-center justify-center gap-3 rounded-3xl bg-[#0f131b] py-5">
+              <div className="ml-3 flex w-[88px] shrink-0 flex-col items-center justify-center gap-5 rounded-[30px] border border-[#1a2334] bg-[#0b1322] py-7">
                 <button
                   type="button"
-                  onClick={() => setShowStudioPeoplePanel((prev) => !prev)}
-                  className={`w-12 rounded-2xl px-1 py-3 text-xs ${
-                    showStudioPeoplePanel ? 'bg-[#2a3040] text-white' : 'bg-transparent text-slate-400'
+                  onClick={() =>
+                    setShowStudioPeoplePanel((prev) => {
+                      const next = !prev;
+                      if (!next) {
+                        setShowAddParticipantPanel(false);
+                      }
+                      return next;
+                    })
+                  }
+                  className={`flex w-[70px] flex-col items-center rounded-[24px] px-2 py-3 text-[13px] font-medium transition-colors ${
+                    showStudioPeoplePanel
+                      ? 'bg-[#303a52] text-white'
+                      : 'bg-transparent text-[#8da0bf] hover:text-[#c7d3e8]'
                   }`}
                 >
+                  <span className="mb-1">
+                    <StudioSidebarIcon kind="people" />
+                  </span>
                   People
                 </button>
-                <button type="button" className="w-12 rounded-2xl px-1 py-3 text-xs text-slate-400">Chat</button>
-                <button type="button" className="w-12 rounded-2xl px-1 py-3 text-xs text-slate-400">Brand</button>
-                <button type="button" className="w-12 rounded-2xl px-1 py-3 text-xs text-slate-400">Text</button>
-                <button type="button" className="w-12 rounded-2xl px-1 py-3 text-xs text-slate-400">Media</button>
+                <button
+                  type="button"
+                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-[#8da0bf] transition-colors hover:text-[#c7d3e8]"
+                >
+                  <StudioSidebarIcon kind="chat" />
+                  Chat
+                </button>
+                <button
+                  type="button"
+                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-[#8da0bf] transition-colors hover:text-[#c7d3e8]"
+                >
+                  <StudioSidebarIcon kind="brand" />
+                  Brand
+                </button>
+                <button
+                  type="button"
+                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-[#8da0bf] transition-colors hover:text-[#c7d3e8]"
+                >
+                  <StudioSidebarIcon kind="text" />
+                  Text
+                </button>
+                <button
+                  type="button"
+                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-[#8da0bf] transition-colors hover:text-[#c7d3e8]"
+                >
+                  <StudioSidebarIcon kind="media" />
+                  Media
+                </button>
               </div>
             </div>
           </div>
@@ -2842,6 +3003,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           participants={progressParticipants}
           canOpenProject={canOpenProject}
           phase={localStudioRole === 'host' ? hostStudioLifecyclePhase ?? undefined : undefined}
+          variant={localStudioRole === 'host' ? 'floating' : 'modal'}
+          floatingLayout={localStudioRole === 'host' ? floatingUploadLayout : undefined}
           summary={
             uploadCompletion.hasTrackEvidence || uploadCompletion.participantsTotal > 0
               ? {
@@ -2881,7 +3044,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
         {isInviteModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
-            <div className="w-full max-w-3xl rounded-3xl border border-slate-700 bg-[#1a1d24] p-6">
+            <div className="w-full max-w-[760px] rounded-3xl border border-[#373d4a] bg-[#20242d] p-6 shadow-2xl">
               <div className="mb-4 flex items-center justify-between">
                 <h3 className="text-4xl font-semibold text-slate-100">Invite people</h3>
                 <button
@@ -2891,28 +3054,30 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     setInviteNotice(null);
                     setCopyState('idle');
                   }}
-                  className="rounded-full border border-slate-600 px-3 py-1 text-sm text-slate-300"
+                  className="rounded-full border border-slate-600 p-2 text-sm text-slate-300 hover:border-slate-400"
                 >
                   ×
                 </button>
               </div>
               <p className="text-base text-slate-400">
-                Invite people to join your recording session.
+                Invite people to join your recording session.{' '}
+                <span className="text-[#b692ff]">About studio roles</span>
               </p>
 
               <div className="mt-6 space-y-3">
                 <p className="text-2xl font-semibold text-slate-100">Share a link</p>
-                <div className="grid gap-2 md:grid-cols-[1fr_120px_130px]">
+                <p className="text-sm text-slate-400">Copy the link below and share with others.</p>
+                <div className="grid gap-2 md:grid-cols-[1fr_108px_120px]">
                   <input
                     type="text"
                     readOnly
                     value={inviteLink}
-                    className="rounded-xl border border-slate-700 bg-[#242936] px-3 py-3 text-sm text-slate-100"
+                    className="rounded-xl border border-[#3a4151] bg-[#2b3140] px-3 py-3 text-sm text-slate-100"
                   />
                   <select
                     value={inviteRole}
                     onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
-                    className="rounded-xl border border-slate-700 bg-[#242936] px-3 py-3 text-sm text-slate-100"
+                    className="rounded-xl border border-[#3a4151] bg-[#2b3140] px-3 py-3 text-sm text-slate-100"
                   >
                     <option value="guest">Guest</option>
                   </select>
@@ -2926,22 +3091,29 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 </div>
               </div>
 
-              <div className="my-6 h-px bg-slate-700" />
+              <div className="my-5 flex items-center gap-3">
+                <div className="h-px flex-1 bg-[#404756]" />
+                <span className="text-slate-400">Or</span>
+                <div className="h-px flex-1 bg-[#404756]" />
+              </div>
 
               <div className="space-y-3">
                 <p className="text-2xl font-semibold text-slate-100">Invite via email</p>
-                <div className="grid gap-2 md:grid-cols-[1fr_120px_130px]">
+                <p className="text-sm text-slate-400">
+                  An email with instructions on how to join will be sent to all invitees.
+                </p>
+                <div className="grid gap-2 md:grid-cols-[1fr_108px_120px]">
                   <input
                     type="email"
                     value={inviteEmail}
                     onChange={(event) => setInviteEmail(event.target.value)}
                     placeholder="example@email.com"
-                    className="rounded-xl border border-slate-700 bg-[#242936] px-3 py-3 text-sm text-slate-100 placeholder:text-slate-500"
+                    className="rounded-xl border border-[#3a4151] bg-[#2b3140] px-3 py-3 text-sm text-slate-100 placeholder:text-slate-500"
                   />
                   <select
                     value={inviteRole}
                     onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
-                    className="rounded-xl border border-slate-700 bg-[#242936] px-3 py-3 text-sm text-slate-100"
+                    className="rounded-xl border border-[#3a4151] bg-[#2b3140] px-3 py-3 text-sm text-slate-100"
                   >
                     <option value="guest">Guest</option>
                   </select>
