@@ -8,6 +8,7 @@ import {
   LiveKitAPI,
   ParticipantsAPI,
   RecordingsAPI,
+  setApiAuthMode,
   type RecordingProgressResponse,
   type RecordingSessionResponse,
 } from '@/lib/api';
@@ -513,6 +514,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const isGuestStudioFlow = sessionMode === 'studio' && requestedStudioRole === 'guest';
 
   const meshMaxPeers = Number(process.env.NEXT_PUBLIC_MESH_MAX_PEERS ?? '4');
+  const allowStudioMeshFallback =
+    String(process.env.NEXT_PUBLIC_STUDIO_ALLOW_MESH_FALLBACK ?? 'false') === 'true';
 
   const [engine, setEngine] = useState<Engine>('livekit');
   const [fallbackNotice, setFallbackNotice] = useState<string | null>(null);
@@ -630,6 +633,15 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       cleanupLiveKitRoom();
     };
   }, [cleanupLiveKitRoom]);
+
+  useEffect(() => {
+    if (sessionMode === 'studio' && requestedStudioRole === 'guest') {
+      setApiAuthMode('guest');
+      return () => setApiAuthMode('default');
+    }
+    setApiAuthMode('default');
+    return () => setApiAuthMode('default');
+  }, [requestedStudioRole, sessionMode]);
 
   const refreshRecordingSession = useCallback(async () => {
     if (sessionMode !== 'studio') return;
@@ -1590,6 +1602,15 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     if (engine === 'livekit') {
       const ok = await livekitJoin();
       if (!ok) {
+        const canFallbackToMesh = sessionMode === 'meet' || allowStudioMeshFallback;
+        if (!canFallbackToMesh) {
+          setFallbackNotice('LiveKit connection failed. Retry to rejoin. Mesh fallback is disabled in studio mode.');
+          if (sessionMode === 'meet') {
+            startPreJoinPreview();
+          }
+          return false;
+        }
+
         setFallbackNotice('LiveKit connection failed. Switching to mesh fallback.');
         setEngine('mesh');
         try {
@@ -1647,6 +1668,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       if (ok) {
         stopPreJoinPreview();
         setShowPreJoin(false);
+      } else if (isGuestStudioFlow) {
+        setGuestJoinError('Unable to join the live room. Please retry or ask host to refresh the invite.');
       }
     } catch (err) {
       const guestJoinErr = err as Error & { code?: string; status?: number };
@@ -1672,6 +1695,15 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     setGuestPreJoinStep('prejoin');
   }
 
+  useEffect(() => {
+    if (sessionMode !== 'studio') return;
+    if (allowStudioMeshFallback) return;
+    if (engine === 'mesh') {
+      setEngine('livekit');
+      setFallbackNotice('Studio mode requires LiveKit. Rejoining with LiveKit.');
+    }
+  }, [allowStudioMeshFallback, engine, sessionMode]);
+
   async function handleLeave() {
     if (sessionMode === 'studio' && canControlRecording && isRecording && !sessionBusy) {
       setSessionBusy(true);
@@ -1693,6 +1725,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     active.leave();
     setEngine('livekit');
     setFallbackNotice(null);
+    if (sessionMode === 'studio' && (requestedStudioRole === 'guest' || !!claimedGuestParticipantId)) {
+      router.replace(`/studio/${recordingId}/thanks`);
+      return;
+    }
     if (sessionMode === 'studio') {
       setShowPreJoin(true);
     }
@@ -2413,35 +2449,49 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
             : participant.trackCount === 0
               ? 0
               : Math.round((participant.uploadedCount / participant.trackCount) * 100);
+        const hasUploadEvidence =
+          participantChunkTotal > 0 ||
+          participantChunkUploaded > 0 ||
+          participant.trackCount > 0 ||
+          participant.uploadedCount > 0 ||
+          participant.pendingCount > 0;
+        const showProgressBar = !isRecording || hasUploadEvidence;
+        const note = isRecording
+          ? hasUploadEvidence
+            ? `${Math.max(0, 100 - pct)}% remaining`
+            : 'Recording...'
+          : participant.pendingCount > 0
+            ? `${Math.max(0, 100 - pct)}% remaining`
+            : 'Upload complete';
         return {
           id: participant.participantId,
           label: participant.displayName || participant.participantId.slice(0, 8),
           role: participant.role === 'host' ? 'Host' : 'Guest',
           percent: pct,
-          note:
-            participant.pendingCount > 0
-              ? `${Math.max(0, 100 - pct)}% remaining`
-              : 'Upload complete',
+          note,
+          showProgressBar,
         };
       }) ?? [];
     const people =
       progressPeople.length > 0
         ? progressPeople
         : [
-            {
-              id: 'local',
-              label: displayName || 'You',
-              role: localStudioRoleLabel,
-              percent: 0,
-              note: isRecording ? 'Recording...' : 'Waiting for upload...',
-            },
-            ...active.peers.map((peer) => ({
-              id: peer.id,
-              label: peer.label,
-              role: 'Guest',
-              percent: 30,
-              note: 'Connected',
-            })),
+              {
+                id: 'local',
+                label: displayName || 'You',
+                role: localStudioRoleLabel,
+                percent: 0,
+                note: isRecording ? 'Recording...' : 'Waiting for upload...',
+                showProgressBar: !isRecording,
+              },
+              ...active.peers.map((peer) => ({
+                id: peer.id,
+                label: peer.label,
+                role: 'Guest',
+                percent: 0,
+                note: 'Connected',
+                showProgressBar: false,
+              })),
           ];
     const visibleTiles = studioCanvasTiles;
     const tileCount = visibleTiles.length;
@@ -2489,8 +2539,33 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         ? Math.min(100, Math.round((progressChunkUploaded * 100) / progressChunkTotal))
         : null;
     const uploadedPercent = Math.max(progressUploadedPercent ?? 0, queueUploadedPercent);
-    const peopleForPanel =
-      progressPeople.length > 0
+    const hasLiveUploadActivity =
+      chunkUploadQueue.stats.completed > 0 ||
+      chunkUploadQueue.stats.processing > 0 ||
+      chunkUploadQueue.stats.pending > 0 ||
+      uploadedPercent > 0;
+    const livePeopleForPanel = [
+      {
+        id: 'local-live',
+        label: displayName || 'You',
+        role: localStudioRoleLabel,
+        percent: uploadedPercent,
+        note: hasLiveUploadActivity ? `${uploadedPercent}% uploaded` : 'Recording...',
+        showProgressBar: hasLiveUploadActivity,
+      },
+      ...active.peers.map((peer) => ({
+        id: peer.id,
+        label: peer.label,
+        role: 'Guest',
+        percent: 0,
+        note: 'Connected',
+        showProgressBar: false,
+      })),
+    ];
+    const shouldUseLivePresence = !recordingSession?.stoppedAt;
+    const peopleForPanel = shouldUseLivePresence
+      ? livePeopleForPanel
+      : progressPeople.length > 0
         ? progressPeople
         : people.map((person, index) =>
             index === 0
@@ -2498,14 +2573,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   ...person,
                   percent: uploadedPercent,
                   note: `${uploadedPercent}% uploaded`,
+                  showProgressBar: uploadedPercent > 0,
                 }
               : person
           );
-    const hasLiveUploadActivity =
-      chunkUploadQueue.stats.completed > 0 ||
-      chunkUploadQueue.stats.processing > 0 ||
-      chunkUploadQueue.stats.pending > 0 ||
-      uploadedPercent > 0;
     const hostShouldShowUploadChip =
       (isRecording && hasLiveUploadActivity) ||
       (hostStudioLifecyclePhase !== null && hostStudioLifecyclePhase !== 'recording') ||
@@ -2891,12 +2962,16 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                             <p className="text-xs text-slate-500">{person.note}</p>
                           </div>
                         </div>
-                        <div className="mt-3 h-1.5 w-full rounded-full bg-[#2f3748]">
-                          <div
-                            className="h-full rounded-full bg-emerald-300/90"
-                            style={{ width: `${Math.max(person.percent, 5)}%` }}
-                          />
-                        </div>
+                        {person.showProgressBar ? (
+                          <div className="mt-3 h-1.5 w-full rounded-full bg-[#2f3748]">
+                            <div
+                              className="h-full rounded-full bg-emerald-300/90"
+                              style={{ width: `${Math.max(person.percent, 5)}%` }}
+                            />
+                          </div>
+                        ) : (
+                          <div className="mt-3 h-1.5 w-full rounded-full bg-[#2f3748]/65" />
+                        )}
                       </div>
                     ))}
                   </div>

@@ -1,4 +1,10 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE!;
+type ApiAuthMode = 'default' | 'guest';
+let apiAuthMode: ApiAuthMode = 'default';
+
+export function setApiAuthMode(mode: ApiAuthMode) {
+  apiAuthMode = mode;
+}
 
 export type TrackDto = {
   id: string;
@@ -40,7 +46,8 @@ async function api<T>(
     cache: 'no-store',
   });
 
-  if (res.status === 401 && retryOnAuth && path !== '/auth/refresh') {
+  const canAttemptRefresh = retryOnAuth && apiAuthMode !== 'guest' && path !== '/auth/refresh';
+  if (res.status === 401 && canAttemptRefresh) {
     const refreshed = await tryRefreshSession().catch(() => false);
     if (refreshed) {
       return api<T>(path, options, false);
@@ -88,11 +95,18 @@ async function api<T>(
 export const AuthAPI = {
   me: async () => {
     const data = await api<{ user: { id: string; email: string; name?: string; imageUrl?: string } }>('/auth/me');
+    setApiAuthMode('default');
     return data.user; // unwrap here
   },
-  logout: () => fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' }),
+  logout: () => {
+    setApiAuthMode('default');
+    return fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' });
+  },
   // Google OAuth start is a redirect; just bounce the browser:
-  googleStart: () => { window.location.href = `${API_BASE}/auth/oauth/google/start`; },
+  googleStart: () => {
+    setApiAuthMode('default');
+    window.location.href = `${API_BASE}/auth/oauth/google/start`;
+  },
 };
 
 // ---- Recordings ----
@@ -502,16 +516,22 @@ export type ClaimGuestParticipantResponse = {
 };
 
 export const ParticipantsAPI = {
-  bootstrapGuest: (payload: { token: string; displayName: string; email?: string }) =>
-    api<ClaimGuestParticipantResponse>('/v1/guest/bootstrap', {
+  bootstrapGuest: async (payload: { token: string; displayName: string; email?: string }) => {
+    const response = await api<ClaimGuestParticipantResponse>('/v1/guest/bootstrap', {
       method: 'POST',
       body: JSON.stringify(payload),
-    }),
-  claimGuest: (token: string) =>
-    api<ClaimGuestParticipantResponse>('/v1/participants/claim', {
+    });
+    setApiAuthMode('guest');
+    return response;
+  },
+  claimGuest: async (token: string) => {
+    const response = await api<ClaimGuestParticipantResponse>('/v1/participants/claim', {
       method: 'POST',
       body: JSON.stringify({ token }),
-    }),
+    });
+    setApiAuthMode('guest');
+    return response;
+  },
   create: (recordingId: string, payload: { role: 'host' | 'guest'; displayName: string; email?: string }) =>
     api<CreateParticipantResponse>(`/v1/recordings/${recordingId}/participants`, {
       method: 'POST',

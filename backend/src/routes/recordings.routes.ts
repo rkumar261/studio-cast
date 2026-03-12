@@ -193,13 +193,13 @@ export default async function recordingRoutes(app: FastifyInstance) {
     app.get<{
         Params: { id: string }
     }>('/v1/recordings/:id/progress', { preHandler: authGuard }, async (req, res) => {
-        const requesterId = (req as any).user?.id as string | undefined;
-        if (!requesterId) {
+        const principal = getRequestPrincipal(req);
+        if (!principal) {
             return res.code(401).send({ error: 'Unauthorized', message: 'User not authenticated, Login required' });
         }
 
         const { id } = req.params;
-        const result = await getRecordingProgressService({ recordingId: id, requesterId });
+        const result = await getRecordingProgressService({ recordingId: id, principal });
 
         if (result.code === 'not_found') {
             return res.code(404).send({ code: 'not_found', message: 'Recording not found' });
