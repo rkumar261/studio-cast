@@ -572,6 +572,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const registeringKindsRef = useRef<Set<RecorderKind>>(new Set());
   const recoveringTrackIdsRef = useRef<Set<string>>(new Set());
   const latestChunkSeqByTrackRef = useRef<Map<string, number>>(new Map());
+  const prevGuestStoppedAtRef = useRef<string | undefined>(undefined);
   const [showMeetSelfPreview, setShowMeetSelfPreview] = useState(true);
   const [meetSelfPreviewExpanded, setMeetSelfPreviewExpanded] = useState(false);
   const [meetStageFit, setMeetStageFit] = useState<'contain' | 'cover'>('contain');
@@ -1422,6 +1423,23 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     );
   }, [recordingId, recoveredNextSeqByTrack, sessionMode, trackIdByKind]);
 
+  // Auto-finalize guest tracks when the host stops the session.
+  // Guests never call handleToggleRecordingSession, so this is the only place
+  // finalization is triggered for them.
+  useEffect(() => {
+    if (sessionMode !== 'studio' || requestedStudioRole !== 'guest') return;
+    const stoppedAt = recordingSession?.stoppedAt;
+    const prev = prevGuestStoppedAtRef.current;
+    prevGuestStoppedAtRef.current = stoppedAt;
+    // Only fire on the transition from no stoppedAt → stoppedAt
+    if (!stoppedAt || prev === stoppedAt) return;
+    if (Object.keys(trackIdByKind).length === 0) return;
+    const timer = window.setTimeout(() => {
+      void finalizeTrackCaptures().catch(() => {});
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [finalizeTrackCaptures, recordingSession?.stoppedAt, requestedStudioRole, sessionMode, trackIdByKind]);
+
   useRollingChunkRecorder({
     enabled:
       sessionMode === 'studio' &&
@@ -1726,6 +1744,13 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     setEngine('livekit');
     setFallbackNotice(null);
     if (sessionMode === 'studio' && (requestedStudioRole === 'guest' || !!claimedGuestParticipantId)) {
+      if (Object.keys(trackIdByKind).length > 0) {
+        try {
+          await finalizeTrackCaptures();
+        } catch {
+          // best-effort; redirect regardless
+        }
+      }
       router.replace(`/studio/${recordingId}/thanks`);
       return;
     }
@@ -2544,6 +2569,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       chunkUploadQueue.stats.processing > 0 ||
       chunkUploadQueue.stats.pending > 0 ||
       uploadedPercent > 0;
+    const localParticipantId = recorderParticipantId ?? effectiveRequestedParticipantId;
+    const remoteProgressParticipants = progressParticipants.filter(
+      (p) => p.participantId !== localParticipantId
+    );
     const livePeopleForPanel = [
       {
         id: 'local-live',
@@ -2553,14 +2582,42 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         note: hasLiveUploadActivity ? `${uploadedPercent}% uploaded` : 'Recording...',
         showProgressBar: hasLiveUploadActivity,
       },
-      ...active.peers.map((peer) => ({
-        id: peer.id,
-        label: peer.label,
-        role: 'Guest',
-        percent: 0,
-        note: 'Connected',
-        showProgressBar: false,
-      })),
+      // Use backend participant data (role + upload progress) when available;
+      // fall back to live-presence peers (no role/progress info) before first poll.
+      ...(remoteProgressParticipants.length > 0
+        ? remoteProgressParticipants.map((p) => {
+            const chunkTotal = p.tracks.reduce((sum, t) => sum + t.chunkTotal, 0);
+            const chunkUploaded = p.tracks.reduce((sum, t) => sum + t.chunkUploaded, 0);
+            const pct =
+              chunkTotal > 0
+                ? Math.round((chunkUploaded / chunkTotal) * 100)
+                : p.trackCount === 0
+                  ? 0
+                  : Math.round((p.uploadedCount / p.trackCount) * 100);
+            const hasEvidence = chunkTotal > 0 || p.trackCount > 0 || p.uploadedCount > 0;
+            return {
+              id: p.participantId,
+              label: p.displayName || p.participantId.slice(0, 8),
+              role: p.role === 'host' ? 'Host' : 'Guest',
+              percent: pct,
+              note: isRecording
+                ? hasEvidence
+                  ? `${Math.max(0, 100 - pct)}% remaining`
+                  : 'Recording...'
+                : p.pendingCount > 0
+                  ? `${Math.max(0, 100 - pct)}% remaining`
+                  : 'Upload complete',
+              showProgressBar: !isRecording || hasEvidence,
+            };
+          })
+        : active.peers.map((peer) => ({
+            id: peer.id,
+            label: peer.label,
+            role: 'Guest',
+            percent: 0,
+            note: 'Connected',
+            showProgressBar: false,
+          }))),
     ];
     const shouldUseLivePresence = !recordingSession?.stoppedAt;
     const peopleForPanel = shouldUseLivePresence

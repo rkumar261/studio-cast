@@ -146,7 +146,7 @@ const routes: FastifyPluginAsync = async (app) => {
   });
 
   /**
-   * (Optional, recommended) Step 5: Logout
+   * Step 5: Logout
    * - Revoke current refresh token (and/or family) in your service
    * - Clear cookies
    */
