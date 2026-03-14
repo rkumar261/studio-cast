@@ -9,11 +9,9 @@ export type GetRecordingResponse = {
     id: string;
     recordingId: string;
     participantId: string;
-    kind: 'audio' | 'video';
+    kind: 'audio' | 'video' | 'screen';
     codec?: string;
     durationMs?: number;
-    storageKeyRaw?: string;
-    storageKeyFinal?: string;
     state: 'recording' | 'uploaded' | 'processed';
   }>;
   participantAssets: Array<{
@@ -24,8 +22,7 @@ export type GetRecordingResponse = {
     participantName?: string;
     participantEmail?: string;
     state: 'pending' | 'processing' | 'ready' | 'failed';
-    storageKey?: string;
-    previewKey?: string;
+    previewUrl?: string;
     durationMs?: number;
     resolution?: string;
     processingStartedAt?: string;
@@ -39,8 +36,7 @@ export type GetRecordingResponse = {
     id: string;
     recordingId: string;
     state: 'pending' | 'processing' | 'ready' | 'failed';
-    storageKey?: string;
-    previewKey?: string;
+    previewUrl?: string;
     durationMs?: number;
     resolution?: string;
     processingStartedAt?: string;

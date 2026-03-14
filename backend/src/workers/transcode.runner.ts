@@ -35,7 +35,9 @@ export type TranscodeOutcome = {
  * This function is pure side-effect toward storage; it DOES NOT update the DB.
  * The worker calling this should persist finalKey/metadata and enqueue next jobs.
  */
-export async function runTranscodeForTrack(track: TrackLike): Promise<TranscodeOutcome> {
+export async function runTranscodeForTrack(
+    track: TrackLike & { finalKeyOverride?: string }
+): Promise<TranscodeOutcome> {
     if (!track?.storage_key_raw) {
         throw new Error(`runTranscodeForTrack: track ${track?.id} has no storage_key_raw`);
     }
@@ -59,7 +61,7 @@ export async function runTranscodeForTrack(track: TrackLike): Promise<TranscodeO
     // Choose kind & final key
     const kind: 'audio' | 'video' = audioOnly ? 'audio' : 'video';
     const ext = kind === 'audio' ? '.wav' : '.mp4';
-    const finalKey = buildFinalKey(track.recording_id, track.id, kind, ext);
+    const finalKey = track.finalKeyOverride ?? buildFinalKey(track.recording_id, track.id, kind, ext);
     const contentType: 'audio/wav' | 'video/mp4' =
         kind === 'audio' ? 'audio/wav' : 'video/mp4';
 

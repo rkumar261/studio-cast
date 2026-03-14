@@ -20,17 +20,15 @@ function makeRecording(overrides: Partial<AnyRecord> = {}) {
     id: 'rec-1',
     status: 'uploading',
     stopped_at: new Date('2026-03-14T10:00:00.000Z'),
+    failed_at: null,
+    failure_reason: null,
     track: [],
     ...overrides,
   };
 }
 
-function makeTrack(
-  id: string,
-  state = 'processed',
-  storageKeyFinal: string | null = 'recordings/rec-1/tracks/t1/final.mp4'
-) {
-  return { id, state, storage_key_final: storageKeyFinal };
+function makeTrack(id: string) {
+  return { id };
 }
 
 function makeExportArtifact(id: string, type: string, state: string) {
@@ -54,8 +52,8 @@ function makeReadyCombinedAsset() {
     id: 'combined-1',
     recording_id: 'rec-1',
     state: 'ready',
-    storage_key: 'recordings/rec-1/combined/all.mp4',
-    preview_key: 'recordings/rec-1/combined/all.mp4',
+    storage_key: 'recordings/rec-1/combined/all-participants.mp4',
+    preview_key: 'recordings/rec-1/combined/all-participants.mp4',
     duration_ms: 5000,
     resolution: '1280x720',
     processing_started_at: new Date('2026-03-14T10:00:01.000Z'),
@@ -64,23 +62,65 @@ function makeReadyCombinedAsset() {
     failure_reason: null,
     export_set_json: ['mp4', 'wav'],
     metadata_json: {
-      sourceFingerprint: 'concat_all:asset-1:2026-03-14T10:00:00.000Z',
+      sourceFingerprint: 'concat_all:asset-part-1:2026-03-14T10:00:00.000Z',
     },
   };
 }
 
-function makeReadyParticipantAsset() {
+function makeParticipantRow(args: {
+  participantId: string;
+  assetState: 'pending' | 'processing' | 'ready' | 'failed';
+  storageKey?: string | null;
+  failureReason?: string | null;
+  readyAt?: Date | null;
+}) {
   return {
-    id: 'asset-1',
-    storage_key: 'recordings/rec-1/tracks/t1/final/video.mp4',
-    updated_at: new Date('2026-03-14T10:00:00.000Z'),
+    id: args.participantId,
+    role: 'guest',
+    display_name: `Participant ${args.participantId}`,
+    email: null,
+    track: [
+      {
+        id: `track-${args.participantId}`,
+        kind: 'video',
+        state: args.assetState === 'ready' ? 'processed' : 'uploaded',
+        storage_key_final: args.storageKey ?? null,
+        duration_ms: 1000,
+        created_at: new Date('2026-03-14T10:00:00.000Z'),
+      },
+    ],
+    participant_asset: [
+      {
+        id: `asset-${args.participantId}`,
+        recording_id: 'rec-1',
+        participant_id: args.participantId,
+        state: args.assetState,
+        storage_key: args.storageKey ?? null,
+        preview_key: args.storageKey ?? null,
+        duration_ms: 1000,
+        resolution: '1280x720',
+        processing_started_at: new Date('2026-03-14T10:00:00.000Z'),
+        ready_at: args.readyAt ?? null,
+        failed_at: args.assetState === 'failed' ? new Date('2026-03-14T10:00:05.000Z') : null,
+        failure_reason: args.failureReason ?? null,
+        export_set_json: ['mp4'],
+        metadata_json: { sourceTrackId: `track-${args.participantId}` },
+      },
+    ],
   };
 }
 
 /** Stubs combined reconcile to succeed via fingerprint cache (no FFmpeg call). */
 function stubReadyCombined(restores: Array<() => void>) {
   restores.push(
-    stubMethod(prisma.participant_asset, 'findMany', async () => [makeReadyParticipantAsset()])
+    stubMethod(prisma.participant, 'findMany', async () => [
+      makeParticipantRow({
+        participantId: 'part-1',
+        assetState: 'ready',
+        storageKey: 'recordings/rec-1/participants/part-1/master.mp4',
+        readyAt: new Date('2026-03-14T10:00:00.000Z'),
+      }),
+    ])
   );
   restores.push(
     stubMethod(prisma.combined_asset, 'findUnique', async () => makeReadyCombinedAsset())
@@ -133,58 +173,63 @@ test('reconcileRecordingReadiness skips when recording has no tracks', async () 
   }
 });
 
-test('reconcileRecordingReadiness skips when any track is not yet processed', async () => {
+test('reconcileRecordingReadiness waits for participant masters instead of raw track state alone', async () => {
   const restores: Array<() => void> = [];
   try {
     restores.push(
       stubMethod(prisma.recording, 'findUnique', async () =>
         makeRecording({
-          track: [
-            makeTrack('track-1', 'processed', 'recordings/rec-1/t1/final.mp4'),
-            makeTrack('track-2', 'uploaded', null), // still uploading
-          ],
+          track: [makeTrack('track-1')],
         })
       )
     );
-
-    const result = await reconcileRecordingReadiness('rec-1');
-    assert.equal(result.code, 'skipped');
-    assert.equal(result.reason, 'tracks_not_processed');
-  } finally {
-    for (const restore of restores.reverse()) restore();
-  }
-});
-
-test('reconcileRecordingReadiness skips when a processed track is missing storage_key_final', async () => {
-  const restores: Array<() => void> = [];
-  try {
     restores.push(
-      stubMethod(prisma.recording, 'findUnique', async () =>
-        makeRecording({ track: [makeTrack('track-1', 'processed', null)] })
-      )
+      stubMethod(prisma.participant, 'findMany', async () => [
+        makeParticipantRow({
+          participantId: 'part-1',
+          assetState: 'processing',
+        }),
+      ])
     );
+    restores.push(stubMethod(prisma.recording, 'update', async () => ({} as any)));
 
     const result = await reconcileRecordingReadiness('rec-1');
     assert.equal(result.code, 'skipped');
-    assert.equal(result.reason, 'tracks_not_processed');
+    assert.equal(result.reason, 'participant_assets_not_ready');
   } finally {
     for (const restore of restores.reverse()) restore();
   }
 });
 
-test('reconcileRecordingReadiness returns combined_not_ready when no ready participant assets exist', async () => {
+test('reconcileRecordingReadiness surfaces failed participant masters', async () => {
   const restores: Array<() => void> = [];
+  let updatedStatus: string | null = null;
   try {
     restores.push(
       stubMethod(prisma.recording, 'findUnique', async () =>
         makeRecording({ track: [makeTrack('track-1')] })
       )
     );
-    restores.push(stubMethod(prisma.participant_asset, 'findMany', async () => []));
+    restores.push(
+      stubMethod(prisma.participant, 'findMany', async () => [
+        makeParticipantRow({
+          participantId: 'part-1',
+          assetState: 'failed',
+          failureReason: 'participant_master_failed',
+        }),
+      ])
+    );
+    restores.push(
+      stubMethod(prisma.recording, 'update', async (args: any) => {
+        updatedStatus = args.data.status;
+        return {} as any;
+      })
+    );
 
     const result = await reconcileRecordingReadiness('rec-1');
     assert.equal(result.code, 'skipped');
-    assert.equal(result.reason, 'combined_not_ready');
+    assert.equal(result.reason, 'participant_assets_failed');
+    assert.equal(updatedStatus, 'error');
   } finally {
     for (const restore of restores.reverse()) restore();
   }

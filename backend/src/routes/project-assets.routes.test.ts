@@ -50,35 +50,10 @@ test('GET /v1/recordings/:id/project-assets returns user-facing project asset gr
           {
             id: 'combined-1',
             state: 'ready',
-            storage_key: 'recordings/rec-1/combined/all.mp4',
-            preview_key: 'recordings/rec-1/combined/all.mp4',
+            storage_key: 'recordings/rec-1/combined/all-participants.mp4',
+            preview_key: 'recordings/rec-1/combined/all-participants.mp4',
             duration_ms: 120000,
-          },
-        ],
-        participant_asset: [
-          {
-            id: 'asset-host',
-            participant_id: 'participant-host',
-            state: 'ready',
-            storage_key: 'recordings/rec-1/participants/host.mp4',
-            preview_key: 'recordings/rec-1/participants/host.mp4',
-            duration_ms: 119000,
-            participant: {
-              role: 'host',
-              display_name: 'Host User',
-            },
-          },
-          {
-            id: 'asset-guest',
-            participant_id: 'participant-guest',
-            state: 'processing',
-            storage_key: null,
-            preview_key: null,
-            duration_ms: null,
-            participant: {
-              role: 'guest',
-              display_name: 'Guest User',
-            },
+            failure_reason: null,
           },
         ],
         transcript: [
@@ -87,6 +62,8 @@ test('GET /v1/recordings/:id/project-assets returns user-facing project asset gr
             state: 'ready',
             storage_key: 'recordings/rec-1/transcript/en.json',
             language: 'en',
+            failure_reason: null,
+            metadata_json: null,
           },
         ],
         export_artifact: [
@@ -117,6 +94,78 @@ test('GET /v1/recordings/:id/project-assets returns user-facing project asset gr
         ],
       }))
     );
+    restores.push(
+      stubMethod(prisma.participant, 'findMany', async () => [
+        {
+          id: 'participant-host',
+          role: 'host',
+          display_name: 'Host User',
+          email: null,
+          track: [
+            {
+              id: 'track-host',
+              kind: 'video',
+              state: 'processed',
+              storage_key_final: 'recordings/rec-1/participants/participant-host/master.mp4',
+              duration_ms: 119000,
+              created_at: new Date('2026-03-09T10:00:00.000Z'),
+            },
+          ],
+          participant_asset: [
+            {
+              id: 'asset-host',
+              recording_id: 'rec-1',
+              participant_id: 'participant-host',
+              state: 'ready',
+              storage_key: 'recordings/rec-1/participants/participant-host/master.mp4',
+              preview_key: 'recordings/rec-1/participants/participant-host/master.mp4',
+              duration_ms: 119000,
+              resolution: '1280x720',
+              processing_started_at: new Date('2026-03-09T10:00:00.000Z'),
+              ready_at: new Date('2026-03-09T10:00:05.000Z'),
+              failed_at: null,
+              failure_reason: null,
+              export_set_json: ['mp4'],
+              metadata_json: {},
+            },
+          ],
+        },
+        {
+          id: 'participant-guest',
+          role: 'guest',
+          display_name: 'Guest User',
+          email: null,
+          track: [
+            {
+              id: 'track-guest',
+              kind: 'video',
+              state: 'uploaded',
+              storage_key_final: null,
+              duration_ms: null,
+              created_at: new Date('2026-03-09T10:00:01.000Z'),
+            },
+          ],
+          participant_asset: [
+            {
+              id: 'asset-guest',
+              recording_id: 'rec-1',
+              participant_id: 'participant-guest',
+              state: 'processing',
+              storage_key: null,
+              preview_key: null,
+              duration_ms: null,
+              resolution: null,
+              processing_started_at: new Date('2026-03-09T10:00:02.000Z'),
+              ready_at: null,
+              failed_at: null,
+              failure_reason: null,
+              export_set_json: [],
+              metadata_json: {},
+            },
+          ],
+        },
+      ])
+    );
 
     const response = await app.inject({
       method: 'GET',
@@ -133,7 +182,7 @@ test('GET /v1/recordings/:id/project-assets returns user-facing project asset gr
     assert.equal(body.combinedAsset.label, 'All participants');
     assert.equal(body.combinedAsset.state, 'ready');
     const publicBase = String(process.env.R2_PUBLIC_BASE_URL ?? '').trim().replace(/\/+$/, '');
-    assert.equal(body.combinedAsset.previewUrl, `${publicBase}/recordings/rec-1/combined/all.mp4`);
+    assert.equal(body.combinedAsset.previewUrl, `${publicBase}/recordings/rec-1/combined/all-participants.mp4`);
     assert.equal(body.participantAssets.length, 2);
     assert.equal(body.participantAssets[0].label, 'Host User');
     assert.equal(body.participantAssets[1].state, 'processing');
@@ -159,7 +208,7 @@ test('GET /v1/recordings/:id/project-assets returns user-facing project asset gr
     const guestAsset = body.participantAssets.find((a: any) => a.participant?.role === 'guest');
     assert.ok(guestAsset);
     assert.equal(guestAsset.state, 'processing');
-    assert.equal(guestAsset.blockedReason, undefined);
+    assert.equal(guestAsset.blockedReason, 'building_participant_master');
 
     assert.equal((body as any).tracks, undefined);
   } finally {
@@ -192,11 +241,11 @@ test('GET /v1/recordings/:id/project-assets returns 403 for non-owner user', asy
         status: 'processing',
         userId: 'user-1',
         combined_asset: [],
-        participant_asset: [],
         transcript: [],
         export_artifact: [],
       }))
     );
+    restores.push(stubMethod(prisma.participant, 'findMany', async () => []));
 
     const response = await app.inject({
       method: 'GET',
@@ -234,6 +283,7 @@ test('GET /v1/recordings/:id/project-assets returns 404 when recording does not 
     restores.push(
       stubMethod(prisma.recording, 'findUnique', async () => null)
     );
+    restores.push(stubMethod(prisma.participant, 'findMany', async () => []));
 
     const response = await app.inject({
       method: 'GET',

@@ -49,7 +49,6 @@ function mapExportRowToDto(row: any): ExportDto {
         combinedAssetId: row.combined_asset_id ?? undefined,
         participantAssetId: row.participant_asset_id ?? undefined,
         transcriptId: row.transcript_id ?? undefined,
-        storageKey: row.storage_key ?? undefined,
         lastError: row.last_error ?? undefined,
         failureReason: row.failure_reason ?? undefined,
         startedAt: row.started_at?.toISOString(),

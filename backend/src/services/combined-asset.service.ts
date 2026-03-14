@@ -6,6 +6,7 @@ import {
   type CombinedCompositionOutcome,
 } from '../workers/combined.runner.js';
 import { emitTelemetry } from '../lib/telemetry.js';
+import { listParticipantMasterStatesForRecording } from './participant-asset.service.js';
 
 export type CombinedAssetPayload = {
   id: string;
@@ -106,25 +107,84 @@ export async function reconcileCombinedAssetForRecording(args: {
   }) => Promise<CombinedCompositionOutcome>;
 }): Promise<
   | { code: 'ok'; composed: boolean; asset: CombinedAssetPayload }
-  | { code: 'skipped'; reason: 'no_ready_participant_assets' }
+  | { code: 'skipped'; reason: 'no_participant_media' | 'participant_assets_not_ready' }
   | { code: 'failed'; message: string }
 > {
-  const participantAssets = await prisma.participant_asset.findMany({
-    where: {
-      recording_id: args.recordingId,
-      state: 'ready',
-      storage_key: { not: null },
-    },
-    orderBy: [{ participant_id: 'asc' }, { updated_at: 'asc' }],
-    select: {
-      id: true,
-      storage_key: true,
-      updated_at: true,
-    },
-  });
+  const participantMasters = await listParticipantMasterStatesForRecording(args.recordingId);
+  const applicableParticipants = participantMasters.filter((participant) => participant.isApplicable);
 
-  if (participantAssets.length === 0) {
-    return { code: 'skipped', reason: 'no_ready_participant_assets' };
+  if (applicableParticipants.length === 0) {
+    return { code: 'skipped', reason: 'no_participant_media' };
+  }
+
+  const failedParticipant = applicableParticipants.find((participant) => participant.state === 'failed');
+  if (failedParticipant) {
+    const message = failedParticipant.failureReason ?? 'participant_master_failed';
+    const failed = await prisma.combined_asset.upsert({
+      where: { recording_id: args.recordingId },
+      create: {
+        recording_id: args.recordingId,
+        state: 'failed',
+        failed_at: new Date(),
+        failure_reason: message.slice(0, 1000),
+        metadata_json: {
+          blockedByParticipantId: failedParticipant.participantId,
+          blockedByReason: failedParticipant.failureReason ?? 'participant_master_failed',
+        } as Prisma.InputJsonValue,
+        export_set_json: [],
+      },
+      update: {
+        state: 'failed',
+        failed_at: new Date(),
+        failure_reason: message.slice(0, 1000),
+        metadata_json: {
+          blockedByParticipantId: failedParticipant.participantId,
+          blockedByReason: failedParticipant.failureReason ?? 'participant_master_failed',
+        } as Prisma.InputJsonValue,
+      },
+    });
+
+    emitTelemetry({
+      level: 'error',
+      event: 'asset.combined.blocked',
+      message: 'Combined asset blocked by failed participant master',
+      recordingId: args.recordingId,
+      assetId: failed.id,
+      participantId: failedParticipant.participantId,
+      reason: message.slice(0, 1000),
+    });
+    return { code: 'failed', message };
+  }
+
+  const readyParticipants = applicableParticipants.filter(
+    (participant) =>
+      participant.state === 'ready' &&
+      participant.asset?.id &&
+      participant.asset.storageKey
+  );
+  if (readyParticipants.length !== applicableParticipants.length) {
+    await prisma.combined_asset.upsert({
+      where: { recording_id: args.recordingId },
+      create: {
+        recording_id: args.recordingId,
+        state: 'pending',
+        metadata_json: {
+          expectedParticipantCount: applicableParticipants.length,
+          readyParticipantCount: readyParticipants.length,
+        } as Prisma.InputJsonValue,
+        export_set_json: [],
+      },
+      update: {
+        state: 'pending',
+        failed_at: null,
+        failure_reason: null,
+        metadata_json: {
+          expectedParticipantCount: applicableParticipants.length,
+          readyParticipantCount: readyParticipants.length,
+        } as Prisma.InputJsonValue,
+      },
+    });
+    return { code: 'skipped', reason: 'participant_assets_not_ready' };
   }
 
   const mode = resolveCompositionMode();
@@ -132,15 +192,18 @@ export async function reconcileCombinedAssetForRecording(args: {
     mode === 'primary_only'
       ? [
           {
-            id: participantAssets[0]!.id,
-            storageKey: participantAssets[0]!.storage_key as string,
-            updatedAtIso: participantAssets[0]!.updated_at.toISOString(),
+            id: readyParticipants[0]!.asset!.id,
+            storageKey: readyParticipants[0]!.asset!.storageKey as string,
+            updatedAtIso: readyParticipants[0]!.asset!.readyAt ?? readyParticipants[0]!.asset!.processingStartedAt ?? new Date(0).toISOString(),
           },
         ]
-      : participantAssets.map((asset) => ({
-          id: asset.id,
-          storageKey: asset.storage_key as string,
-          updatedAtIso: asset.updated_at.toISOString(),
+      : readyParticipants.map((participant) => ({
+          id: participant.asset!.id,
+          storageKey: participant.asset!.storageKey as string,
+          updatedAtIso:
+            participant.asset!.readyAt ??
+            participant.asset!.processingStartedAt ??
+            new Date(0).toISOString(),
         }));
 
   const sourceFingerprint = buildSourceFingerprint(mode, selectedSources);
@@ -194,11 +257,12 @@ export async function reconcileCombinedAssetForRecording(args: {
   emitTelemetry({
     event: 'asset.combined.processing',
     message: 'Combined asset composition started',
-    recordingId: args.recordingId,
-    assetId: processing.id,
-    sourceAssetCount: selectedSources.length,
-    compositionMode: mode,
-  });
+      recordingId: args.recordingId,
+      assetId: processing.id,
+      sourceAssetCount: selectedSources.length,
+      compositionMode: mode,
+      expectedParticipantCount: applicableParticipants.length,
+    });
 
   try {
     const compose = args.composeRunner ?? runCombinedComposition;

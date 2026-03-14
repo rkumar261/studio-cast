@@ -13,6 +13,49 @@ function stubMethod(target: AnyRecord, key: string, impl: any): () => void {
   };
 }
 
+function makeParticipantRow(args: {
+  participantId: string;
+  assetState: 'pending' | 'processing' | 'ready' | 'failed';
+  storageKey?: string | null;
+  failureReason?: string | null;
+  readyAt?: Date | null;
+}) {
+  return {
+    id: args.participantId,
+    role: 'guest',
+    display_name: `Participant ${args.participantId}`,
+    email: null,
+    track: [
+      {
+        id: `track-${args.participantId}`,
+        kind: 'video',
+        state: args.assetState === 'ready' ? 'processed' : 'uploaded',
+        storage_key_final: args.storageKey ?? null,
+        duration_ms: 1000,
+        created_at: new Date('2026-03-09T10:00:00.000Z'),
+      },
+    ],
+    participant_asset: [
+      {
+        id: `asset-${args.participantId}`,
+        recording_id: 'rec-1',
+        participant_id: args.participantId,
+        state: args.assetState,
+        storage_key: args.storageKey ?? null,
+        preview_key: args.storageKey ?? null,
+        duration_ms: 1000,
+        resolution: '1280x720',
+        processing_started_at: new Date('2026-03-09T10:00:00.000Z'),
+        ready_at: args.readyAt ?? null,
+        failed_at: args.assetState === 'failed' ? new Date('2026-03-09T10:00:05.000Z') : null,
+        failure_reason: args.failureReason ?? null,
+        export_set_json: ['mp4'],
+        metadata_json: { sourceTrackId: `track-${args.participantId}` },
+      },
+    ],
+  };
+}
+
 test('combined reconcile is idempotent when ready fingerprint matches', async () => {
   const restores: Array<() => void> = [];
   let upsertCalled = false;
@@ -20,14 +63,15 @@ test('combined reconcile is idempotent when ready fingerprint matches', async ()
   try {
     restores.push(
       stubMethod(
-        prisma.participant_asset,
+        prisma.participant,
         'findMany',
         async () => [
-          {
-            id: 'asset-1',
-            storage_key: 'recordings/rec-1/tracks/t1/final/video.mp4',
-            updated_at: new Date('2026-03-09T10:00:00.000Z'),
-          },
+          makeParticipantRow({
+            participantId: 'part-1',
+            assetState: 'ready',
+            storageKey: 'recordings/rec-1/participants/part-1/master.mp4',
+            readyAt: new Date('2026-03-09T10:00:00.000Z'),
+          }),
         ]
       )
     );
@@ -48,7 +92,7 @@ test('combined reconcile is idempotent when ready fingerprint matches', async ()
           failed_at: null,
           failure_reason: null,
           metadata_json: {
-            sourceFingerprint: 'concat_all:asset-1:2026-03-09T10:00:00.000Z',
+            sourceFingerprint: 'concat_all:asset-part-1:2026-03-09T10:00:00.000Z',
           },
           export_set_json: ['mp4', 'wav', 'mp4_captions'],
         })
@@ -86,19 +130,21 @@ test('combined reconcile composes and marks ready', async () => {
   try {
     restores.push(
       stubMethod(
-        prisma.participant_asset,
+        prisma.participant,
         'findMany',
         async () => [
-          {
-            id: 'asset-1',
-            storage_key: 'recordings/rec-1/tracks/t1/final/video.mp4',
-            updated_at: new Date('2026-03-09T10:00:00.000Z'),
-          },
-          {
-            id: 'asset-2',
-            storage_key: 'recordings/rec-1/tracks/t2/final/video.mp4',
-            updated_at: new Date('2026-03-09T10:00:01.000Z'),
-          },
+          makeParticipantRow({
+            participantId: 'part-1',
+            assetState: 'ready',
+            storageKey: 'recordings/rec-1/participants/part-1/master.mp4',
+            readyAt: new Date('2026-03-09T10:00:00.000Z'),
+          }),
+          makeParticipantRow({
+            participantId: 'part-2',
+            assetState: 'ready',
+            storageKey: 'recordings/rec-1/participants/part-2/master.mp4',
+            readyAt: new Date('2026-03-09T10:00:01.000Z'),
+          }),
         ]
       )
     );
@@ -139,7 +185,7 @@ test('combined reconcile composes and marks ready', async () => {
         resolution: '1920x1080',
         exportSet: ['mp4', 'wav', 'mp4_captions'],
         mode: 'concat_all',
-        sourceAssetIds: ['asset-1', 'asset-2'],
+        sourceAssetIds: ['asset-part-1', 'asset-part-2'],
       }),
     });
 
@@ -156,28 +202,22 @@ test('combined reconcile composes and marks ready', async () => {
 
 test('combined reconcile marks failed and leaves participant assets untouched on composition error', async () => {
   const restores: Array<() => void> = [];
-  let participantWriteCalled = false;
   let combinedFailedUpdate: any = null;
 
   try {
     restores.push(
       stubMethod(
-        prisma.participant_asset,
+        prisma.participant,
         'findMany',
         async () => [
-          {
-            id: 'asset-1',
-            storage_key: 'recordings/rec-1/tracks/t1/final/video.mp4',
-            updated_at: new Date('2026-03-09T10:00:00.000Z'),
-          },
+          makeParticipantRow({
+            participantId: 'part-1',
+            assetState: 'ready',
+            storageKey: 'recordings/rec-1/participants/part-1/master.mp4',
+            readyAt: new Date('2026-03-09T10:00:00.000Z'),
+          }),
         ]
       )
-    );
-    restores.push(
-      stubMethod(prisma.participant_asset, 'update', async () => {
-        participantWriteCalled = true;
-        return {} as any;
-      })
     );
     restores.push(stubMethod(prisma.combined_asset, 'findUnique', async () => null));
     restores.push(stubMethod(prisma.combined_asset, 'upsert', async () => ({} as any)));
@@ -196,9 +236,83 @@ test('combined reconcile marks failed and leaves participant assets untouched on
     });
 
     assert.equal(result.code, 'failed');
-    assert.equal(participantWriteCalled, false);
     assert.equal(combinedFailedUpdate.data.state, 'failed');
     assert.equal(combinedFailedUpdate.data.failure_reason, 'compose_failed');
+  } finally {
+    for (const restore of restores.reverse()) restore();
+  }
+});
+
+test('combined reconcile waits until all applicable participant masters are ready', async () => {
+  const restores: Array<() => void> = [];
+  let combinedUpsertArgs: any = null;
+
+  try {
+    restores.push(
+      stubMethod(
+        prisma.participant,
+        'findMany',
+        async () => [
+          makeParticipantRow({
+            participantId: 'part-1',
+            assetState: 'ready',
+            storageKey: 'recordings/rec-1/participants/part-1/master.mp4',
+            readyAt: new Date('2026-03-09T10:00:00.000Z'),
+          }),
+          makeParticipantRow({
+            participantId: 'part-2',
+            assetState: 'processing',
+          }),
+        ]
+      )
+    );
+    restores.push(
+      stubMethod(prisma.combined_asset, 'upsert', async (args: any) => {
+        combinedUpsertArgs = args;
+        return { id: 'combined-1' } as any;
+      })
+    );
+
+    const result = await reconcileCombinedAssetForRecording({ recordingId: 'rec-1' });
+
+    assert.equal(result.code, 'skipped');
+    assert.equal(result.reason, 'participant_assets_not_ready');
+    assert.equal(combinedUpsertArgs.update.state, 'pending');
+  } finally {
+    for (const restore of restores.reverse()) restore();
+  }
+});
+
+test('combined reconcile fails fast when a participant master fails', async () => {
+  const restores: Array<() => void> = [];
+  let combinedUpsertArgs: any = null;
+
+  try {
+    restores.push(
+      stubMethod(
+        prisma.participant,
+        'findMany',
+        async () => [
+          makeParticipantRow({
+            participantId: 'part-1',
+            assetState: 'failed',
+            failureReason: 'participant_master_failed',
+          }),
+        ]
+      )
+    );
+    restores.push(
+      stubMethod(prisma.combined_asset, 'upsert', async (args: any) => {
+        combinedUpsertArgs = args;
+        return { id: 'combined-1' } as any;
+      })
+    );
+
+    const result = await reconcileCombinedAssetForRecording({ recordingId: 'rec-1' });
+
+    assert.equal(result.code, 'failed');
+    assert.equal(result.message, 'participant_master_failed');
+    assert.equal(combinedUpsertArgs.update.state, 'failed');
   } finally {
     for (const restore of restores.reverse()) restore();
   }

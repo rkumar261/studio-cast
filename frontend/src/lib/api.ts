@@ -13,8 +13,6 @@ export type TrackDto = {
   kind: 'audio' | 'video' | 'screen';
   codec?: string;
   durationMs?: number;
-  storageKeyRaw?: string;
-  storageKeyFinal?: string;
   state: 'recording' | 'uploaded' | 'processed' | string;
 };
 
@@ -142,6 +140,7 @@ export type ProjectMediaAssetDto = {
   badges: string[];
   durationMs?: number;
   previewUrl?: string;
+  blockedReason?: string;
   actions: ProjectAssetActionDto[];
   participant?: {
     id: string;
@@ -155,6 +154,7 @@ export type ProjectTranscriptAssetDto = {
   state: ProjectAssetState;
   badges: string[];
   previewUrl?: string;
+  blockedReason?: string;
   actions: ProjectAssetActionDto[];
 };
 
@@ -163,6 +163,7 @@ export type ProjectExportAssetDto = {
   label: string;
   state: ProjectAssetState;
   badges: string[];
+  blockedReason?: string;
   actions: ProjectAssetActionDto[];
 };
 
@@ -218,6 +219,10 @@ export type RecordingBlockedReason =
   | 'chunks_pending_upload'
   | 'ready_for_stitch'
   | 'stitching_in_progress'
+  | 'participant_assets_pending'
+  | 'participant_assets_failed'
+  | 'combined_asset_pending'
+  | 'combined_asset_failed'
   | 'exports_pending'
   | 'exports_failed';
 
@@ -707,7 +712,6 @@ export type ExportDto = {
   combinedAssetId?: string;
   participantAssetId?: string;
   transcriptId?: string;
-  storageKey?: string;
   lastError?: string;
   failureReason?: string;
   startedAt?: string;

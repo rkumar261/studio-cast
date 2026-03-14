@@ -1,7 +1,8 @@
-import { export_state, export_type, job_state, recording_status, track_state } from '@prisma/client';
+import { export_state, export_type, job_state, recording_status } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { createJob } from '../repositories/job.repo.js';
 import { reconcileCombinedAssetForRecording } from './combined-asset.service.js';
+import { listParticipantMasterStatesForRecording } from './participant-asset.service.js';
 
 export const REQUIRED_EXPORT_TYPES = [
   export_type.wav,
@@ -153,11 +154,11 @@ export async function reconcileRecordingReadiness(recordingId: string) {
       id: true,
       status: true,
       stopped_at: true,
+      failed_at: true,
+      failure_reason: true,
       track: {
         select: {
           id: true,
-          state: true,
-          storage_key_final: true,
         },
       },
     },
@@ -173,19 +174,75 @@ export async function reconcileRecordingReadiness(recordingId: string) {
     return { code: 'skipped' as const, reason: 'no_tracks' as const };
   }
 
-  const allTracksProcessed = tracks.every(
-    (track) => track.state === track_state.processed && !!track.storage_key_final
-  );
+  const participantMasters = await listParticipantMasterStatesForRecording(recordingId);
+  const applicableParticipantMasters = participantMasters.filter((participant) => participant.isApplicable);
+  const failedParticipantMaster = applicableParticipantMasters.find((participant) => participant.state === 'failed');
+  if (failedParticipantMaster) {
+    if (
+      recording.status !== recording_status.error ||
+      recording.failure_reason !== failedParticipantMaster.failureReason
+    ) {
+      await prisma.recording.update({
+        where: { id: recordingId },
+        data: {
+          status: recording_status.error,
+          failed_at: new Date(),
+          failure_reason:
+            (failedParticipantMaster.failureReason ?? 'participant_master_failed').slice(0, 1000),
+        },
+      });
+    }
+    return { code: 'skipped' as const, reason: 'participant_assets_failed' as const };
+  }
 
-  if (!allTracksProcessed) {
-    return { code: 'skipped' as const, reason: 'tracks_not_processed' as const };
+  const allParticipantMastersReady =
+    applicableParticipantMasters.length > 0 &&
+    applicableParticipantMasters.every(
+      (participant) => participant.state === 'ready' && participant.asset?.storageKey
+    );
+
+  if (!allParticipantMastersReady) {
+    if (recording.status !== recording_status.processing) {
+      await prisma.recording.update({
+        where: { id: recordingId },
+        data: {
+          status: recording_status.processing,
+          failed_at: null,
+          failure_reason: null,
+        },
+      });
+    }
+    return { code: 'skipped' as const, reason: 'participant_assets_not_ready' as const };
   }
 
   const combined = await reconcileCombinedAssetForRecording({ recordingId });
   if (combined.code === 'skipped') {
+    if (recording.status !== recording_status.processing) {
+      await prisma.recording.update({
+        where: { id: recordingId },
+        data: {
+          status: recording_status.processing,
+          failed_at: null,
+          failure_reason: null,
+        },
+      });
+    }
     return { code: 'skipped' as const, reason: 'combined_not_ready' as const };
   }
   if (combined.code === 'failed') {
+    if (
+      recording.status !== recording_status.error ||
+      recording.failure_reason !== combined.message
+    ) {
+      await prisma.recording.update({
+        where: { id: recordingId },
+        data: {
+          status: recording_status.error,
+          failed_at: new Date(),
+          failure_reason: combined.message.slice(0, 1000),
+        },
+      });
+    }
     return { code: 'skipped' as const, reason: 'combined_failed' as const };
   }
 
@@ -235,7 +292,10 @@ export async function reconcileRecordingReadiness(recordingId: string) {
     if (recording.status !== recording_status.error) {
       await prisma.recording.update({
         where: { id: recordingId },
-        data: { status: recording_status.error },
+        data: {
+          status: recording_status.error,
+          failed_at: new Date(),
+        },
       });
     }
 
@@ -246,7 +306,11 @@ export async function reconcileRecordingReadiness(recordingId: string) {
     if (recording.status !== recording_status.ready) {
       await prisma.recording.update({
         where: { id: recordingId },
-        data: { status: recording_status.ready },
+        data: {
+          status: recording_status.ready,
+          failed_at: null,
+          failure_reason: null,
+        },
       });
     }
 
@@ -256,7 +320,11 @@ export async function reconcileRecordingReadiness(recordingId: string) {
   if (recording.status !== recording_status.processing) {
     await prisma.recording.update({
       where: { id: recordingId },
-      data: { status: recording_status.processing },
+      data: {
+        status: recording_status.processing,
+        failed_at: null,
+        failure_reason: null,
+      },
     });
   }
 

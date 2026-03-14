@@ -5,11 +5,11 @@ import { pathToFileURL } from 'node:url';
 import { enqueueAsrJob } from '../repositories/job.repo.js';
 import { reconcileRecordingReadiness } from '../services/recording-readiness.service.js';
 import {
-    markParticipantAssetFailed,
-    markParticipantAssetProcessing,
-    markParticipantAssetReady,
+    reconcileParticipantMasterAsset,
+    selectParticipantMasterTrack,
 } from '../services/participant-asset.service.js';
 import { emitTelemetry } from '../lib/telemetry.js';
+import { buildParticipantMasterKey } from '../lib/public-assets.js';
 
 type JobRow = {
     id: string;
@@ -80,17 +80,44 @@ async function runJob(job: JobRow) {
         throw err;
     }
 
-    await markParticipantAssetProcessing({
+    const participant = await prisma.participant.findUnique({
+        where: { id: track.participant_id },
+        select: {
+            id: true,
+            track: {
+                orderBy: [{ created_at: 'asc' }, { id: 'asc' }],
+                select: {
+                    id: true,
+                    kind: true,
+                    created_at: true,
+                },
+            },
+        },
+    });
+    const masterTrack = participant ? selectParticipantMasterTrack(participant.track) : undefined;
+    const isParticipantMasterTrack = masterTrack?.id === track.id;
+
+    await reconcileParticipantMasterAsset({
         recordingId: track.recording_id,
         participantId: track.participant_id,
+        processingTrackId: isParticipantMasterTrack ? track.id : undefined,
     });
 
     try {
+        const finalKeyOverride = isParticipantMasterTrack
+            ? buildParticipantMasterKey({
+                recordingId: track.recording_id,
+                participantId: track.participant_id,
+                extension: track.kind === 'audio' ? '.wav' : '.mp4',
+            })
+            : undefined;
+
         // Do the actual transcode (ffmpeg + upload final to R2)
         const out = await runTranscodeForTrack({
             id: track.id,
             recording_id: track.recording_id,
             storage_key_raw: track.storage_key_raw,
+            finalKeyOverride,
             // upload.storage_bucket is on upload model; not needed here
         });
 
@@ -110,42 +137,59 @@ async function runJob(job: JobRow) {
                 : null;
 
         // Persist final key + mark processed
+        const now = new Date();
         await prisma.track.update({
             where: { id: track.id },
             data: {
                 storage_key_final: out.finalKey,
                 state: track_state.processed,
+                transcoded_at: now,
+                ready_at: now,
+                failed_at: null,
+                failure_reason: null,
+                lifecycle_state: 'ready',
                 codec: codec ?? undefined,
                 duration_ms: duration_ms ?? undefined,
             },
         });
 
-        await markParticipantAssetReady({
+        await reconcileParticipantMasterAsset({
             recordingId: track.recording_id,
             participantId: track.participant_id,
-            storageKey: out.finalKey,
-            previewKey: out.finalKey,
-            durationMs: duration_ms ?? undefined,
-            resolution: resolution ?? undefined,
-            metadata: {
-                sourceTrackId: track.id,
-                sourceKind: track.kind,
-                codec: codec ?? undefined,
-                contentType: out.contentType,
-                width: out.width ?? undefined,
-                height: out.height ?? undefined,
+            readySource: {
+                trackId: track.id,
+                storageKey: out.finalKey,
+                previewKey: out.finalKey,
+                durationMs: duration_ms ?? undefined,
+                resolution: resolution ?? undefined,
+                metadata: {
+                    codec: codec ?? undefined,
+                    contentType: out.contentType,
+                    width: out.width ?? undefined,
+                    height: out.height ?? undefined,
+                },
+                exportSet: out.kind === 'video' ? ['mp4'] : ['wav'],
             },
-            exportSet: out.kind === 'video' ? ['mp4'] : ['wav'],
         });
 
         // Enqueue follow-up ASR job.
         await enqueueAsrJob(track.recording_id, track.id);
         await reconcileRecordingReadiness(track.recording_id);
     } catch (err) {
-        await markParticipantAssetFailed({
+        const reason = (err as Error)?.message ?? 'participant_asset_transcode_failed';
+        await prisma.track.update({
+            where: { id: track.id },
+            data: {
+                failed_at: new Date(),
+                failure_reason: reason.slice(0, 1000),
+                lifecycle_state: 'failed',
+            },
+        }).catch(() => {});
+        await reconcileParticipantMasterAsset({
             recordingId: track.recording_id,
             participantId: track.participant_id,
-            reason: (err as Error)?.message ?? 'participant_asset_transcode_failed',
+            failedTrackId: track.id,
+            failureReason: reason,
         }).catch(() => {});
         throw err;
     }

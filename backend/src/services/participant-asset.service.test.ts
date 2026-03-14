@@ -6,6 +6,8 @@ import {
   markParticipantAssetFailed,
   markParticipantAssetProcessing,
   markParticipantAssetReady,
+  reconcileParticipantMasterAsset,
+  selectParticipantMasterTrack,
 } from './participant-asset.service.js';
 
 type AnyRecord = Record<string, any>;
@@ -90,6 +92,135 @@ test('participant asset processing/failed transitions are explicit', async () =>
     });
 
     assert.deepEqual(states, ['processing', 'failed']);
+  } finally {
+    for (const restore of restores.reverse()) restore();
+  }
+});
+
+test('participant master selection is stable and prefers camera video over screen/audio', () => {
+  const selected = selectParticipantMasterTrack([
+    {
+      id: 'track-audio',
+      kind: 'audio',
+      created_at: new Date('2026-03-09T10:00:00.000Z'),
+    },
+    {
+      id: 'track-screen',
+      kind: 'screen',
+      created_at: new Date('2026-03-09T10:00:01.000Z'),
+    },
+    {
+      id: 'track-video',
+      kind: 'video',
+      created_at: new Date('2026-03-09T10:00:02.000Z'),
+    },
+  ]);
+
+  assert.equal(selected?.id, 'track-video');
+});
+
+test('participant master reconcile does not let a non-canonical track overwrite the participant asset', async () => {
+  const restores: Array<() => void> = [];
+  let upsertArgs: any = null;
+
+  try {
+    restores.push(
+      stubMethod(prisma.participant, 'findFirst', async () => ({
+        id: 'part-1',
+        track: [
+          {
+            id: 'track-video',
+            kind: 'video',
+            state: 'uploaded',
+            storage_key_final: null,
+            duration_ms: null,
+            created_at: new Date('2026-03-09T10:00:00.000Z'),
+          },
+          {
+            id: 'track-audio',
+            kind: 'audio',
+            state: 'processed',
+            storage_key_final: 'recordings/rec-1/tracks/track-audio/final/track-audio.wav',
+            duration_ms: 1200,
+            created_at: new Date('2026-03-09T10:00:01.000Z'),
+          },
+        ],
+      }))
+    );
+    restores.push(
+      stubMethod(prisma.participant_asset, 'upsert', async (args: any) => {
+        upsertArgs = args;
+        return { id: 'asset-1' } as any;
+      })
+    );
+
+    await reconcileParticipantMasterAsset({
+      recordingId: 'rec-1',
+      participantId: 'part-1',
+      readySource: {
+        trackId: 'track-audio',
+        storageKey: 'recordings/rec-1/participants/part-1/master.wav',
+        exportSet: ['wav'],
+      },
+    });
+
+    assert.equal(upsertArgs.update.state, 'processing');
+  } finally {
+    for (const restore of restores.reverse()) restore();
+  }
+});
+
+test('participant master reconcile promotes the canonical source track with stable metadata', async () => {
+  const restores: Array<() => void> = [];
+  let upsertArgs: any = null;
+
+  try {
+    restores.push(
+      stubMethod(prisma.participant, 'findFirst', async () => ({
+        id: 'part-1',
+        track: [
+          {
+            id: 'track-video',
+            kind: 'video',
+            state: 'uploaded',
+            storage_key_final: null,
+            duration_ms: null,
+            created_at: new Date('2026-03-09T10:00:00.000Z'),
+          },
+          {
+            id: 'track-audio',
+            kind: 'audio',
+            state: 'processed',
+            storage_key_final: 'recordings/rec-1/tracks/track-audio/final/track-audio.wav',
+            duration_ms: 1200,
+            created_at: new Date('2026-03-09T10:00:01.000Z'),
+          },
+        ],
+      }))
+    );
+    restores.push(
+      stubMethod(prisma.participant_asset, 'upsert', async (args: any) => {
+        upsertArgs = args;
+        return { id: 'asset-1' } as any;
+      })
+    );
+
+    await reconcileParticipantMasterAsset({
+      recordingId: 'rec-1',
+      participantId: 'part-1',
+      readySource: {
+        trackId: 'track-video',
+        storageKey: 'recordings/rec-1/participants/part-1/master.mp4',
+        previewKey: 'recordings/rec-1/participants/part-1/master.mp4',
+        durationMs: 2400,
+        exportSet: ['mp4'],
+      },
+    });
+
+    assert.equal(upsertArgs.update.state, 'ready');
+    assert.equal(upsertArgs.update.storage_key, 'recordings/rec-1/participants/part-1/master.mp4');
+    assert.equal(upsertArgs.update.metadata_json.selectionRule, 'video_then_screen_then_audio');
+    assert.equal(upsertArgs.update.metadata_json.sourceTrackId, 'track-video');
   } finally {
     for (const restore of restores.reverse()) restore();
   }

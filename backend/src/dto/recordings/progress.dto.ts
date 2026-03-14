@@ -17,6 +17,10 @@ export type RecordingProgressBlockedReason =
   | 'chunks_pending_upload'
   | 'ready_for_stitch'
   | 'stitching_in_progress'
+  | 'participant_assets_pending'
+  | 'participant_assets_failed'
+  | 'combined_asset_pending'
+  | 'combined_asset_failed'
   | 'exports_pending'
   | 'exports_failed';
 

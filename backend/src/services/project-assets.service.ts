@@ -5,18 +5,13 @@ import type {
   ProjectAssetState,
 } from '../dto/recordings/project-assets.dto.js';
 import { prisma } from '../lib/prisma.js';
+import { toPublicAssetUrl } from '../lib/public-assets.js';
+import { listParticipantMasterStatesForRecording } from './participant-asset.service.js';
 
 type ServiceResult<T> =
   | { code: 'ok'; data: T }
   | { code: 'not_found' }
   | { code: 'forbidden' };
-
-function toPublicUrl(storageKey?: string | null): string | undefined {
-  if (!storageKey) return undefined;
-  const base = (process.env.R2_PUBLIC_BASE_URL ?? '').trim().replace(/\/+$/, '');
-  if (!base) return undefined;
-  return `${base}/${String(storageKey).replace(/^\/+/, '')}`;
-}
 
 function toBadge(state: ProjectAssetState): string {
   if (state === 'ready') return 'Ready';
@@ -71,6 +66,26 @@ function normalizeJsonObject(value: Prisma.JsonValue | null | undefined): Record
   return value as Record<string, unknown>;
 }
 
+function mapAssetState(
+  state?: 'missing' | 'pending' | 'processing' | 'ready' | 'failed' | null
+): ProjectAssetState {
+  if (!state) return 'missing';
+  if (state === 'ready') return 'ready';
+  if (state === 'failed') return 'failed';
+  if (state === 'processing') return 'processing';
+  return 'pending';
+}
+
+function blockedReasonForExport(args: {
+  state: ProjectAssetState;
+  lastError?: string | null;
+}) {
+  if (args.state === 'failed') return args.lastError ?? 'export_failed';
+  if (args.state === 'processing') return 'building_export';
+  if (args.state === 'missing' || args.state === 'pending') return 'waiting_for_export';
+  return undefined;
+}
+
 export async function getProjectAssetsGraphService(args: {
   recordingId: string;
   requesterId: string;
@@ -94,24 +109,6 @@ export async function getProjectAssetsGraphService(args: {
           failure_reason: true,
         },
       },
-      participant_asset: {
-        orderBy: [{ participant_id: 'asc' }, { updated_at: 'desc' }],
-        select: {
-          id: true,
-          participant_id: true,
-          state: true,
-          storage_key: true,
-          preview_key: true,
-          duration_ms: true,
-          failure_reason: true,
-          participant: {
-            select: {
-              role: true,
-              display_name: true,
-            },
-          },
-        },
-      },
       transcript: {
         orderBy: { updated_at: 'desc' },
         take: 1,
@@ -120,6 +117,8 @@ export async function getProjectAssetsGraphService(args: {
           state: true,
           storage_key: true,
           language: true,
+          failure_reason: true,
+          metadata_json: true,
         },
       },
       export_artifact: {
@@ -143,54 +142,56 @@ export async function getProjectAssetsGraphService(args: {
   if (!recording) return { code: 'not_found' };
   if (recording.userId && recording.userId !== args.requesterId) return { code: 'forbidden' };
 
+  const participantMasterStates = await listParticipantMasterStatesForRecording(args.recordingId);
   const combinedAssetRow = recording.combined_asset[0];
+  const applicableParticipants = participantMasterStates.filter((participant) => participant.isApplicable);
+  const anyParticipantMasterFailed = applicableParticipants.some((participant) => participant.state === 'failed');
+  const anyParticipantMasterPending = applicableParticipants.some(
+    (participant) => participant.state === 'pending' || participant.state === 'processing'
+  );
   const combinedState: ProjectAssetState = combinedAssetRow
-    ? (combinedAssetRow.state === 'ready'
-        ? 'ready'
-        : combinedAssetRow.state === 'failed'
-          ? 'failed'
-          : combinedAssetRow.state === 'processing'
-            ? 'processing'
-            : 'pending')
-    : 'pending';
-  const combinedPreviewUrl = toPublicUrl(
+    ? mapAssetState(combinedAssetRow.state)
+    : anyParticipantMasterFailed
+      ? 'failed'
+      : anyParticipantMasterPending
+        ? 'pending'
+        : applicableParticipants.length > 0
+          ? 'processing'
+          : 'pending';
+  const combinedPreviewUrl = toPublicAssetUrl(
     combinedAssetRow?.preview_key ?? combinedAssetRow?.storage_key
   );
 
-  const participantAssets = recording.participant_asset.map((asset) => {
-    const state: ProjectAssetState =
-      asset.state === 'ready'
-        ? 'ready'
-        : asset.state === 'failed'
-          ? 'failed'
-          : asset.state === 'processing'
-            ? 'processing'
-            : 'pending';
-    const previewUrl = toPublicUrl(asset.preview_key ?? asset.storage_key);
+  const participantAssets = applicableParticipants.map((participant) => {
+    const state = mapAssetState(participant.asset?.state ?? participant.state);
+    const previewUrl = toPublicAssetUrl(participant.asset?.previewKey ?? participant.asset?.storageKey);
     const participantLabel =
-      asset.participant.display_name?.trim() ||
-      (asset.participant.role === 'host' ? 'Host' : 'Guest');
+      participant.participantName?.trim() ||
+      (participant.participantRole === 'host' ? 'Host' : 'Guest');
     return {
-      id: asset.id,
+      id: participant.asset?.id ?? `participant:${participant.participantId}`,
       kind: 'participant' as const,
       label: participantLabel,
       state,
-      badges: [toBadge(state), asset.participant.role === 'host' ? 'Host' : 'Guest'],
-      durationMs: asset.duration_ms ?? undefined,
+      badges: [toBadge(state), participant.participantRole === 'host' ? 'Host' : 'Guest'],
+      durationMs: participant.asset?.durationMs,
       previewUrl,
-      blockedReason: state === 'failed' ? (asset.failure_reason ?? undefined) : undefined,
+      blockedReason:
+        state === 'failed'
+          ? (participant.failureReason ?? 'participant_master_failed')
+          : participant.blockedReason,
       actions: actionForOpenUrl('Download', previewUrl),
       participant: {
-        id: asset.participant_id,
-        role: asset.participant.role,
-        name: asset.participant.display_name ?? undefined,
+        id: participant.participantId,
+        role: participant.participantRole,
+        name: participant.participantName,
       },
     };
   });
 
   const transcriptRow = recording.transcript[0];
   const transcriptState = mapTranscriptState(transcriptRow?.state ?? null);
-  const transcriptPreviewUrl = toPublicUrl(transcriptRow?.storage_key);
+  const transcriptPreviewUrl = toPublicAssetUrl(transcriptRow?.storage_key);
   const transcriptLabel = transcriptRow?.language
     ? `Transcript (${transcriptRow.language.toUpperCase()})`
     : 'Transcript';
@@ -222,7 +223,10 @@ export async function getProjectAssetsGraphService(args: {
       label: entry.label,
       state,
       badges: [toBadge(state)],
-      blockedReason: state === 'failed' ? (entry.row?.last_error ?? undefined) : undefined,
+      blockedReason: blockedReasonForExport({
+        state,
+        lastError: entry.row?.last_error,
+      }),
       actions,
     };
   });
@@ -261,7 +265,18 @@ export async function getProjectAssetsGraphService(args: {
       badges: [toBadge(combinedState)],
       durationMs: combinedAssetRow?.duration_ms ?? undefined,
       previewUrl: combinedPreviewUrl,
-      blockedReason: combinedState === 'failed' ? (combinedAssetRow?.failure_reason ?? undefined) : undefined,
+      blockedReason:
+        combinedState === 'failed'
+          ? (combinedAssetRow?.failure_reason ??
+            applicableParticipants.find((participant) => participant.state === 'failed')?.failureReason ??
+            'combined_asset_failed')
+          : combinedState === 'processing'
+            ? 'building_combined_asset'
+            : combinedState === 'pending'
+              ? anyParticipantMasterPending
+                ? 'waiting_for_participant_masters'
+                : 'waiting_for_combined_asset'
+              : undefined,
       actions: actionForOpenUrl('Play', combinedPreviewUrl),
     },
     participantAssets,
@@ -270,6 +285,16 @@ export async function getProjectAssetsGraphService(args: {
       state: transcriptState,
       badges: [toBadge(transcriptState)],
       previewUrl: transcriptPreviewUrl,
+      blockedReason:
+        transcriptState === 'failed'
+          ? (transcriptRow?.failure_reason ??
+            (normalizeJsonObject(transcriptRow?.metadata_json)?.failureReason as string | undefined) ??
+            'transcript_failed')
+          : transcriptState === 'processing'
+            ? 'building_transcript'
+            : transcriptState === 'missing' || transcriptState === 'pending'
+              ? 'waiting_for_transcript'
+              : undefined,
       actions: actionForOpenUrl('Open transcript', transcriptPreviewUrl),
     },
     captions: {
@@ -277,6 +302,10 @@ export async function getProjectAssetsGraphService(args: {
       state: captionsState,
       badges: [toBadge(captionsState)],
       previewUrl: undefined,
+      blockedReason: blockedReasonForExport({
+        state: captionsState,
+        lastError: exportCaptions?.last_error,
+      }),
       actions: captionsActions,
     },
     exports: {

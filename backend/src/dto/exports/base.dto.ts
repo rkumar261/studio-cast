@@ -10,7 +10,6 @@ export type ExportDto = {
     combinedAssetId?: string;
     participantAssetId?: string;
     transcriptId?: string;
-    storageKey?: string;
     lastError?: string;
     failureReason?: string;
     startedAt?: string;

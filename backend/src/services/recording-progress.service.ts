@@ -8,6 +8,7 @@ import type {
 import { prisma } from '../lib/prisma.js';
 import type { RequestPrincipal } from '../lib/request-principal.js';
 import { REQUIRED_EXPORT_TYPES } from './recording-readiness.service.js';
+import { listParticipantMasterStatesForRecording } from './participant-asset.service.js';
 import {
   computeTrackSequenceMetrics,
   evaluateTrackStitchReadiness,
@@ -66,6 +67,15 @@ export async function getRecordingProgressService(args: {
           last_error: true,
           updated_at: true,
           created_at: true,
+        },
+      },
+      combined_asset: {
+        orderBy: { updated_at: 'desc' },
+        take: 1,
+        select: {
+          id: true,
+          state: true,
+          failure_reason: true,
         },
       },
       participant: {
@@ -270,6 +280,26 @@ export async function getRecordingProgressService(args: {
   const hasInvalidFinalSeq = allTracks.some((track) => track.blockedReason === 'invalid_final_seq');
   const hasMissingChunks = allTracks.some((track) => track.blockedReason === 'missing_chunks');
   const hasChunksPendingUpload = allTracks.some((track) => track.blockedReason === 'chunks_pending_upload');
+  const participantMasterStates = await listParticipantMasterStatesForRecording(recording.id);
+  const applicableParticipantMasters = participantMasterStates.filter((participant) => participant.isApplicable);
+  const hasParticipantAssetsPending = applicableParticipantMasters.some(
+    (participant) => participant.state === 'pending' || participant.state === 'processing'
+  );
+  const hasParticipantAssetsFailed = applicableParticipantMasters.some(
+    (participant) => participant.state === 'failed'
+  );
+  const combinedAsset = recording.combined_asset[0];
+  const hasCombinedAssetFailed = combinedAsset?.state === 'failed';
+  const hasCombinedAssetPending =
+    applicableParticipantMasters.length > 0 &&
+    !hasParticipantAssetsPending &&
+    !hasParticipantAssetsFailed &&
+    (!combinedAsset || combinedAsset.state === 'pending' || combinedAsset.state === 'processing');
+  const exportsStageReached =
+    !!combinedAsset &&
+    combinedAsset.state === 'ready' &&
+    !hasParticipantAssetsPending &&
+    !hasParticipantAssetsFailed;
 
   const allTracksReadyOrStitched =
     allTracks.length > 0 &&
@@ -294,8 +324,12 @@ export async function getRecordingProgressService(args: {
   if (hasChunksPendingUpload) readinessBlockedReasons.add('chunks_pending_upload');
   if (readyForStitch) readinessBlockedReasons.add('ready_for_stitch');
   if (phase === 'processing') readinessBlockedReasons.add('stitching_in_progress');
+  if (hasParticipantAssetsPending) readinessBlockedReasons.add('participant_assets_pending');
+  if (hasParticipantAssetsFailed) readinessBlockedReasons.add('participant_assets_failed');
+  if (hasCombinedAssetPending) readinessBlockedReasons.add('combined_asset_pending');
+  if (hasCombinedAssetFailed) readinessBlockedReasons.add('combined_asset_failed');
   if (requiredFailed > 0) readinessBlockedReasons.add('exports_failed');
-  if (phase === 'processing' && requiredPending > 0) readinessBlockedReasons.add('exports_pending');
+  if (exportsStageReached && requiredPending > 0) readinessBlockedReasons.add('exports_pending');
 
   const readinessReasonOrder: RecordingProgressBlockedReason[] = [
     'recording_active',
@@ -305,6 +339,10 @@ export async function getRecordingProgressService(args: {
     'chunks_pending_upload',
     'ready_for_stitch',
     'stitching_in_progress',
+    'participant_assets_pending',
+    'participant_assets_failed',
+    'combined_asset_pending',
+    'combined_asset_failed',
     'exports_pending',
     'exports_failed',
   ];

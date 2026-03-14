@@ -47,6 +47,13 @@ function formatDuration(durationMs?: number) {
   return `${min}:${String(sec).padStart(2, '0')}`;
 }
 
+function formatBlockedReason(reason?: string) {
+  if (!reason) return null;
+  return reason
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 export default function RecordingDetailPage() {
   const { id } = useParams<{ id: string }>();
 
@@ -326,6 +333,12 @@ export default function RecordingDetailPage() {
                     : 'Preview will appear after processing is ready.'}
                 </div>
 
+                {projectAssets.combinedAsset.blockedReason && projectAssets.combinedAsset.state !== 'ready' && (
+                  <p className="mt-3 text-xs text-slate-400">
+                    {formatBlockedReason(projectAssets.combinedAsset.blockedReason)}
+                  </p>
+                )}
+
                 {projectAssets.combinedAsset.state === 'ready' && projectAssets.combinedAsset.previewUrl && (
                   <video
                     ref={combinedPreviewRef}
@@ -389,6 +402,12 @@ export default function RecordingDetailPage() {
                         </div>
                       )}
 
+                      {asset.blockedReason && asset.state !== 'ready' && (
+                        <p className="mt-3 text-xs text-slate-400">
+                          {formatBlockedReason(asset.blockedReason)}
+                        </p>
+                      )}
+
                       <div className="mt-3 flex flex-wrap gap-2">
                         {(asset.state === 'ready' ? asset.actions : []).map((action) => (
                             <button
@@ -422,6 +441,11 @@ export default function RecordingDetailPage() {
                     <div className="mt-2 text-xs text-slate-400">
                       {asset.state === 'ready' ? 'Ready for preview or download.' : 'Still processing or not generated yet.'}
                     </div>
+                    {asset.blockedReason && asset.state !== 'ready' && (
+                      <p className="mt-3 text-xs text-slate-400">
+                        {formatBlockedReason(asset.blockedReason)}
+                      </p>
+                    )}
                     <div className="mt-3 flex flex-wrap gap-2">
                       {(asset.state === 'ready' ? asset.actions : []).map((action) => (
                           <button
@@ -449,6 +473,11 @@ export default function RecordingDetailPage() {
                     <div className="mt-2 text-xs text-slate-400">
                       {exp.state === 'ready' ? 'Download is available.' : 'Download appears only when ready.'}
                     </div>
+                    {exp.blockedReason && exp.state !== 'ready' && (
+                      <p className="mt-3 text-xs text-slate-400">
+                        {formatBlockedReason(exp.blockedReason)}
+                      </p>
+                    )}
                     <div className="mt-3 flex flex-wrap gap-2">
                       {(exp.state === 'ready' ? exp.actions : []).map((action) => (
                           <button

@@ -32,6 +32,7 @@ function buildRecordingForProgress(recordingId: string) {
     host_participant_id: 'participant-host-1',
     control_version: 1,
     export_artifact: [],
+    combined_asset: [],
     participant: [
       {
         id: 'participant-guest-1',
@@ -72,6 +73,7 @@ test('GET /v1/recordings/:id/progress allows invited guest principal', async () 
     restores.push(
       stubMethod(prisma.recording, 'findUnique', async () => buildRecordingForProgress('rec-1'))
     );
+    restores.push(stubMethod(prisma.participant, 'findMany', async () => []));
 
     const response = await app.inject({
       method: 'GET',
@@ -114,6 +116,7 @@ test('GET /v1/recordings/:id/progress rejects guest for different recording id',
     restores.push(
       stubMethod(prisma.recording, 'findUnique', async () => buildRecordingForProgress('rec-2'))
     );
+    restores.push(stubMethod(prisma.participant, 'findMany', async () => []));
 
     const response = await app.inject({
       method: 'GET',
