@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { renderCaptionsExportForRecording } from '../services/captions.service.js';
 import { reconcileRecordingReadiness } from '../services/recording-readiness.service.js';
 import { renderStandardExportForRecording } from '../services/standard-exports.service.js';
+import { emitTelemetry } from '../lib/telemetry.js';
 
 type JobRow = {
     id: string;
@@ -80,68 +81,146 @@ async function runJob(job: JobRow) {
     }
 
     // Mark export as running
+    const startedAt = new Date();
     artifact = await prisma.export_artifact.update({
         where: { id: artifact.id },
         data: {
             state: export_state.running,
             last_error: null,
+            started_at: startedAt,
+            failed_at: null,
+            failure_reason: null,
         },
     });
 
-    // Pick a source track for this export
-    const tracks = await prisma.track.findMany({
-        where: {
-            recording_id: artifact.recording_id,
-            state: track_state.processed,              // use enum
-            storage_key_final: { not: null },          // ensure we only pick tracks with a final key
-        },
-        orderBy: { created_at: 'asc' },
-    });
+    let resolvedCombinedAssetId = artifact.combined_asset_id ?? null;
+    let resolvedParticipantAssetId = artifact.participant_asset_id ?? null;
+    let sourceStorageKey: string | null = null;
 
-    if (!tracks.length) {
-        const err = new Error('no_processed_tracks_for_export');
-        (err as any).code = 'no_tracks';
-        throw err;
+    if (artifact.participant_asset_id) {
+        const participantAsset = await prisma.participant_asset.findUnique({
+            where: { id: artifact.participant_asset_id },
+            select: {
+                id: true,
+                state: true,
+                storage_key: true,
+            },
+        });
+        if (participantAsset?.state !== 'ready' || !participantAsset.storage_key) {
+            const err = new Error('participant_asset_not_ready_for_export');
+            (err as any).code = 'participant_asset_not_ready';
+            throw err;
+        }
+        sourceStorageKey = participantAsset.storage_key;
+        resolvedParticipantAssetId = participantAsset.id;
+    } else {
+        const combinedAsset = artifact.combined_asset_id
+            ? await prisma.combined_asset.findUnique({
+                where: { id: artifact.combined_asset_id },
+                select: { id: true, state: true, storage_key: true },
+            })
+            : await prisma.combined_asset.findUnique({
+                where: { recording_id: artifact.recording_id },
+                select: { id: true, state: true, storage_key: true },
+            });
+
+        if (
+            (artifact.type === export_type.mp4 || artifact.type === export_type.mp4_captions) &&
+            combinedAsset?.state === 'ready' &&
+            combinedAsset.storage_key
+        ) {
+            sourceStorageKey = combinedAsset.storage_key;
+            resolvedCombinedAssetId = combinedAsset.id;
+        }
     }
 
-    let sourceTrack =
-        artifact.type === export_type.wav
-            ? tracks.find((t) => t.kind === track_kind.audio) ?? tracks[0]
-            : tracks.find((t) => t.kind === track_kind.video) ?? tracks[0];
+    if (!sourceStorageKey) {
+        if (artifact.type === export_type.mp4_captions) {
+            const err = new Error('captions_source_asset_not_ready');
+            (err as any).code = 'captions_source_not_ready';
+            throw err;
+        }
 
-    if (!sourceTrack.storage_key_final) {
-        const err = new Error('source_track_missing_final_key');
-        (err as any).code = 'no_final_key';
-        throw err;
+        // Fallback for non-caption exports: first processed track with final key.
+        const tracks = await prisma.track.findMany({
+            where: {
+                recording_id: artifact.recording_id,
+                state: track_state.processed,
+                storage_key_final: { not: null },
+            },
+            orderBy: { created_at: 'asc' },
+        });
+
+        if (!tracks.length) {
+            const err = new Error('no_processed_tracks_for_export');
+            (err as any).code = 'no_tracks';
+            throw err;
+        }
+
+        const fallbackTrack =
+            artifact.type === export_type.wav
+                ? tracks.find((t) => t.kind === track_kind.audio) ?? tracks[0]
+                : tracks.find((t) => t.kind === track_kind.video) ?? tracks[0];
+
+        sourceStorageKey = fallbackTrack.storage_key_final;
+        if (!sourceStorageKey) {
+            const err = new Error('source_track_missing_final_key');
+            (err as any).code = 'no_final_key';
+            throw err;
+        }
     }
 
     let finalKey: string;
+    let transcriptId: string | null = artifact.transcript_id ?? null;
 
     // Decide how to build the export based on type
     if (artifact.type === export_type.mp4_captions) {
         const result = await renderCaptionsExportForRecording({
             recordingId: artifact.recording_id,
             exportType: artifact.type,
-            sourceStorageKey: sourceTrack.storage_key_final,
+            sourceStorageKey,
+            sourceAsset: {
+                combinedAssetId: resolvedCombinedAssetId ?? undefined,
+                participantAssetId: resolvedParticipantAssetId ?? undefined,
+            },
         });
         finalKey = result.finalKey;
+        transcriptId = result.transcriptId;
     } else {
         const result = await renderStandardExportForRecording({
             recordingId: artifact.recording_id,
             exportType: artifact.type,
-            sourceStorageKey: sourceTrack.storage_key_final,
+            sourceStorageKey,
         });
         finalKey = result.finalKey;
     }
 
     // Persist export artifact result
-    await prisma.export_artifact.update({
+    const finalized = await prisma.export_artifact.update({
         where: { id: artifact.id },
         data: {
             storage_key: finalKey,
             state: export_state.succeeded,
             last_error: null,
+            combined_asset_id: resolvedCombinedAssetId,
+            participant_asset_id: resolvedParticipantAssetId,
+            transcript_id: transcriptId,
+            ready_at: new Date(),
+            failed_at: null,
+            failure_reason: null,
         },
+    });
+    emitTelemetry({
+        event: 'export.ready',
+        message: 'Export artifact marked ready',
+        recordingId: artifact.recording_id,
+        assetId: finalized.id,
+        storageKey: finalized.storage_key ?? undefined,
+        exportType: finalized.type,
+        transcriptId: finalized.transcript_id ?? undefined,
+        combinedAssetId: finalized.combined_asset_id ?? undefined,
+        participantAssetId: finalized.participant_asset_id ?? undefined,
+        jobId: job.id,
     });
 
     await reconcileRecordingReadiness(artifact.recording_id);
@@ -179,41 +258,89 @@ async function fail(job: JobRow, err: any) {
                     data: {
                         state: export_state.failed,
                         last_error: message.slice(0, 8000),
+                        failed_at: new Date(),
+                        failure_reason: message.slice(0, 1000),
                     },
                 });
             }
         }
     });
 
+    const exportId = job.payload_json?.exportId as string | undefined;
+    emitTelemetry({
+        level: 'error',
+        event: 'export.failed',
+        message: 'Export job failed',
+        recordingId: job.recording_id,
+        jobId: job.id,
+        assetId: exportId,
+        reason: message.slice(0, 1000),
+        err,
+    });
+
     await reconcileRecordingReadiness(job.recording_id);
 }
 
 export async function runExportWorker() {
-    console.log(`[${WORKER_NAME}] starting…`);
+    emitTelemetry({
+        event: 'worker.started',
+        message: `[${WORKER_NAME}] starting`,
+        worker: WORKER_NAME,
+    });
 
     while (!stopping) {
         try {
             const job = await claimOneExportJob();
             if (job) {
                 try {
-                    console.log(`[${WORKER_NAME}] running job ${job.id}`);
+                    emitTelemetry({
+                        event: 'worker.job.running',
+                        message: `[${WORKER_NAME}] running job`,
+                        worker: WORKER_NAME,
+                        jobId: job.id,
+                        recordingId: job.recording_id,
+                    });
                     await runJob(job);
                     await succeed(job.id);
-                    console.log(`[${WORKER_NAME}] job ${job.id} succeeded`);
+                    emitTelemetry({
+                        event: 'worker.job.succeeded',
+                        message: `[${WORKER_NAME}] job succeeded`,
+                        worker: WORKER_NAME,
+                        jobId: job.id,
+                        recordingId: job.recording_id,
+                    });
                 } catch (err) {
-                    console.error(`[${WORKER_NAME}] job ${job.id} failed`, err);
+                    emitTelemetry({
+                        level: 'error',
+                        event: 'worker.job.failed',
+                        message: `[${WORKER_NAME}] job failed`,
+                        worker: WORKER_NAME,
+                        jobId: job.id,
+                        recordingId: job.recording_id,
+                        err,
+                    });
                     await fail(job, err);
                 }
             }
         } catch (loopErr) {
-            console.error(`[${WORKER_NAME}] loop error`, loopErr);
+            emitTelemetry({
+                level: 'error',
+                event: 'worker.loop.error',
+                message: `[${WORKER_NAME}] loop error`,
+                worker: WORKER_NAME,
+                err: loopErr,
+            });
         }
 
         if (stopping) break;
         await new Promise((r) => setTimeout(r, POLL_MS));
     }
 
-    console.log(`[${WORKER_NAME}] stopping.`);
+    emitTelemetry({
+        event: 'worker.stopped',
+        message: `[${WORKER_NAME}] stopping`,
+        worker: WORKER_NAME,
+    });
 }
 
 // Allow `node dist/workers/export.worker.js` to run the loop (ESM style)
@@ -222,7 +349,13 @@ const isMain =
 
 if (isMain) {
     runExportWorker().catch((e) => {
-        console.error('[export-worker] fatal', e);
+        emitTelemetry({
+            level: 'error',
+            event: 'worker.fatal',
+            message: '[export-worker] fatal',
+            worker: WORKER_NAME,
+            err: e,
+        });
         process.exit(1);
     });
 }

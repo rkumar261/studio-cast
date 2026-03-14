@@ -5,6 +5,8 @@ import type { GetRecordingResponse } from '../dto/recordings/get.dto.js';
 import { findRecordingById, listTrackByRecordingId } from '../repositories/recording.repo.js';
 import { ListRecordingsResponse } from '../dto/recordings/list.dto.js';
 import { listRecordingsByOwner } from '../repositories/recording.repo.js';
+import { listParticipantAssetsForRecording } from './participant-asset.service.js';
+import { getCombinedAssetForRecording } from './combined-asset.service.js';
 
 
 export type CreateRecordingArgs = {
@@ -64,6 +66,8 @@ export async function getRecordingService(
   }
 
   const tracks = await listTrackByRecordingId(rec.id);
+  const participantAssets = await listParticipantAssetsForRecording(rec.id);
+  const combinedAsset = await getCombinedAssetForRecording(rec.id);
 
   const data: GetRecordingResponse = {
     recording: {
@@ -83,6 +87,8 @@ export async function getRecordingService(
       storageKeyFinal: t.storage_key_final ?? undefined,
       state: t.state,
     })),
+    participantAssets,
+    combinedAsset,
   };
 
   return { code: 'ok', data };

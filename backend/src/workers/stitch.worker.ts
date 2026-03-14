@@ -5,6 +5,7 @@ import { enqueueTranscodeJob } from '../repositories/job.repo.js';
 import { maybeMarkRecordingProcessing } from '../services/recording-pipeline.service.js';
 import { evaluateTrackStitchReadiness } from '../services/track-contiguity.service.js';
 import { runStitchForTrack } from './stitch.runner.js';
+import { emitTelemetry } from '../lib/telemetry.js';
 
 type JobRow = {
   id: string;
@@ -88,10 +89,27 @@ async function runJob(job: JobRow) {
     throw err;
   }
 
+  emitTelemetry({
+    event: 'stitch.started',
+    message: 'Stitch execution started',
+    recordingId: track.recording_id,
+    trackId: track.id,
+    jobId: job.id,
+  });
+
   // Idempotency: if stitched raw already exists, skip stitch and move forward.
   if (track.storage_key_raw) {
     await enqueueTranscodeJob(track.recording_id, track.id);
     await maybeMarkRecordingProcessing(track.recording_id);
+    emitTelemetry({
+      event: 'stitch.finished',
+      message: 'Stitch skipped because stitched artifact already exists',
+      recordingId: track.recording_id,
+      trackId: track.id,
+      jobId: job.id,
+      alreadyStitched: true,
+      storageKeyRaw: track.storage_key_raw,
+    });
     return;
   }
 
@@ -135,6 +153,16 @@ async function runJob(job: JobRow) {
     },
   });
 
+  emitTelemetry({
+    event: 'stitch.finished',
+    message: 'Stitch execution finished',
+    recordingId: track.recording_id,
+    trackId: track.id,
+    jobId: job.id,
+    outputStorageKey: outcome.rawKey,
+    chunkCount: track.track_chunk.length,
+  });
+
   await enqueueTranscodeJob(track.recording_id, track.id);
   await maybeMarkRecordingProcessing(track.recording_id);
 }
@@ -163,45 +191,91 @@ async function fail(job: JobRow, err: any) {
 }
 
 export async function runStitchWorker() {
-  console.log(`[${WORKER_NAME}] starting...`);
+  emitTelemetry({
+    event: 'worker.started',
+    message: `[${WORKER_NAME}] starting`,
+    worker: WORKER_NAME,
+  });
 
   while (!stopping) {
     try {
       const job = await claimOneStitchJob();
       if (job) {
         try {
-          console.log(`[${WORKER_NAME}] running job ${job.id}`);
+          emitTelemetry({
+            event: 'worker.job.running',
+            message: `[${WORKER_NAME}] running job`,
+            worker: WORKER_NAME,
+            recordingId: job.recording_id,
+            jobId: job.id,
+          });
           await runJob(job);
           await succeed(job.id);
-          console.log(`[${WORKER_NAME}] job ${job.id} succeeded`);
+          emitTelemetry({
+            event: 'worker.job.succeeded',
+            message: `[${WORKER_NAME}] job succeeded`,
+            worker: WORKER_NAME,
+            recordingId: job.recording_id,
+            jobId: job.id,
+          });
         } catch (err) {
-          console.error(`[${WORKER_NAME}] job ${job.id} failed`, err);
+          emitTelemetry({
+            level: 'error',
+            event: 'stitch.failed',
+            message: 'Stitch execution failed',
+            worker: WORKER_NAME,
+            recordingId: job.recording_id,
+            jobId: job.id,
+            trackId: (job.payload_json ?? {})?.trackId,
+            err,
+          });
           await fail(job, err);
         }
       }
     } catch (loopErr) {
       if (isMissingStitchEnumError(loopErr)) {
-        console.error(
-          `[${WORKER_NAME}] database is missing enum value job_type.stitch. ` +
-          `Apply prisma migration 20260216201500_add_stitch_job_type and restart worker.`
-        );
+        emitTelemetry({
+          level: 'error',
+          event: 'worker.loop.error',
+          message:
+            `[${WORKER_NAME}] database is missing enum value job_type.stitch. ` +
+            'Apply prisma migration 20260216201500_add_stitch_job_type and restart worker.',
+          worker: WORKER_NAME,
+          err: loopErr,
+        });
         break;
       }
-      console.error(`[${WORKER_NAME}] loop error`, loopErr);
+      emitTelemetry({
+        level: 'error',
+        event: 'worker.loop.error',
+        message: `[${WORKER_NAME}] loop error`,
+        worker: WORKER_NAME,
+        err: loopErr,
+      });
     }
 
     if (stopping) break;
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
   }
 
-  console.log(`[${WORKER_NAME}] stopping.`);
+  emitTelemetry({
+    event: 'worker.stopped',
+    message: `[${WORKER_NAME}] stopping`,
+    worker: WORKER_NAME,
+  });
 }
 
 const isMain = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
 
 if (isMain) {
   runStitchWorker().catch((e) => {
-    console.error('[stitch-worker] fatal', e);
+    emitTelemetry({
+      level: 'error',
+      event: 'worker.fatal',
+      message: '[stitch-worker] fatal',
+      worker: WORKER_NAME,
+      err: e,
+    });
     process.exit(1);
   });
 }

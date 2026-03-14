@@ -6,6 +6,7 @@ import type {
   TrackProgressBlockedReason,
 } from '../dto/recordings/progress.dto.js';
 import { prisma } from '../lib/prisma.js';
+import type { RequestPrincipal } from '../lib/request-principal.js';
 import { REQUIRED_EXPORT_TYPES } from './recording-readiness.service.js';
 import {
   computeTrackSequenceMetrics,
@@ -41,7 +42,7 @@ function mapTrackBlockedReason(reason: string): TrackProgressBlockedReason | und
 
 export async function getRecordingProgressService(args: {
   recordingId: string;
-  requesterId: string;
+  principal: RequestPrincipal;
 }): Promise<ServiceResult<GetRecordingProgressResponse>> {
   const recording = await prisma.recording.findUnique({
     where: { id: args.recordingId },
@@ -110,7 +111,14 @@ export async function getRecordingProgressService(args: {
   });
 
   if (!recording) return { code: 'not_found' };
-  if (recording.userId && recording.userId !== args.requesterId) return { code: 'forbidden' };
+  if (args.principal.kind === 'user') {
+    if (recording.userId && recording.userId !== args.principal.userId) return { code: 'forbidden' };
+  } else {
+    const guestPrincipal = args.principal;
+    if (guestPrincipal.recordingId !== args.recordingId) return { code: 'forbidden' };
+    const isInvitedGuest = recording.participant.some((participant) => participant.id === guestPrincipal.participantId);
+    if (!isInvitedGuest) return { code: 'forbidden' };
+  }
 
   const summary = {
     participantsTotal: recording.participant.length,

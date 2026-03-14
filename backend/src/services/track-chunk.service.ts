@@ -15,6 +15,8 @@ import { prisma } from '../lib/prisma.js';
 import { maybeEnqueueStitchJobForTrack, maybeMarkRecordingProcessing } from './recording-pipeline.service.js';
 import type { RequestPrincipal } from '../lib/request-principal.js';
 import { type TusStorageContract, validateTusStorageContractFromEnv } from '../lib/tus-storage-contract.js';
+import { emitTelemetry } from '../lib/telemetry.js';
+import { evaluateTrackUploadCompleteness } from './track-contiguity.service.js';
 
 type ServiceResult<T> =
   | { code: 'ok'; data: T }
@@ -388,6 +390,77 @@ async function canAccessRecording(recordingId: string, principal: RequestPrincip
   };
 }
 
+async function evaluateParticipantUploadCompletion(args: {
+  recordingId: string;
+  participantId: string;
+}): Promise<{
+  complete: boolean;
+  tracksTotal: number;
+  tracksComplete: number;
+  blockedTrackIds: string[];
+}> {
+  const uuidLike = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (!uuidLike.test(args.recordingId) || !uuidLike.test(args.participantId)) {
+    return {
+      complete: false,
+      tracksTotal: 0,
+      tracksComplete: 0,
+      blockedTrackIds: [],
+    };
+  }
+
+  const tracks = await prisma.track.findMany({
+    where: {
+      recording_id: args.recordingId,
+      participant_id: args.participantId,
+    },
+    select: {
+      id: true,
+      final_seq: true,
+      capture_closed_at: true,
+      track_chunk: {
+        orderBy: { seq: 'asc' },
+        select: {
+          seq: true,
+          state: true,
+          storage_key_raw: true,
+        },
+      },
+    },
+  });
+
+  if (tracks.length === 0) {
+    return {
+      complete: false,
+      tracksTotal: 0,
+      tracksComplete: 0,
+      blockedTrackIds: [],
+    };
+  }
+
+  let tracksComplete = 0;
+  const blockedTrackIds: string[] = [];
+  for (const track of tracks) {
+    const completeness = evaluateTrackUploadCompleteness({
+      captureClosedAt: track.capture_closed_at,
+      finalSeq: track.final_seq,
+      chunks: track.track_chunk,
+    });
+    if (completeness.complete) {
+      tracksComplete += 1;
+      continue;
+    }
+    blockedTrackIds.push(track.id);
+  }
+
+  return {
+    complete: tracksComplete === tracks.length,
+    tracksTotal: tracks.length,
+    tracksComplete,
+    blockedTrackIds,
+  };
+}
+
 export async function initiateTrackChunkService(args: {
   recordingId: string;
   principal: RequestPrincipal;
@@ -644,6 +717,19 @@ export async function getTrackChunkRecoveryService(args: {
 
   const resumable = incompleteChunks.find((chunk) => chunk.tusId);
 
+  emitTelemetry({
+    event: 'upload.recovery.snapshot',
+    message: 'Computed upload recovery snapshot',
+    recordingId: args.recordingId,
+    participantId: track.participant_id,
+    trackId: track.id,
+    highestExistingSeq,
+    highestContiguousUploadedSeq,
+    nextSeq: highestExistingSeq + 1,
+    incompleteChunkCount: incompleteChunks.length,
+    hasResumableTus: Boolean(resumable?.tusId),
+  });
+
   return {
     code: 'ok',
     data: {
@@ -693,11 +779,27 @@ export async function completeTrackChunkService(args: {
   if (chunk.protocol && chunk.protocol !== args.body.protocol) return { code: 'invalid_protocol' };
 
   if (chunk.state === 'uploaded') {
+    const seqSnapshot = await getTrackSeqSnapshot(chunk.track_id);
+    emitTelemetry({
+      event: 'upload.chunk.completed',
+      message: 'Chunk complete acknowledged as already uploaded',
+      recordingId: args.recordingId,
+      participantId: chunk.track.participant_id,
+      trackId: chunk.track_id,
+      chunkId: chunk.id,
+      seq: chunk.seq,
+      protocol: chunk.protocol ?? args.body.protocol,
+      already: true,
+      nextExpectedSeq: seqSnapshot.nextExpectedSeq,
+      highestContiguousUploadedSeq: seqSnapshot.highestContiguousUploadedSeq,
+    });
     return {
       code: 'ok',
       data: {
         chunk: toCompleteDto(chunk as any),
         already: true,
+        nextExpectedSeq: seqSnapshot.nextExpectedSeq,
+        highestContiguousUploadedSeq: seqSnapshot.highestContiguousUploadedSeq,
       },
     };
   }
@@ -709,6 +811,17 @@ export async function completeTrackChunkService(args: {
   if (args.body.protocol === 'tus' && (!storageKeyRaw || bytesReceived == null)) {
     const contractValidation = await validateTusStorageContractFromEnv();
     if (!contractValidation.ok) {
+      emitTelemetry({
+        level: 'error',
+        event: 'upload.chunk.failed',
+        message: 'Chunk completion failed due to TUS storage misconfiguration',
+        recordingId: args.recordingId,
+        participantId: chunk.track.participant_id,
+        trackId: chunk.track_id,
+        chunkId: chunk.id,
+        reason: 'tus_storage_misconfigured',
+        details: contractValidation.details ?? undefined,
+      });
       return {
         code: 'tus_storage_misconfigured',
         message: 'TUS storage contract is invalid.',
@@ -733,6 +846,17 @@ export async function completeTrackChunkService(args: {
     }
 
     if (!canonicalTusId) {
+      emitTelemetry({
+        level: 'warn',
+        event: 'upload.chunk.failed',
+        message: 'Chunk completion attempted before TUS upload identity is available',
+        recordingId: args.recordingId,
+        participantId: chunk.track.participant_id,
+        trackId: chunk.track_id,
+        chunkId: chunk.id,
+        reason: 'tus_not_uploaded_yet',
+        chunkState: chunk.state,
+      });
       return {
         code: 'tus_not_uploaded_yet',
         message: 'Chunk does not have a persisted TUS upload identity yet.',
@@ -758,6 +882,18 @@ export async function completeTrackChunkService(args: {
         chunkId: args.chunkId,
         reason: 'tus_identity_mismatch',
         tusUploadState: 'orphaned',
+      });
+      emitTelemetry({
+        level: 'error',
+        event: 'upload.chunk.failed',
+        message: 'Chunk completion TUS identity mismatch',
+        recordingId: args.recordingId,
+        participantId: chunk.track.participant_id,
+        trackId: chunk.track_id,
+        chunkId: chunk.id,
+        reason: 'tus_upload_orphaned',
+        storedTusId: canonicalTusId,
+        requestTusId: parsedTusIdFromBody,
       });
       return {
         code: 'tus_upload_orphaned',
@@ -796,6 +932,17 @@ export async function completeTrackChunkService(args: {
           tusUploadState: 'orphaned',
         });
       }
+      emitTelemetry({
+        level: tusFiles.code === 'tus_upload_orphaned' ? 'error' : 'warn',
+        event: 'upload.chunk.failed',
+        message: 'Chunk completion could not resolve TUS materialized files',
+        recordingId: args.recordingId,
+        participantId: chunk.track.participant_id,
+        trackId: chunk.track_id,
+        chunkId: chunk.id,
+        reason: tusFiles.code,
+        details: tusFiles.details ?? undefined,
+      });
       return {
         code: tusFiles.code,
         message: tusFiles.message,
@@ -820,6 +967,17 @@ export async function completeTrackChunkService(args: {
           chunkId: args.chunkId,
           reason: 'tus_materialization_io_error',
           tusUploadState: 'failed',
+        });
+        emitTelemetry({
+          level: 'error',
+          event: 'upload.chunk.failed',
+          message: 'Chunk completion failed during media materialization',
+          recordingId: args.recordingId,
+          participantId: chunk.track.participant_id,
+          trackId: chunk.track_id,
+          chunkId: chunk.id,
+          reason: 'tus_materialization_io_error',
+          err: copyErr,
         });
         return {
           code: 'seq_integrity_error',
@@ -854,11 +1012,44 @@ export async function completeTrackChunkService(args: {
 
   await maybeEnqueueStitchJobForTrack(args.recordingId, chunk.track_id);
   await maybeMarkRecordingProcessing(args.recordingId);
+  const seqSnapshot = await getTrackSeqSnapshot(chunk.track_id);
+  emitTelemetry({
+    event: 'upload.chunk.completed',
+    message: 'Chunk marked uploaded',
+    recordingId: args.recordingId,
+    participantId: chunk.track.participant_id,
+    trackId: chunk.track_id,
+    chunkId: chunk.id,
+    seq: chunk.seq,
+    protocol: args.body.protocol,
+    already: false,
+    nextExpectedSeq: seqSnapshot.nextExpectedSeq,
+    highestContiguousUploadedSeq: seqSnapshot.highestContiguousUploadedSeq,
+  });
+
+  const participantCompletion = await evaluateParticipantUploadCompletion({
+    recordingId: args.recordingId,
+    participantId: chunk.track.participant_id,
+  });
+  if (participantCompletion.complete) {
+    emitTelemetry({
+      event: 'upload.participant.completed',
+      message: 'Participant uploads are fully complete',
+      recordingId: args.recordingId,
+      participantId: chunk.track.participant_id,
+      trackId: chunk.track_id,
+      chunkId: chunk.id,
+      tracksTotal: participantCompletion.tracksTotal,
+      tracksComplete: participantCompletion.tracksComplete,
+    });
+  }
 
   return {
     code: 'ok',
     data: {
       chunk: toCompleteDto(updated as any),
+      nextExpectedSeq: seqSnapshot.nextExpectedSeq,
+      highestContiguousUploadedSeq: seqSnapshot.highestContiguousUploadedSeq,
     },
   };
 }

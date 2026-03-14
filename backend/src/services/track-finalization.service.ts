@@ -2,6 +2,7 @@ import type { FinalizeTrackBody, FinalizeTrackResponse } from '../dto/tracks/fin
 import { prisma } from '../lib/prisma.js';
 import type { RequestPrincipal } from '../lib/request-principal.js';
 import { reconcileRecordingPipeline } from './recording-pipeline.service.js';
+import { emitTelemetry } from '../lib/telemetry.js';
 
 type ServiceResult<T> =
   | { code: 'ok'; data: T }
@@ -39,6 +40,7 @@ export async function finalizeTrackCaptureService(args: {
       participant_id: true,
       final_seq: true,
       capture_closed_at: true,
+      finalized_at: true,
     },
   });
   if (!track || track.recording_id !== args.recordingId) return { code: 'invalid_track' };
@@ -61,12 +63,14 @@ export async function finalizeTrackCaptureService(args: {
   const finalizeRequestedAt = new Date();
   const nextFinalSeq = Math.max(track.final_seq ?? 0, args.body.finalSeq);
   const nextCaptureClosedAt = track.capture_closed_at ?? captureClosedAtFromClient ?? finalizeRequestedAt;
+  const nextFinalizedAt = track.finalized_at ?? finalizeRequestedAt;
 
   const updated = await prisma.track.update({
     where: { id: args.trackId },
     data: {
       final_seq: nextFinalSeq,
       capture_closed_at: nextCaptureClosedAt,
+      finalized_at: nextFinalizedAt,
       finalize_requested_at: finalizeRequestedAt,
     },
     select: {
@@ -74,8 +78,21 @@ export async function finalizeTrackCaptureService(args: {
       recording_id: true,
       final_seq: true,
       capture_closed_at: true,
+      finalized_at: true,
       finalize_requested_at: true,
     },
+  });
+
+  emitTelemetry({
+    event: 'track.finalized',
+    message: 'Track capture finalized',
+    recordingId: args.recordingId,
+    trackId: args.trackId,
+    participantId: track.participant_id,
+    finalSeq: updated.final_seq ?? 0,
+    finalizeRequestedAt: updated.finalize_requested_at?.toISOString() ?? finalizeRequestedAt.toISOString(),
+    captureClosedAt: updated.capture_closed_at?.toISOString(),
+    principalKind: args.principal.kind,
   });
 
   await reconcileRecordingPipeline(args.recordingId);

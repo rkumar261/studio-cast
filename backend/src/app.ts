@@ -45,7 +45,7 @@ export async function buildApp() {
       callback(null, allowedOrigins.has(normalized));
     },
     credentials: true,
-    methods: ['GET', 'POST', 'HEAD', 'PATCH', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'HEAD', 'PATCH', 'OPTIONS'],
     allowedHeaders: [
       'Tus-Resumable',
       'Upload-Length',

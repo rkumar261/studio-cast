@@ -8,6 +8,7 @@ import {
   LiveKitAPI,
   ParticipantsAPI,
   RecordingsAPI,
+  setApiAuthMode,
   type RecordingProgressResponse,
   type RecordingSessionResponse,
 } from '@/lib/api';
@@ -68,6 +69,14 @@ type StudioControlIconKind =
   | 'script'
   | 'share'
   | 'leave';
+type StudioSidebarIconKind = 'people' | 'chat' | 'brand' | 'text' | 'media';
+
+type HostStudioLifecyclePhase =
+  | 'recording'
+  | 'stopping'
+  | 'uploading'
+  | 'upload_complete'
+  | 'processing_handoff';
 
 const spaceGrotesk = Space_Grotesk({
   subsets: ['latin'],
@@ -432,6 +441,63 @@ function StudioControlIcon({ kind, off = false }: { kind: StudioControlIconKind;
   );
 }
 
+function StudioSidebarIcon({ kind }: { kind: StudioSidebarIconKind }) {
+  const icon = (() => {
+    switch (kind) {
+      case 'people':
+        return (
+          <>
+            <circle cx="9" cy="9" r="2.5" />
+            <circle cx="16" cy="10" r="2" />
+            <path d="M4.5 18a4.5 4.5 0 0 1 9 0" />
+            <path d="M13 18a3.5 3.5 0 0 1 7 0" />
+          </>
+        );
+      case 'chat':
+        return (
+          <>
+            <path d="M5 6h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H10l-5 4v-4H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z" />
+            <path d="M8 10h8M8 13h6" />
+          </>
+        );
+      case 'brand':
+        return (
+          <>
+            <rect x="4" y="6" width="16" height="12" rx="2" />
+            <circle cx="9" cy="10" r="1.5" />
+            <path d="m20 15-4.2-4.2L10 16" />
+          </>
+        );
+      case 'text':
+        return (
+          <>
+            <path d="M5 6h14M12 6v12" />
+            <path d="M9 18h6" />
+          </>
+        );
+      case 'media':
+        return <path d="M15 5v10.7a2.7 2.7 0 1 1-2.2-2.6V8h6V5z" />;
+      default:
+        return null;
+    }
+  })();
+
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className="h-4 w-4"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {icon}
+    </svg>
+  );
+}
+
 export default function StudioRecordingPage({ params }: StudioPageProps) {
   const { recordingId } = use(params);
   const router = useRouter();
@@ -445,14 +511,22 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       : null;
   const requestedParticipantId = searchParams.get('participantId')?.trim() || null;
   const requestedGuestToken = searchParams.get('guestToken')?.trim() || null;
+  const isGuestStudioFlow = sessionMode === 'studio' && requestedStudioRole === 'guest';
 
   const meshMaxPeers = Number(process.env.NEXT_PUBLIC_MESH_MAX_PEERS ?? '4');
+  const allowStudioMeshFallback =
+    String(process.env.NEXT_PUBLIC_STUDIO_ALLOW_MESH_FALLBACK ?? 'false') === 'true';
 
   const [engine, setEngine] = useState<Engine>('livekit');
   const [fallbackNotice, setFallbackNotice] = useState<string | null>(null);
   const [pinnedTileKey, setPinnedTileKey] = useState<string | null>(null);
   const [showPreJoin, setShowPreJoin] = useState(sessionMode === 'studio');
   const [displayName, setDisplayName] = useState('');
+  const [guestEmail, setGuestEmail] = useState('');
+  const [guestPreJoinStep, setGuestPreJoinStep] = useState<'welcome' | 'prejoin'>(
+    isGuestStudioFlow ? 'welcome' : 'prejoin'
+  );
+  const [guestJoinError, setGuestJoinError] = useState<string | null>(null);
   const [usingHeadphones, setUsingHeadphones] = useState(true);
   const [preJoinStatus, setPreJoinStatus] = useState<'idle' | 'starting' | 'ready' | 'error'>('idle');
   const [preJoinError, setPreJoinError] = useState<string | null>(null);
@@ -471,6 +545,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [showStudioInvitePanel, setShowStudioInvitePanel] = useState(true);
   const [showStudioPeoplePanel, setShowStudioPeoplePanel] = useState(true);
+  const [showAddParticipantPanel, setShowAddParticipantPanel] = useState(false);
   const [inviteRole, setInviteRole] = useState<'guest' | 'host'>('guest');
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteNotice, setInviteNotice] = useState<string | null>(null);
@@ -488,9 +563,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [createdInviteGuestToken, setCreatedInviteGuestToken] = useState<string | null>(null);
   const [claimedGuestParticipantId, setClaimedGuestParticipantId] = useState<string | null>(null);
   const [guestClaimReady, setGuestClaimReady] = useState(
-    !(sessionMode === 'studio' && requestedStudioRole === 'guest' && !!requestedGuestToken)
+    !isGuestStudioFlow || !requestedGuestToken
   );
-  const claimedGuestTokenRef = useRef<string | null>(null);
   const [trackIdByKind, setTrackIdByKind] = useState<Partial<Record<RecorderKind, string>>>({});
   const [recoveredNextSeqByTrack, setRecoveredNextSeqByTrack] = useState<Record<string, number>>({});
   const [recoveryReadyByTrack, setRecoveryReadyByTrack] = useState<Record<string, boolean>>({});
@@ -498,6 +572,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const registeringKindsRef = useRef<Set<RecorderKind>>(new Set());
   const recoveringTrackIdsRef = useRef<Set<string>>(new Set());
   const latestChunkSeqByTrackRef = useRef<Map<string, number>>(new Map());
+  const prevGuestStoppedAtRef = useRef<string | undefined>(undefined);
   const [showMeetSelfPreview, setShowMeetSelfPreview] = useState(true);
   const [meetSelfPreviewExpanded, setMeetSelfPreviewExpanded] = useState(false);
   const [meetStageFit, setMeetStageFit] = useState<'contain' | 'cover'>('contain');
@@ -524,8 +599,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [isCameraEnabled, setIsCameraEnabled] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const isRecording = !!recordingSession?.startedAt && !recordingSession?.stoppedAt;
-  const chunkUploadProtocol: ChunkUploadProtocol =
-    process.env.NEXT_PUBLIC_STUDIO_CHUNK_MULTIPART_ENABLED === '1' ? 'multipart' : 'tus';
+  const chunkUploadProtocol: ChunkUploadProtocol = 'tus';
   const chunkUploadQueue = useChunkUploadQueue({
     enabled: sessionMode === 'studio',
     recordingId,
@@ -561,6 +635,15 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     };
   }, [cleanupLiveKitRoom]);
 
+  useEffect(() => {
+    if (sessionMode === 'studio' && requestedStudioRole === 'guest') {
+      setApiAuthMode('guest');
+      return () => setApiAuthMode('default');
+    }
+    setApiAuthMode('default');
+    return () => setApiAuthMode('default');
+  }, [requestedStudioRole, sessionMode]);
+
   const refreshRecordingSession = useCallback(async () => {
     if (sessionMode !== 'studio') return;
     if (requestedStudioRole === 'guest' && !guestClaimReady) return;
@@ -586,50 +669,29 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     }
   }, [guestClaimReady, recordingId, requestedStudioRole, sessionMode]);
 
-  useEffect(() => {
-    if (sessionMode !== 'studio' || requestedStudioRole !== 'guest') return;
-    if (!requestedGuestToken) {
-      setGuestClaimReady(true);
-      return;
-    }
-    if (claimedGuestTokenRef.current === requestedGuestToken) return;
-
-    let cancelled = false;
-    setGuestClaimReady(false);
-    void ParticipantsAPI.claimGuest(requestedGuestToken)
-      .then((result) => {
-        if (cancelled) return;
-        claimedGuestTokenRef.current = requestedGuestToken;
-        setClaimedGuestParticipantId(result.participant.id);
-        setGuestClaimReady(true);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setGuestClaimReady(false);
-        setSessionError('Guest invite token is invalid or expired. Ask host for a fresh invite link.');
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [requestedGuestToken, requestedStudioRole, sessionMode]);
-
   const hasLocalQueueWork =
     sessionMode === 'studio' &&
     (chunkUploadQueue.stats.pending > 0 || chunkUploadQueue.stats.processing > 0);
   const hasBackendPendingFromProgress = (recordingProgress?.participants ?? []).some(
     (participant) => participant.pendingCount > 0
   );
+  const shouldPollDuringHostHandoff =
+    sessionMode === 'studio' && canControlRecording && !!recordingSession?.stoppedAt;
   const shouldPollStudioSession =
     sessionMode === 'studio' &&
-    (!recordingSession?.stoppedAt || isRecording || hasLocalQueueWork || showUploadStatusModal);
+    (!recordingSession?.stoppedAt ||
+      isRecording ||
+      hasLocalQueueWork ||
+      showUploadStatusModal ||
+      shouldPollDuringHostHandoff);
   const shouldPollStudioProgress =
     sessionMode === 'studio' &&
     (!recordingSession?.stoppedAt ||
       isRecording ||
       hasLocalQueueWork ||
       hasBackendPendingFromProgress ||
-      showUploadStatusModal);
+      showUploadStatusModal ||
+      shouldPollDuringHostHandoff);
 
   useEffect(() => {
     if (sessionMode !== 'studio') return;
@@ -685,15 +747,20 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     setRecorderError(null);
     setCreatedInviteGuestToken(null);
     setClaimedGuestParticipantId(null);
-    setGuestClaimReady(!(requestedStudioRole === 'guest' && !!requestedGuestToken));
-    claimedGuestTokenRef.current = null;
+    setGuestJoinError(null);
+    setGuestEmail('');
+    setGuestPreJoinStep(isGuestStudioFlow ? 'welcome' : 'prejoin');
+    setGuestClaimReady(!isGuestStudioFlow || !requestedGuestToken);
     registeringKindsRef.current.clear();
     recoveringTrackIdsRef.current.clear();
     latestChunkSeqByTrackRef.current.clear();
     setShowStudioInvitePanel(true);
     setCreatedInviteParticipantIdByRole({});
     setLocalHostParticipantId(null);
-  }, [recordingId, requestedGuestToken, requestedStudioRole]);
+  }, [isGuestStudioFlow, recordingId, requestedGuestToken]);
+
+  const shouldRunStudioPreJoinChecks =
+    sessionMode === 'studio' && (!isGuestStudioFlow || guestPreJoinStep === 'prejoin');
 
   const stopPreJoinPreview = useCallback(() => {
     if (preJoinStreamRef.current) {
@@ -769,6 +836,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   }, [enumerateDevices, selectedCameraId, selectedMicId, stopPreJoinPreview]);
 
   useEffect(() => {
+    if (sessionMode === 'studio' && showPreJoin && !shouldRunStudioPreJoinChecks) {
+      stopPreJoinPreview();
+      return;
+    }
     if (!showPreJoin) {
       if (sessionMode !== 'meet') {
         stopPreJoinPreview();
@@ -780,7 +851,13 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     return () => {
       stopPreJoinPreview();
     };
-  }, [sessionMode, showPreJoin, startPreJoinPreview, stopPreJoinPreview]);
+  }, [
+    sessionMode,
+    shouldRunStudioPreJoinChecks,
+    showPreJoin,
+    startPreJoinPreview,
+    stopPreJoinPreview,
+  ]);
 
   useEffect(() => {
     const element = preJoinVideoRef.current;
@@ -1346,6 +1423,23 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     );
   }, [recordingId, recoveredNextSeqByTrack, sessionMode, trackIdByKind]);
 
+  // Auto-finalize guest tracks when the host stops the session.
+  // Guests never call handleToggleRecordingSession, so this is the only place
+  // finalization is triggered for them.
+  useEffect(() => {
+    if (sessionMode !== 'studio' || requestedStudioRole !== 'guest') return;
+    const stoppedAt = recordingSession?.stoppedAt;
+    const prev = prevGuestStoppedAtRef.current;
+    prevGuestStoppedAtRef.current = stoppedAt;
+    // Only fire on the transition from no stoppedAt → stoppedAt
+    if (!stoppedAt || prev === stoppedAt) return;
+    if (Object.keys(trackIdByKind).length === 0) return;
+    const timer = window.setTimeout(() => {
+      void finalizeTrackCaptures().catch(() => {});
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [finalizeTrackCaptures, recordingSession?.stoppedAt, requestedStudioRole, sessionMode, trackIdByKind]);
+
   useRollingChunkRecorder({
     enabled:
       sessionMode === 'studio' &&
@@ -1526,6 +1620,15 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     if (engine === 'livekit') {
       const ok = await livekitJoin();
       if (!ok) {
+        const canFallbackToMesh = sessionMode === 'meet' || allowStudioMeshFallback;
+        if (!canFallbackToMesh) {
+          setFallbackNotice('LiveKit connection failed. Retry to rejoin. Mesh fallback is disabled in studio mode.');
+          if (sessionMode === 'meet') {
+            startPreJoinPreview();
+          }
+          return false;
+        }
+
         setFallbackNotice('LiveKit connection failed. Switching to mesh fallback.');
         setEngine('mesh');
         try {
@@ -1552,14 +1655,72 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   }
 
   async function handleJoinFromPreJoin() {
+    setGuestJoinError(null);
     setJoiningFromPreJoin(true);
-    const ok = await handleJoin();
-    if (ok) {
-      stopPreJoinPreview();
-      setShowPreJoin(false);
+    try {
+      if (isGuestStudioFlow) {
+        const trimmedDisplayName = displayName.trim();
+        if (!requestedGuestToken) {
+          setGuestClaimReady(false);
+          setGuestJoinError('Guest invite token is missing. Ask host for a fresh invite link.');
+          return;
+        }
+        if (!trimmedDisplayName) {
+          setGuestClaimReady(false);
+          setGuestJoinError('Name is required to join as a guest.');
+          return;
+        }
+
+        const normalizedEmail = guestEmail.trim();
+        const result = await ParticipantsAPI.bootstrapGuest({
+          token: requestedGuestToken,
+          displayName: trimmedDisplayName,
+          ...(normalizedEmail ? { email: normalizedEmail } : {}),
+        });
+        setDisplayName(result.participant.displayName?.trim() || trimmedDisplayName);
+        setClaimedGuestParticipantId(result.participant.id);
+        setGuestClaimReady(true);
+      }
+
+      const ok = await handleJoin();
+      if (ok) {
+        stopPreJoinPreview();
+        setShowPreJoin(false);
+      } else if (isGuestStudioFlow) {
+        setGuestJoinError('Unable to join the live room. Please retry or ask host to refresh the invite.');
+      }
+    } catch (err) {
+      const guestJoinErr = err as Error & { code?: string; status?: number };
+      const code = String(guestJoinErr.code ?? '');
+      const status = Number(guestJoinErr.status ?? 0);
+      if (code === 'invalid_token' || status === 401) {
+        setGuestJoinError('Guest invite token is invalid or expired. Ask host for a fresh invite link.');
+      } else if (code === 'invalid_display_name') {
+        setGuestJoinError('Name is required to join as a guest.');
+      } else {
+        setGuestJoinError(guestJoinErr.message ?? 'Failed to join the studio as guest.');
+      }
+      if (isGuestStudioFlow) {
+        setGuestClaimReady(false);
+      }
+    } finally {
+      setJoiningFromPreJoin(false);
     }
-    setJoiningFromPreJoin(false);
   }
+
+  function handleGuestWelcomeContinue() {
+    setGuestJoinError(null);
+    setGuestPreJoinStep('prejoin');
+  }
+
+  useEffect(() => {
+    if (sessionMode !== 'studio') return;
+    if (allowStudioMeshFallback) return;
+    if (engine === 'mesh') {
+      setEngine('livekit');
+      setFallbackNotice('Studio mode requires LiveKit. Rejoining with LiveKit.');
+    }
+  }, [allowStudioMeshFallback, engine, sessionMode]);
 
   async function handleLeave() {
     if (sessionMode === 'studio' && canControlRecording && isRecording && !sessionBusy) {
@@ -1582,6 +1743,17 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     active.leave();
     setEngine('livekit');
     setFallbackNotice(null);
+    if (sessionMode === 'studio' && (requestedStudioRole === 'guest' || !!claimedGuestParticipantId)) {
+      if (Object.keys(trackIdByKind).length > 0) {
+        try {
+          await finalizeTrackCaptures();
+        } catch {
+          // best-effort; redirect regardless
+        }
+      }
+      router.replace(`/studio/${recordingId}/thanks`);
+      return;
+    }
     if (sessionMode === 'studio') {
       setShowPreJoin(true);
     }
@@ -1609,7 +1781,6 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       if (wasRecording) {
         await new Promise((resolve) => window.setTimeout(resolve, 250));
         await finalizeTrackCaptures();
-        setShowUploadStatusModal(true);
       }
     } catch (err) {
       setSessionError((err as Error)?.message ?? 'Failed to update recording session.');
@@ -1732,6 +1903,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   useEffect(() => {
     if (sessionMode !== 'studio') return;
+    if (requestedStudioRole !== 'guest') return;
     if (!recordingSession?.stoppedAt) return;
     const hasLocalPendingUploads =
       chunkUploadQueue.stats.pending > 0 || chunkUploadQueue.stats.processing > 0;
@@ -1742,6 +1914,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     chunkUploadQueue.stats.pending,
     chunkUploadQueue.stats.processing,
     progressParticipants,
+    requestedStudioRole,
     recordingSession?.stoppedAt,
     sessionMode,
   ]);
@@ -1785,6 +1958,121 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const localUploadComplete = localParticipantProgress
     ? localParticipantProgress.pendingCount === 0
     : chunkUploadQueue.stats.pending + chunkUploadQueue.stats.processing === 0;
+  const uploadCompletion = useMemo(() => {
+    const participantsWithUploads = progressParticipants.filter(
+      (participant) =>
+        participant.trackCount > 0 || participant.uploadedCount > 0 || participant.pendingCount > 0
+    );
+    const participantsTotal = participantsWithUploads.length;
+    const participantsCompleted = participantsWithUploads.filter(
+      (participant) => participant.trackCount > 0 && participant.pendingCount === 0
+    ).length;
+    const tracksTotal = participantsWithUploads.reduce(
+      (sum, participant) => sum + participant.trackCount,
+      0
+    );
+    const tracksUploaded = participantsWithUploads.reduce(
+      (sum, participant) => sum + participant.uploadedCount,
+      0
+    );
+
+    const fallbackChunkTotal = participantsWithUploads.reduce(
+      (sum, participant) =>
+        sum + participant.tracks.reduce((trackSum, track) => trackSum + track.chunkTotal, 0),
+      0
+    );
+    const fallbackChunkUploaded = participantsWithUploads.reduce(
+      (sum, participant) =>
+        sum + participant.tracks.reduce((trackSum, track) => trackSum + track.chunkUploaded, 0),
+      0
+    );
+    const chunksTotal =
+      recordingProgress?.summary.chunksTotal && recordingProgress.summary.chunksTotal > 0
+        ? recordingProgress.summary.chunksTotal
+        : fallbackChunkTotal;
+    const chunksUploaded =
+      recordingProgress?.summary.chunksUploaded && recordingProgress.summary.chunksUploaded > 0
+        ? recordingProgress.summary.chunksUploaded
+        : fallbackChunkUploaded;
+
+    const hasBackendPendingUploads = participantsWithUploads.some(
+      (participant) => participant.pendingCount > 0
+    );
+    const hasLocalPendingUploads =
+      chunkUploadQueue.stats.pending > 0 || chunkUploadQueue.stats.processing > 0;
+    const hasPendingUploads = hasLocalPendingUploads || hasBackendPendingUploads;
+    const hasTrackEvidence =
+      tracksTotal > 0 ||
+      tracksUploaded > 0 ||
+      chunksUploaded > 0 ||
+      chunkUploadQueue.stats.completed > 0 ||
+      chunkUploadQueue.stats.bytesUploaded > 0;
+    const allParticipantTracksUploaded =
+      tracksTotal > 0 && tracksUploaded >= tracksTotal && participantsTotal > 0;
+    const uploadsComplete =
+      !!recordingSession?.stoppedAt &&
+      hasTrackEvidence &&
+      allParticipantTracksUploaded &&
+      !hasPendingUploads;
+
+    return {
+      participantsTotal,
+      participantsCompleted,
+      tracksTotal,
+      tracksUploaded,
+      chunksTotal,
+      chunksUploaded,
+      hasPendingUploads,
+      hasTrackEvidence,
+      uploadsComplete,
+    };
+  }, [
+    chunkUploadQueue.stats.bytesUploaded,
+    chunkUploadQueue.stats.completed,
+    chunkUploadQueue.stats.pending,
+    chunkUploadQueue.stats.processing,
+    progressParticipants,
+    recordingProgress?.summary.chunksTotal,
+    recordingProgress?.summary.chunksUploaded,
+    recordingSession?.stoppedAt,
+  ]);
+  const hasPendingUploads = uploadCompletion.hasPendingUploads;
+  const canOpenProject = uploadCompletion.uploadsComplete;
+  const hostStudioLifecyclePhase = useMemo<HostStudioLifecyclePhase | null>(() => {
+    if (sessionMode !== 'studio' || showPreJoin || localStudioRole !== 'host') return null;
+    if (isRecording) {
+      return sessionBusy ? 'stopping' : 'recording';
+    }
+    if (!recordingSession?.stoppedAt) {
+      return sessionBusy ? 'stopping' : 'recording';
+    }
+    if (hasPendingUploads || !uploadCompletion.hasTrackEvidence || !uploadCompletion.uploadsComplete) {
+      return 'uploading';
+    }
+    if (recordingProgress?.phase === 'processing' || recordingProgress?.phase === 'ready') {
+      return 'processing_handoff';
+    }
+    return 'upload_complete';
+  }, [
+    hasPendingUploads,
+    isRecording,
+    localStudioRole,
+    uploadCompletion.hasTrackEvidence,
+    uploadCompletion.uploadsComplete,
+    recordingProgress?.phase,
+    recordingSession?.stoppedAt,
+    sessionBusy,
+    sessionMode,
+    showPreJoin,
+  ]);
+  const hostUploadOverlayOpen =
+    localStudioRole === 'host' &&
+    hostStudioLifecyclePhase !== null &&
+    hostStudioLifecyclePhase !== 'recording';
+  const uploadOverlayOpen =
+    localStudioRole === 'host'
+      ? hostUploadOverlayOpen
+      : showUploadStatusModal;
 
   useEffect(() => {
     if (sessionMode !== 'studio') return;
@@ -1808,7 +2096,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   useEffect(() => {
     if (sessionMode !== 'studio') return;
-    const hasWork = chunkUploadQueue.stats.pending + chunkUploadQueue.stats.processing > 0;
+    const hasWork =
+      chunkUploadQueue.stats.pending + chunkUploadQueue.stats.processing > 0 ||
+      hostStudioLifecyclePhase === 'stopping' ||
+      hostStudioLifecyclePhase === 'uploading';
     if (!hasWork) return;
     const handler = (event: BeforeUnloadEvent) => {
       event.preventDefault();
@@ -1816,7 +2107,12 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [chunkUploadQueue.stats.pending, chunkUploadQueue.stats.processing, sessionMode]);
+  }, [
+    chunkUploadQueue.stats.pending,
+    chunkUploadQueue.stats.processing,
+    hostStudioLifecyclePhase,
+    sessionMode,
+  ]);
 
   async function ensureInviteParticipantId(role: 'guest' | 'host') {
     const existing = createdInviteParticipantIdByRole[role];
@@ -1903,6 +2199,58 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   }, [active.isMicEnabled, active.localScreen, active.localVideo, active.tiles, displayName]);
 
   if (showPreJoin && sessionMode === 'studio') {
+    const isGuestWelcomeStep = isGuestStudioFlow && guestPreJoinStep === 'welcome';
+    const guestNameMissing = isGuestStudioFlow && displayName.trim().length === 0;
+
+    if (isGuestWelcomeStep) {
+      return (
+        <main className={`${spaceGrotesk.className} min-h-screen bg-[#090b10] text-slate-100`}>
+          <div className="mx-auto flex min-h-screen w-full max-w-[980px] flex-col px-6 py-6">
+            <header className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Link href="/" className="text-slate-400 hover:text-slate-100">
+                  ←
+                </Link>
+                <p className="text-2xl font-semibold tracking-[0.2em]">RIVERSIDE</p>
+              </div>
+            </header>
+
+            <section className="flex flex-1 items-center justify-center py-10">
+              <div className="w-full max-w-2xl rounded-3xl border border-slate-800 bg-[#121620] p-10">
+                <span className="inline-flex rounded-full border border-violet-400/40 bg-violet-500/10 px-4 py-2 text-sm text-violet-100">
+                  Guest Invite
+                </span>
+                <h1 className="mt-5 text-5xl font-semibold leading-tight">
+                  Join this recording as a guest
+                </h1>
+                <p className="mt-4 text-xl text-slate-300">
+                  You are joining as a guest participant. No account login is required for this invite.
+                </p>
+                <p className="mt-2 text-base text-slate-400">
+                  Continue to enter your details, run device checks, and join the studio session.
+                </p>
+
+                {!requestedGuestToken && (
+                  <p className="mt-5 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                    Guest invite token is missing. Ask host for a fresh invite link.
+                  </p>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleGuestWelcomeContinue}
+                  disabled={!requestedGuestToken}
+                  className="mt-7 w-full rounded-xl bg-[#8b5cf6] px-4 py-3 text-xl font-semibold text-white hover:bg-[#7c4cf0] disabled:opacity-60"
+                >
+                  Continue as guest
+                </button>
+              </div>
+            </section>
+          </div>
+        </main>
+      );
+    }
+
     return (
       <main className={`${spaceGrotesk.className} min-h-screen bg-[#090b10] text-slate-100`}>
         <div className="mx-auto flex min-h-screen w-full max-w-[1450px] flex-col px-6 py-6">
@@ -1929,7 +2277,11 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 <span className="inline-flex rounded-full border border-rose-400/40 bg-rose-500/10 px-4 py-2 text-sm text-rose-200">
                   REC
                 </span>
-                <p className="text-2xl text-slate-400">You&apos;re about to join {displayName || 'your'} studio</p>
+                <p className="text-2xl text-slate-400">
+                  {isGuestStudioFlow
+                    ? 'You are about to join this studio as a guest'
+                    : `You're about to join ${displayName || 'your'} studio`}
+                </p>
                 <h1 className="text-6xl font-semibold leading-tight">Let&apos;s check your cam and mic</h1>
 
                 <div className="space-y-3">
@@ -1939,10 +2291,22 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                       value={displayName}
                       onChange={(event) => setDisplayName(event.target.value)}
                       className="min-w-0 flex-1 bg-transparent text-xl outline-none placeholder:text-slate-500"
-                      placeholder="Your display name"
+                      placeholder={isGuestStudioFlow ? 'Your name (required)' : 'Your display name'}
                     />
                     <span className="rounded-lg bg-[#2a2f39] px-3 py-1 text-sm text-slate-200">{localStudioRoleLabel}</span>
                   </label>
+
+                  {isGuestStudioFlow && (
+                    <label className="flex items-center gap-2 rounded-xl border border-slate-700 bg-[#1a1e26] px-4 py-3">
+                      <input
+                        type="email"
+                        value={guestEmail}
+                        onChange={(event) => setGuestEmail(event.target.value)}
+                        className="min-w-0 flex-1 bg-transparent text-xl outline-none placeholder:text-slate-500"
+                        placeholder="Email (optional)"
+                      />
+                    </label>
+                  )}
 
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <button
@@ -1972,15 +2336,26 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   <button
                     type="button"
                     onClick={handleJoinFromPreJoin}
-                    disabled={preJoinStatus !== 'ready' || joiningFromPreJoin}
+                    disabled={preJoinStatus !== 'ready' || joiningFromPreJoin || guestNameMissing}
                     className="w-full rounded-xl bg-[#8b5cf6] px-4 py-3 text-xl font-semibold text-white hover:bg-[#7c4cf0] disabled:opacity-60"
                   >
-                    {joiningFromPreJoin ? 'Joining studio...' : 'Join studio'}
+                    {joiningFromPreJoin
+                      ? 'Joining studio...'
+                      : isGuestStudioFlow
+                        ? 'Join as guest'
+                        : 'Join studio'}
                   </button>
 
                   <p className="text-lg text-slate-400">
-                    You are joining as a {localStudioRole === 'host' ? 'host' : 'guest'}
+                    {isGuestStudioFlow
+                      ? 'Joining as guest participant'
+                      : `You are joining as a ${localStudioRole === 'host' ? 'host' : 'guest'}`}
                   </p>
+                  {guestJoinError && (
+                    <p className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                      {guestJoinError}
+                    </p>
+                  )}
                   {preJoinError && (
                     <p className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
                       {preJoinError}
@@ -2099,35 +2474,49 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
             : participant.trackCount === 0
               ? 0
               : Math.round((participant.uploadedCount / participant.trackCount) * 100);
+        const hasUploadEvidence =
+          participantChunkTotal > 0 ||
+          participantChunkUploaded > 0 ||
+          participant.trackCount > 0 ||
+          participant.uploadedCount > 0 ||
+          participant.pendingCount > 0;
+        const showProgressBar = !isRecording || hasUploadEvidence;
+        const note = isRecording
+          ? hasUploadEvidence
+            ? `${Math.max(0, 100 - pct)}% remaining`
+            : 'Recording...'
+          : participant.pendingCount > 0
+            ? `${Math.max(0, 100 - pct)}% remaining`
+            : 'Upload complete';
         return {
           id: participant.participantId,
           label: participant.displayName || participant.participantId.slice(0, 8),
           role: participant.role === 'host' ? 'Host' : 'Guest',
           percent: pct,
-          note:
-            participant.pendingCount > 0
-              ? `${Math.max(0, 100 - pct)}% remaining`
-              : 'Upload complete',
+          note,
+          showProgressBar,
         };
       }) ?? [];
     const people =
       progressPeople.length > 0
         ? progressPeople
         : [
-            {
-              id: 'local',
-              label: displayName || 'You',
-              role: localStudioRoleLabel,
-              percent: 0,
-              note: isRecording ? 'Recording...' : 'Waiting for upload...',
-            },
-            ...active.peers.map((peer) => ({
-              id: peer.id,
-              label: peer.label,
-              role: 'Guest',
-              percent: 30,
-              note: 'Connected',
-            })),
+              {
+                id: 'local',
+                label: displayName || 'You',
+                role: localStudioRoleLabel,
+                percent: 0,
+                note: isRecording ? 'Recording...' : 'Waiting for upload...',
+                showProgressBar: !isRecording,
+              },
+              ...active.peers.map((peer) => ({
+                id: peer.id,
+                label: peer.label,
+                role: 'Guest',
+                percent: 0,
+                note: 'Connected',
+                showProgressBar: false,
+              })),
           ];
     const visibleTiles = studioCanvasTiles;
     const tileCount = visibleTiles.length;
@@ -2175,8 +2564,65 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         ? Math.min(100, Math.round((progressChunkUploaded * 100) / progressChunkTotal))
         : null;
     const uploadedPercent = Math.max(progressUploadedPercent ?? 0, queueUploadedPercent);
-    const peopleForPanel =
-      progressPeople.length > 0
+    const hasLiveUploadActivity =
+      chunkUploadQueue.stats.completed > 0 ||
+      chunkUploadQueue.stats.processing > 0 ||
+      chunkUploadQueue.stats.pending > 0 ||
+      uploadedPercent > 0;
+    const localParticipantId = recorderParticipantId ?? effectiveRequestedParticipantId;
+    const remoteProgressParticipants = progressParticipants.filter(
+      (p) => p.participantId !== localParticipantId
+    );
+    const livePeopleForPanel = [
+      {
+        id: 'local-live',
+        label: displayName || 'You',
+        role: localStudioRoleLabel,
+        percent: uploadedPercent,
+        note: hasLiveUploadActivity ? `${uploadedPercent}% uploaded` : 'Recording...',
+        showProgressBar: hasLiveUploadActivity,
+      },
+      // Use backend participant data (role + upload progress) when available;
+      // fall back to live-presence peers (no role/progress info) before first poll.
+      ...(remoteProgressParticipants.length > 0
+        ? remoteProgressParticipants.map((p) => {
+            const chunkTotal = p.tracks.reduce((sum, t) => sum + t.chunkTotal, 0);
+            const chunkUploaded = p.tracks.reduce((sum, t) => sum + t.chunkUploaded, 0);
+            const pct =
+              chunkTotal > 0
+                ? Math.round((chunkUploaded / chunkTotal) * 100)
+                : p.trackCount === 0
+                  ? 0
+                  : Math.round((p.uploadedCount / p.trackCount) * 100);
+            const hasEvidence = chunkTotal > 0 || p.trackCount > 0 || p.uploadedCount > 0;
+            return {
+              id: p.participantId,
+              label: p.displayName || p.participantId.slice(0, 8),
+              role: p.role === 'host' ? 'Host' : 'Guest',
+              percent: pct,
+              note: isRecording
+                ? hasEvidence
+                  ? `${Math.max(0, 100 - pct)}% remaining`
+                  : 'Recording...'
+                : p.pendingCount > 0
+                  ? `${Math.max(0, 100 - pct)}% remaining`
+                  : 'Upload complete',
+              showProgressBar: !isRecording || hasEvidence,
+            };
+          })
+        : active.peers.map((peer) => ({
+            id: peer.id,
+            label: peer.label,
+            role: 'Guest',
+            percent: 0,
+            note: 'Connected',
+            showProgressBar: false,
+          }))),
+    ];
+    const shouldUseLivePresence = !recordingSession?.stoppedAt;
+    const peopleForPanel = shouldUseLivePresence
+      ? livePeopleForPanel
+      : progressPeople.length > 0
         ? progressPeople
         : people.map((person, index) =>
             index === 0
@@ -2184,23 +2630,34 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   ...person,
                   percent: uploadedPercent,
                   note: `${uploadedPercent}% uploaded`,
+                  showProgressBar: uploadedPercent > 0,
                 }
               : person
           );
-    const hasBackendPendingUploads = progressParticipants.some(
-      (participant) => participant.pendingCount > 0
-    );
-    const hasPendingUploads =
-      chunkUploadQueue.stats.pending > 0 ||
-      chunkUploadQueue.stats.processing > 0 ||
-      hasBackendPendingUploads;
-    const hasAnyUploadedEvidence =
-      progressParticipants.length > 0 ||
-      chunkUploadQueue.stats.completed > 0 ||
-      chunkUploadQueue.stats.bytesUploaded > 0;
-    const canOpenProject = !!recordingSession?.stoppedAt && hasAnyUploadedEvidence && !hasPendingUploads;
+    const hostShouldShowUploadChip =
+      (isRecording && hasLiveUploadActivity) ||
+      (hostStudioLifecyclePhase !== null && hostStudioLifecyclePhase !== 'recording') ||
+      (!!recordingSession?.stoppedAt && !canOpenProject);
     const showUploadChip =
-      isRecording || hasPendingUploads || (!!recordingSession?.stoppedAt && !localUploadComplete);
+      localStudioRole === 'host'
+        ? hostShouldShowUploadChip
+        : isRecording || hasPendingUploads || (!!recordingSession?.stoppedAt && !localUploadComplete);
+    const uploadChipLabel =
+      localStudioRole === 'host'
+        ? isRecording && hasLiveUploadActivity
+          ? `↑ ${uploadedPercent}% Uploading...`
+          : hostStudioLifecyclePhase === 'stopping'
+          ? 'Stopping...'
+          : hostStudioLifecyclePhase === 'uploading'
+            ? `↑ ${uploadedPercent}% Uploading...`
+            : hostStudioLifecyclePhase === 'upload_complete'
+              ? '✓ Upload complete'
+              : hostStudioLifecyclePhase === 'processing_handoff'
+                ? '→ Processing handoff'
+                : !!recordingSession?.stoppedAt && !canOpenProject
+                  ? `↑ ${uploadedPercent}% Uploading...`
+                  : null
+        : `↑ ${uploadedPercent}% Uploading...`;
     const recordingSeconds = recordingSession?.startedAt
       ? Math.max(0, Math.floor((Date.now() - new Date(recordingSession.startedAt).getTime()) / 1000))
       : 0;
@@ -2209,18 +2666,24 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     ).padStart(2, '0')}`;
     const isMicOff = !active.isMicEnabled;
     const isCamOff = !active.isCameraEnabled;
+    const shouldReserveUploadBarSpace = localStudioRole === 'host' && uploadOverlayOpen;
+    const floatingUploadLayout = {
+      leftInset: 54,
+      rightInset: showStudioPeoplePanel ? 510 : 170,
+      bottomInset: 150,
+    };
 
     return (
       <main className={`${spaceGrotesk.className} h-screen overflow-hidden bg-[#07090f] text-slate-100`}>
         <div className="mx-auto flex h-full w-full max-w-[1600px] flex-col px-5 py-4">
-          <header className="flex items-center justify-between rounded-2xl bg-[#0f131a] px-4 py-3">
+          <header className="flex items-center justify-between rounded-2xl border border-[#1a1f2a] bg-[#0f131a] px-4 py-3">
             <div className="flex min-w-0 items-center gap-3">
-              <Link href="/" className="text-slate-300 hover:text-white">
+              <Link href="/" className="rounded-full p-1 text-slate-300 hover:bg-[#1b2130] hover:text-white">
                 ←
               </Link>
-              <p className="text-xl font-semibold tracking-[0.2em]">RIVERSIDE</p>
+              <p className="text-xl font-semibold tracking-[0.2em] text-slate-100">RIVERSIDE</p>
               <span className="text-slate-600">|</span>
-              <p className="truncate text-base text-slate-300">{displayName || 'Host'} KUMAR&apos;s Studio</p>
+              <p className="truncate text-base text-slate-400">{displayName || 'Host'} KUMAR&apos;s Studio</p>
               <p className="truncate text-xl font-semibold text-slate-100">Untitled Recording</p>
             </div>
 
@@ -2231,32 +2694,38 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 </span>
               )}
               {showUploadChip && (
-                <span className="rounded-full bg-violet-500/25 px-3 py-1 text-sm font-semibold text-violet-100">
-                  ↑ {uploadedPercent}% Uploading...
+                <span className="rounded-2xl bg-violet-500/35 px-4 py-2 text-sm font-semibold text-violet-100">
+                  {uploadChipLabel}
                 </span>
               )}
               <button
                 type="button"
-                className="rounded-full border border-slate-700 bg-[#1a1f29] px-4 py-2 text-sm hover:border-slate-500"
+                className="flex items-center rounded-2xl border border-[#2a2f3b] bg-[#1c212e] px-4 py-2 text-sm font-medium hover:border-slate-500"
               >
-                + Live stream
+                <span className="mr-1.5 text-lg">+</span>
+                Live stream
               </button>
               <button
                 type="button"
-                className="h-10 w-10 rounded-full border border-slate-700 bg-[#1a1f29] text-sm"
+                className="flex h-10 w-10 items-center justify-center rounded-2xl border border-[#2a2f3b] bg-[#1c212e] text-sm"
               >
                 ?
               </button>
               <button
                 type="button"
-                className="h-10 w-10 rounded-full border border-slate-700 bg-[#1a1f29] text-sm"
+                className="flex h-10 w-10 items-center justify-center rounded-2xl border border-[#2a2f3b] bg-[#1c212e] text-sm"
               >
                 ⚙
               </button>
               <button
                 type="button"
-                onClick={() => setShowStudioInvitePanel(true)}
-                className="rounded-full border border-slate-700 bg-[#1a1f29] px-4 py-2 text-sm hover:border-slate-500"
+                onClick={() => {
+                  setIsInviteModalOpen(true);
+                  setShowAddParticipantPanel(false);
+                  setInviteNotice(null);
+                  setCopyState('idle');
+                }}
+                className="rounded-2xl border border-[#2a2f3b] bg-[#1c212e] px-4 py-2 text-sm font-medium hover:border-slate-500"
               >
                 Invite
               </button>
@@ -2295,51 +2764,55 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
           <div className="mt-3 flex min-h-0 flex-1 gap-4">
             <section className="flex min-h-0 flex-1 flex-col rounded-3xl bg-[#090b10] p-3">
-              <div className="flex min-h-0 flex-1 gap-3">
+              <div className={`flex min-h-0 flex-1 gap-3 ${shouldReserveUploadBarSpace ? 'mb-20' : ''}`}>
                 {showStudioInvitePanel && (
-                  <aside className="hidden w-[380px] shrink-0 rounded-3xl border border-slate-800 bg-[#1b1f26] p-6 xl:flex xl:flex-col">
-                    <div className="mb-8 flex items-center justify-between">
-                      <h2 className="text-[42px] font-semibold leading-none">Invite someone to join remotely</h2>
+                  <aside className="hidden w-[400px] shrink-0 rounded-3xl border border-[#2b303d] bg-[#1e222b] p-6 xl:flex xl:flex-col">
+                    <div className="mb-8 flex items-start justify-between">
+                      <h2 className="max-w-[260px] text-[44px] font-semibold leading-[0.98] text-slate-100">
+                        Invite someone to join remotely
+                      </h2>
                       <button
                         type="button"
                         onClick={() => setShowStudioInvitePanel(false)}
-                        className="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-300"
+                        className="rounded-full border border-slate-700 p-2 text-sm text-slate-300 hover:border-slate-500"
                         aria-label="Close invite panel"
                       >
                         ×
                       </button>
                     </div>
-                    <div className="space-y-4">
-                      <div className="grid grid-cols-[minmax(0,1fr)_86px_104px] gap-2">
-                        <input
-                          type="text"
-                          readOnly
-                          value={inviteLink}
-                          className="min-w-0 truncate rounded-xl border border-slate-700 bg-[#141922] px-3 py-2 text-sm text-slate-300"
-                        />
-                        <select
-                          value={inviteRole}
-                          onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
-                          className="rounded-xl border border-slate-700 bg-[#141922] px-2 py-2 text-sm"
-                        >
-                          <option value="guest">Guest</option>
-                        </select>
-                        <button
-                          type="button"
-                          onClick={handleCopyInviteLink}
-                          className="rounded-xl bg-[#8b5cf6] px-2 py-2 text-sm font-semibold text-white hover:bg-[#7c4cf0]"
-                        >
-                          {copyState === 'copied' ? 'Copied' : 'Copy'}
-                        </button>
-                      </div>
+                    <div className="grid grid-cols-[minmax(0,1fr)_86px_104px] gap-2">
+                      <input
+                        type="text"
+                        readOnly
+                        value={inviteLink}
+                        className="min-w-0 truncate rounded-xl border border-[#333949] bg-[#202633] px-3 py-2 text-sm text-slate-300"
+                      />
+                      <select
+                        value={inviteRole}
+                        onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
+                        className="rounded-xl border border-[#333949] bg-[#202633] px-2 py-2 text-sm"
+                      >
+                        <option value="guest">Guest</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={handleCopyInviteLink}
+                        className="rounded-xl bg-[#8b5cf6] px-2 py-2 text-sm font-semibold text-white hover:bg-[#7c4cf0]"
+                      >
+                        {copyState === 'copied' ? 'Copied' : 'Copy link'}
+                      </button>
                     </div>
-                    <div className="my-10 text-center text-xs uppercase tracking-wider text-slate-500">New</div>
-                    <p className="text-3xl font-semibold">Record someone next to you</p>
+                    <div className="my-10 flex items-center gap-3 text-slate-500">
+                      <div className="h-px flex-1 bg-[#303646]" />
+                      <span className="rounded-full border border-[#3d4456] px-3 py-1 text-[11px] uppercase tracking-[0.18em]">New</span>
+                      <div className="h-px flex-1 bg-[#303646]" />
+                    </div>
+                    <p className="text-4xl font-semibold leading-tight text-slate-100">Record someone next to you</p>
                     <button
                       type="button"
-                      className="mt-6 rounded-xl border border-slate-700 bg-[#2a2f39] px-4 py-3 text-lg font-medium text-slate-100"
+                      className="mt-6 rounded-xl border border-[#3a4051] bg-[#2f3542] px-4 py-3 text-lg font-medium text-slate-100"
                     >
-                      Add an in-person guest
+                      Add an in-person guest <span className="ml-1 text-lime-300">⚡</span>
                     </button>
                   </aside>
                 )}
@@ -2508,19 +2981,22 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
             <div className="flex">
               {showStudioPeoplePanel && (
-                <aside className="w-[330px] rounded-3xl border border-slate-800 bg-[#171b23] p-4">
+                <aside className="w-[336px] rounded-3xl border border-[#252b38] bg-[#1a1f28] p-4">
                   <div className="flex items-center justify-between">
-                    <h2 className="text-4xl font-semibold">People</h2>
+                    <h2 className="text-5xl font-semibold leading-none text-slate-100">People</h2>
                     <button
                       type="button"
-                      onClick={() => setShowStudioPeoplePanel(false)}
-                      className="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-400"
+                      onClick={() => {
+                        setShowStudioPeoplePanel(false);
+                        setShowAddParticipantPanel(false);
+                      }}
+                      className="rounded-full border border-slate-700 p-2 text-sm text-slate-400 hover:border-slate-500"
                     >
                       ×
                     </button>
                   </div>
 
-                  <div className="mt-4 rounded-xl border border-slate-800 bg-[#1b202a] p-3">
+                  <div className="mt-4 rounded-xl border border-[#2f3544] bg-[#242a36] p-3">
                     <div className="flex items-center justify-between">
                       <p className="text-sm text-slate-300">Recording info</p>
                       <span className="text-slate-500">⌄</span>
@@ -2529,9 +3005,9 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
                   <div className="mt-4 space-y-3">
                     {peopleForPanel.map((person) => (
-                      <div key={person.id} className="rounded-xl border border-slate-800 bg-[#1b202a] p-3">
+                      <div key={person.id} className="rounded-xl border border-[#2f3544] bg-[#242a36] p-3">
                         <div className="flex items-start gap-3">
-                          <div className="h-14 w-14 rounded-md border border-slate-700 bg-slate-900" />
+                          <div className="h-14 w-14 rounded-md border border-[#3a4153] bg-slate-900" />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center justify-between gap-2">
                               <p className="truncate text-xl font-semibold text-slate-100">{person.label}</p>
@@ -2543,51 +3019,154 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                             <p className="text-xs text-slate-500">{person.note}</p>
                           </div>
                         </div>
-                        <div className="mt-3 h-1.5 w-full rounded-full bg-slate-800">
-                          <div
-                            className="h-full rounded-full bg-emerald-400/80"
-                            style={{ width: `${Math.max(person.percent, 5)}%` }}
-                          />
-                        </div>
+                        {person.showProgressBar ? (
+                          <div className="mt-3 h-1.5 w-full rounded-full bg-[#2f3748]">
+                            <div
+                              className="h-full rounded-full bg-emerald-300/90"
+                              style={{ width: `${Math.max(person.percent, 5)}%` }}
+                            />
+                          </div>
+                        ) : (
+                          <div className="mt-3 h-1.5 w-full rounded-full bg-[#2f3748]/65" />
+                        )}
                       </div>
                     ))}
                   </div>
 
+                  {showAddParticipantPanel && (
+                    <div className="mt-4 rounded-xl border border-[#2f3544] bg-[#242a36] p-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsInviteModalOpen(true);
+                          setInviteNotice(null);
+                          setCopyState('idle');
+                          setShowAddParticipantPanel(false);
+                        }}
+                        className="w-full rounded-xl bg-[#3a3f4a] px-4 py-3 text-left hover:bg-[#464e5f]"
+                      >
+                        <p className="text-lg font-semibold text-slate-100">Remote guest</p>
+                        <p className="text-sm text-slate-400">Send a link to someone joining from another device</p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowStudioInvitePanel(true);
+                          setShowAddParticipantPanel(false);
+                        }}
+                        className="mt-3 w-full rounded-xl px-1 py-1 text-left"
+                      >
+                        <p className="text-lg font-medium text-slate-200">
+                          In-person guest <span className="ml-1 text-lime-300">⚡</span>
+                        </p>
+                        <p className="text-sm text-slate-400">Someone recording next to you on the same device</p>
+                      </button>
+                    </div>
+                  )}
+
                   <button
                     type="button"
-                    onClick={() => setIsInviteModalOpen(true)}
-                    className="mt-4 w-full rounded-xl border border-slate-700 bg-[#1b202a] px-3 py-2 text-sm text-slate-100 hover:border-slate-500"
+                    onClick={() => setShowAddParticipantPanel((prev) => !prev)}
+                    className="mt-4 w-full rounded-xl border border-[#3a4051] bg-[#252b37] px-3 py-2.5 text-lg text-slate-100 hover:border-slate-500"
                   >
                     + Add participant
                   </button>
                 </aside>
               )}
 
-              <div className="ml-3 flex w-16 shrink-0 flex-col items-center justify-center gap-3 rounded-3xl bg-[#0f131b] py-5">
+              <div className="ml-3 flex w-[88px] shrink-0 flex-col items-center justify-center gap-5 rounded-[30px] border border-[#1a2334] bg-[#0b1322] py-7">
                 <button
                   type="button"
-                  onClick={() => setShowStudioPeoplePanel((prev) => !prev)}
-                  className={`w-12 rounded-2xl px-1 py-3 text-xs ${
-                    showStudioPeoplePanel ? 'bg-[#2a3040] text-white' : 'bg-transparent text-slate-400'
+                  onClick={() =>
+                    setShowStudioPeoplePanel((prev) => {
+                      const next = !prev;
+                      if (!next) {
+                        setShowAddParticipantPanel(false);
+                      }
+                      return next;
+                    })
+                  }
+                  className={`flex w-[70px] flex-col items-center rounded-[24px] px-2 py-3 text-[13px] font-medium transition-colors ${
+                    showStudioPeoplePanel
+                      ? 'bg-[#303a52] text-white'
+                      : 'bg-transparent text-[#8da0bf] hover:text-[#c7d3e8]'
                   }`}
                 >
+                  <span className="mb-1">
+                    <StudioSidebarIcon kind="people" />
+                  </span>
                   People
                 </button>
-                <button type="button" className="w-12 rounded-2xl px-1 py-3 text-xs text-slate-400">Chat</button>
-                <button type="button" className="w-12 rounded-2xl px-1 py-3 text-xs text-slate-400">Brand</button>
-                <button type="button" className="w-12 rounded-2xl px-1 py-3 text-xs text-slate-400">Text</button>
-                <button type="button" className="w-12 rounded-2xl px-1 py-3 text-xs text-slate-400">Media</button>
+                <button
+                  type="button"
+                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-[#8da0bf] transition-colors hover:text-[#c7d3e8]"
+                >
+                  <StudioSidebarIcon kind="chat" />
+                  Chat
+                </button>
+                <button
+                  type="button"
+                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-[#8da0bf] transition-colors hover:text-[#c7d3e8]"
+                >
+                  <StudioSidebarIcon kind="brand" />
+                  Brand
+                </button>
+                <button
+                  type="button"
+                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-[#8da0bf] transition-colors hover:text-[#c7d3e8]"
+                >
+                  <StudioSidebarIcon kind="text" />
+                  Text
+                </button>
+                <button
+                  type="button"
+                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-[#8da0bf] transition-colors hover:text-[#c7d3e8]"
+                >
+                  <StudioSidebarIcon kind="media" />
+                  Media
+                </button>
               </div>
             </div>
           </div>
         </div>
 
         <UploadStatusModal
-          open={showUploadStatusModal}
+          open={uploadOverlayOpen}
           participants={progressParticipants}
           canOpenProject={canOpenProject}
-          onClose={() => setShowUploadStatusModal(false)}
+          phase={localStudioRole === 'host' ? hostStudioLifecyclePhase ?? undefined : undefined}
+          variant={localStudioRole === 'host' ? 'floating' : 'modal'}
+          floatingLayout={localStudioRole === 'host' ? floatingUploadLayout : undefined}
+          summary={
+            uploadCompletion.hasTrackEvidence || uploadCompletion.participantsTotal > 0
+              ? {
+                  participantsTotal: uploadCompletion.participantsTotal,
+                  participantsCompleted: uploadCompletion.participantsCompleted,
+                  tracksTotal: uploadCompletion.tracksTotal,
+                  tracksUploaded: uploadCompletion.tracksUploaded,
+                  chunksTotal: uploadCompletion.chunksTotal,
+                  chunksUploaded: uploadCompletion.chunksUploaded,
+                }
+              : undefined
+          }
+          keepPageOpenHint={
+            localStudioRole === 'host'
+              ? hostStudioLifecyclePhase === 'stopping' || hostStudioLifecyclePhase === 'uploading'
+              : showUploadStatusModal
+          }
+          canDismiss={
+            localStudioRole === 'host'
+              ? hostStudioLifecyclePhase === 'upload_complete' ||
+                hostStudioLifecyclePhase === 'processing_handoff'
+              : true
+          }
+          onClose={() => {
+            if (localStudioRole !== 'host') {
+              setShowUploadStatusModal(false);
+            }
+          }}
           onGoToProject={() => {
+            if (!canOpenProject) return;
             setShowUploadStatusModal(false);
             if (localStudioRole === 'host') {
               router.push(`/recordings/${recordingId}`);
@@ -2597,7 +3176,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
         {isInviteModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
-            <div className="w-full max-w-3xl rounded-3xl border border-slate-700 bg-[#1a1d24] p-6">
+            <div className="w-full max-w-[760px] rounded-3xl border border-[#373d4a] bg-[#20242d] p-6 shadow-2xl">
               <div className="mb-4 flex items-center justify-between">
                 <h3 className="text-4xl font-semibold text-slate-100">Invite people</h3>
                 <button
@@ -2607,28 +3186,30 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     setInviteNotice(null);
                     setCopyState('idle');
                   }}
-                  className="rounded-full border border-slate-600 px-3 py-1 text-sm text-slate-300"
+                  className="rounded-full border border-slate-600 p-2 text-sm text-slate-300 hover:border-slate-400"
                 >
                   ×
                 </button>
               </div>
               <p className="text-base text-slate-400">
-                Invite people to join your recording session.
+                Invite people to join your recording session.{' '}
+                <span className="text-[#b692ff]">About studio roles</span>
               </p>
 
               <div className="mt-6 space-y-3">
                 <p className="text-2xl font-semibold text-slate-100">Share a link</p>
-                <div className="grid gap-2 md:grid-cols-[1fr_120px_130px]">
+                <p className="text-sm text-slate-400">Copy the link below and share with others.</p>
+                <div className="grid gap-2 md:grid-cols-[1fr_108px_120px]">
                   <input
                     type="text"
                     readOnly
                     value={inviteLink}
-                    className="rounded-xl border border-slate-700 bg-[#242936] px-3 py-3 text-sm text-slate-100"
+                    className="rounded-xl border border-[#3a4151] bg-[#2b3140] px-3 py-3 text-sm text-slate-100"
                   />
                   <select
                     value={inviteRole}
                     onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
-                    className="rounded-xl border border-slate-700 bg-[#242936] px-3 py-3 text-sm text-slate-100"
+                    className="rounded-xl border border-[#3a4151] bg-[#2b3140] px-3 py-3 text-sm text-slate-100"
                   >
                     <option value="guest">Guest</option>
                   </select>
@@ -2642,22 +3223,29 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 </div>
               </div>
 
-              <div className="my-6 h-px bg-slate-700" />
+              <div className="my-5 flex items-center gap-3">
+                <div className="h-px flex-1 bg-[#404756]" />
+                <span className="text-slate-400">Or</span>
+                <div className="h-px flex-1 bg-[#404756]" />
+              </div>
 
               <div className="space-y-3">
                 <p className="text-2xl font-semibold text-slate-100">Invite via email</p>
-                <div className="grid gap-2 md:grid-cols-[1fr_120px_130px]">
+                <p className="text-sm text-slate-400">
+                  An email with instructions on how to join will be sent to all invitees.
+                </p>
+                <div className="grid gap-2 md:grid-cols-[1fr_108px_120px]">
                   <input
                     type="email"
                     value={inviteEmail}
                     onChange={(event) => setInviteEmail(event.target.value)}
                     placeholder="example@email.com"
-                    className="rounded-xl border border-slate-700 bg-[#242936] px-3 py-3 text-sm text-slate-100 placeholder:text-slate-500"
+                    className="rounded-xl border border-[#3a4151] bg-[#2b3140] px-3 py-3 text-sm text-slate-100 placeholder:text-slate-500"
                   />
                   <select
                     value={inviteRole}
                     onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
-                    className="rounded-xl border border-slate-700 bg-[#242936] px-3 py-3 text-sm text-slate-100"
+                    className="rounded-xl border border-[#3a4151] bg-[#2b3140] px-3 py-3 text-sm text-slate-100"
                   >
                     <option value="guest">Guest</option>
                   </select>

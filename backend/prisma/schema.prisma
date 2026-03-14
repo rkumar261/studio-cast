@@ -1,4 +1,3 @@
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -70,6 +69,46 @@ enum track_chunk_state {
   failed
 }
 
+/**
+ * Canonical lifecycle enums from BRD/TRD. Legacy enums (`recording_status`, `track_state`,
+ * `export_state`) remain for backward-safe rollout while services migrate to these fields.
+ */
+enum recording_lifecycle_state {
+  created
+  preparing
+  recording
+  stopping
+  uploading
+  processing
+  ready
+  failed
+}
+
+enum track_lifecycle_state {
+  registered
+  recording
+  finalized
+  ingest_ready
+  stitched
+  transcoded
+  ready
+  failed
+}
+
+enum asset_state {
+  pending
+  processing
+  ready
+  failed
+}
+
+enum transcript_state {
+  pending
+  processing
+  ready
+  failed
+}
+
 model User {
   id        String   @id @default(uuid()) @db.Uuid
   email     String   @unique @db.Text
@@ -127,28 +166,39 @@ model RefreshToken {
  */
 
 model recording {
-  id         String           @id @default(uuid()) @db.Uuid
-  title      String?
-  status     recording_status @default(draft)
-  created_at DateTime         @default(now()) @db.Timestamptz(6)
-  started_at DateTime?        @db.Timestamptz(6)
-  stopped_at DateTime?        @db.Timestamptz(6)
-  host_participant_id String? @db.Uuid
-  control_version Int         @default(0)
+  id                    String                    @id @default(uuid()) @db.Uuid
+  title                 String?
+  status                recording_status          @default(draft)
+  lifecycle_state       recording_lifecycle_state @default(created)
+  created_at            DateTime                  @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime                  @updatedAt @db.Timestamptz(6)
+  started_at            DateTime?                 @db.Timestamptz(6)
+  stopped_at            DateTime?                 @db.Timestamptz(6)
+  upload_completed_at   DateTime?                 @db.Timestamptz(6)
+  processing_started_at DateTime?                 @db.Timestamptz(6)
+  ready_at              DateTime?                 @db.Timestamptz(6)
+  failed_at             DateTime?                 @db.Timestamptz(6)
+  failure_reason        String?                   @db.Text
+  host_participant_id   String?                   @db.Uuid
+  control_version       Int                       @default(0)
 
-  userId String? @db.Uuid
-  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  userId           String?      @db.Uuid
+  user             User?        @relation(fields: [userId], references: [id], onDelete: SetNull, onUpdate: NoAction)
   host_participant participant? @relation("recording_host_participant", fields: [host_participant_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
   clip               clip[]
   job                job[]
   participant        participant[]
   track              track[]
+  participant_asset  participant_asset[]
+  combined_asset     combined_asset[]
+  transcript         transcript[]
   transcript_segment transcript_segment[]
-  export_artifact    export_artifact[] // 🔹 NEW back-relation
+  export_artifact    export_artifact[]
 
   @@index([userId], map: "idx_recording_user")
   @@index([host_participant_id], map: "idx_recording_host_participant")
+  @@index([lifecycle_state, updated_at], map: "idx_recording_lifecycle_updated")
 }
 
 model participant {
@@ -163,9 +213,10 @@ model participant {
   userId String? @db.Uuid
   user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
-  recording recording @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  track     track[]
-  host_recordings recording[] @relation("recording_host_participant")
+  recording         recording           @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  track             track[]
+  participant_asset participant_asset[]
+  host_recordings   recording[]         @relation("recording_host_participant")
 
   @@index([recording_id])
   @@index([userId], map: "idx_participant_user")
@@ -173,49 +224,62 @@ model participant {
 }
 
 model track {
-  id                String      @id @default(uuid()) @db.Uuid
-  recording_id      String      @db.Uuid
-  participant_id    String      @db.Uuid
-  kind              track_kind
-  codec             String?     @db.Text
-  duration_ms       Int?
-  storage_key_raw   String?     @db.Text
-  storage_key_final String?     @db.Text
-  state             track_state @default(recording)
-  final_seq         Int?
-  capture_closed_at DateTime?   @db.Timestamptz(6)
-  finalize_requested_at DateTime? @db.Timestamptz(6)
-  created_at        DateTime    @default(now()) @db.Timestamptz(6)
+  id                    String                @id @default(uuid()) @db.Uuid
+  recording_id          String                @db.Uuid
+  participant_id        String                @db.Uuid
+  kind                  track_kind
+  codec                 String?               @db.Text
+  duration_ms           Int?
+  storage_key_raw       String?               @db.Text
+  storage_key_final     String?               @db.Text
+  state                 track_state           @default(recording)
+  lifecycle_state       track_lifecycle_state @default(registered)
+  final_seq             Int?
+  capture_closed_at     DateTime?             @db.Timestamptz(6)
+  finalized_at          DateTime?             @db.Timestamptz(6)
+  ingest_ready_at       DateTime?             @db.Timestamptz(6)
+  stitched_at           DateTime?             @db.Timestamptz(6)
+  transcoded_at         DateTime?             @db.Timestamptz(6)
+  ready_at              DateTime?             @db.Timestamptz(6)
+  failed_at             DateTime?             @db.Timestamptz(6)
+  failure_reason        String?               @db.Text
+  finalize_requested_at DateTime?             @db.Timestamptz(6)
+  created_at            DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime              @updatedAt @db.Timestamptz(6)
 
   participant        participant          @relation(fields: [participant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   recording          recording            @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
   track_chunk        track_chunk[]
   upload             upload[]
-  transcript_segment transcript_segment[] // 🔹 NEW back-relation
+  transcript         transcript[]
+  transcript_segment transcript_segment[]
 
   @@index([recording_id], map: "idx_track_recording")
+  @@index([lifecycle_state, updated_at], map: "idx_track_lifecycle_updated")
   @@map("track")
 }
 
 model track_chunk {
-  id              String           @id @default(uuid()) @db.Uuid
-  track_id        String           @db.Uuid
-  seq             Int
-  protocol        String?          @db.Text
-  state           track_chunk_state @default(initiated)
-  bytes_received  BigInt           @default(0)
-  bytes_expected  BigInt?
-  tus_upload_id   String?          @db.Text
-  tus_resource_url String?         @db.Text
-  tus_upload_state String?         @db.Text
-  failure_reason  String?          @db.Text
-  last_error_at   DateTime?        @db.Timestamptz(6)
-  materialized_at DateTime?        @db.Timestamptz(6)
-  storage_key_raw String?          @db.Text
-  etag            String?          @db.Text
-  checksum_sha256 String?          @db.Text
-  created_at      DateTime         @default(now()) @db.Timestamptz(6)
-  updated_at      DateTime         @updatedAt @db.Timestamptz(6)
+  id               String            @id @default(uuid()) @db.Uuid
+  track_id         String            @db.Uuid
+  seq              Int
+  protocol         String?           @db.Text
+  state            track_chunk_state @default(initiated)
+  bytes_received   BigInt            @default(0)
+  bytes_expected   BigInt?
+  tus_upload_id    String?           @db.Text
+  tus_resource_url String?           @db.Text
+  tus_upload_state String?           @db.Text
+  failure_reason   String?           @db.Text
+  last_error_at    DateTime?         @db.Timestamptz(6)
+  materialized_at  DateTime?         @db.Timestamptz(6)
+  uploaded_at      DateTime?         @db.Timestamptz(6)
+  failed_at        DateTime?         @db.Timestamptz(6)
+  storage_key_raw  String?           @db.Text
+  etag             String?           @db.Text
+  checksum_sha256  String?           @db.Text
+  created_at       DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime          @updatedAt @db.Timestamptz(6)
 
   track track @relation(fields: [track_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
@@ -259,6 +323,10 @@ model job {
   state        job_state @default(queued)
   attempts     Int       @default(0)
   last_error   String?   @db.Text
+  started_at   DateTime? @db.Timestamptz(6)
+  completed_at DateTime? @db.Timestamptz(6)
+  failed_at    DateTime? @db.Timestamptz(6)
+  updated_at   DateTime  @updatedAt @db.Timestamptz(6)
   created_at   DateTime  @default(now()) @db.Timestamptz(6)
 
   recording recording @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -268,20 +336,23 @@ model job {
 }
 
 model transcript_segment {
-  id           String   @id @default(uuid()) @db.Uuid
-  recording_id String   @db.Uuid
-  track_id     String?  @db.Uuid // 🔹 NEW: ties segment to a specific track
-  speaker      String?  @db.Text
-  start_ms     Int
-  end_ms       Int
-  text         String   @db.Text
-  confidence   Decimal? @db.Decimal
+  id            String   @id @default(uuid()) @db.Uuid
+  transcript_id String?  @db.Uuid
+  recording_id  String   @db.Uuid
+  track_id      String?  @db.Uuid
+  speaker       String?  @db.Text
+  start_ms      Int
+  end_ms        Int
+  text          String   @db.Text
+  confidence    Decimal? @db.Decimal
 
-  recording recording @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  track     track?    @relation(fields: [track_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  transcript transcript? @relation(fields: [transcript_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  recording  recording   @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  track      track?      @relation(fields: [track_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
+  @@index([transcript_id], map: "idx_transcript_segment_transcript")
   @@index([recording_id], map: "idx_transcript_recording")
-  @@index([track_id], map: "idx_transcript_track") // 🔹 helpful for per-track queries
+  @@index([track_id], map: "idx_transcript_track")
   @@map("transcript_segment")
 }
 
@@ -310,17 +381,116 @@ model UploadTusMap {
 }
 
 model export_artifact {
-  id           String       @id @default(uuid()) @db.Uuid
-  recording_id String       @db.Uuid
-  type         export_type
-  state        export_state @default(queued)
-  storage_key  String?      @db.Text
-  last_error   String?      @db.Text
-  created_at   DateTime     @default(now()) @db.Timestamptz(6)
-  updated_at   DateTime     @updatedAt @db.Timestamptz(6)
+  id                   String       @id @default(uuid()) @db.Uuid
+  recording_id         String       @db.Uuid
+  participant_asset_id String?      @db.Uuid
+  combined_asset_id    String?      @db.Uuid
+  transcript_id        String?      @db.Uuid
+  type                 export_type
+  state                export_state @default(queued)
+  storage_key          String?      @db.Text
+  last_error           String?      @db.Text
+  started_at           DateTime?    @db.Timestamptz(6)
+  ready_at             DateTime?    @db.Timestamptz(6)
+  failed_at            DateTime?    @db.Timestamptz(6)
+  failure_reason       String?      @db.Text
+  created_at           DateTime     @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime     @updatedAt @db.Timestamptz(6)
 
-  recording recording @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  recording         recording          @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  participant_asset participant_asset? @relation("participant_asset_exports", fields: [participant_asset_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  combined_asset    combined_asset?    @relation("combined_asset_exports", fields: [combined_asset_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  transcript        transcript?        @relation("transcript_exports", fields: [transcript_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
 
   @@index([recording_id], map: "idx_export_recording")
+  @@index([participant_asset_id], map: "idx_export_participant_asset")
+  @@index([combined_asset_id], map: "idx_export_combined_asset")
+  @@index([transcript_id], map: "idx_export_transcript")
+  @@index([state, updated_at], map: "idx_export_state_updated")
   @@map("export_artifact")
+}
+
+model participant_asset {
+  id                    String      @id @default(uuid()) @db.Uuid
+  recording_id          String      @db.Uuid
+  participant_id        String      @db.Uuid
+  state                 asset_state @default(pending)
+  storage_key           String?     @db.Text
+  preview_key           String?     @db.Text
+  metadata_json         Json?
+  export_set_json       Json?
+  duration_ms           Int?
+  resolution            String?     @db.Text
+  processing_started_at DateTime?   @db.Timestamptz(6)
+  ready_at              DateTime?   @db.Timestamptz(6)
+  failed_at             DateTime?   @db.Timestamptz(6)
+  failure_reason        String?     @db.Text
+  created_at            DateTime    @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime    @updatedAt @db.Timestamptz(6)
+
+  recording       recording         @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  participant     participant       @relation(fields: [participant_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  export_artifact export_artifact[] @relation("participant_asset_exports")
+
+  @@index([recording_id], map: "idx_participant_asset_recording")
+  @@index([participant_id], map: "idx_participant_asset_participant")
+  @@index([state, updated_at], map: "idx_participant_asset_state_updated")
+  @@unique([recording_id, participant_id], map: "uq_participant_asset_recording_participant")
+  @@map("participant_asset")
+}
+
+model combined_asset {
+  id                    String      @id @default(uuid()) @db.Uuid
+  recording_id          String      @unique(map: "uq_combined_asset_recording") @db.Uuid
+  state                 asset_state @default(pending)
+  storage_key           String?     @db.Text
+  preview_key           String?     @db.Text
+  metadata_json         Json?
+  export_set_json       Json?
+  duration_ms           Int?
+  resolution            String?     @db.Text
+  processing_started_at DateTime?   @db.Timestamptz(6)
+  ready_at              DateTime?   @db.Timestamptz(6)
+  failed_at             DateTime?   @db.Timestamptz(6)
+  failure_reason        String?     @db.Text
+  created_at            DateTime    @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime    @updatedAt @db.Timestamptz(6)
+
+  recording       recording         @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  export_artifact export_artifact[] @relation("combined_asset_exports")
+
+  @@index([state, updated_at], map: "idx_combined_asset_state_updated")
+  @@map("combined_asset")
+}
+
+model transcript {
+  id                    String           @id @default(uuid()) @db.Uuid
+  recording_id          String           @db.Uuid
+  track_id              String?          @db.Uuid
+  revision              Int              @default(1)
+  state                 transcript_state @default(pending)
+  language              String?          @db.Text
+  source_type           String?          @db.Text
+  source_asset_id       String?          @db.Uuid
+  storage_key           String?          @db.Text
+  segment_count         Int              @default(0)
+  metadata_json         Json?
+  processing_started_at DateTime?        @db.Timestamptz(6)
+  published_at          DateTime?        @db.Timestamptz(6)
+  ready_at              DateTime?        @db.Timestamptz(6)
+  failed_at             DateTime?        @db.Timestamptz(6)
+  failure_reason        String?          @db.Text
+  created_at            DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime         @updatedAt @db.Timestamptz(6)
+
+  recording          recording            @relation(fields: [recording_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  track              track?               @relation(fields: [track_id], references: [id], onDelete: SetNull, onUpdate: NoAction)
+  transcript_segment transcript_segment[]
+  export_artifact    export_artifact[]    @relation("transcript_exports")
+
+  @@index([recording_id], map: "idx_transcript_row_recording")
+  @@index([recording_id, revision], map: "idx_transcript_recording_revision")
+  @@index([track_id], map: "idx_transcript_row_track")
+  @@index([state, updated_at], map: "idx_transcript_state_updated")
+  @@map("transcript")
 }

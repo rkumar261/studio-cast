@@ -3,7 +3,7 @@
 This checklist validates release criteria for the full recording path:
 - Host-controlled session
 - Multi-guest room behavior (LiveKit path)
-- Chunk upload completion (tus/multipart)
+- Chunk upload completion (live path: TUS-only)
 - Export readiness gate (`wav`, `mp4`, `mp4_captions`)
 
 ## Automated Gate

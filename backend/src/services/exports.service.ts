@@ -17,6 +17,7 @@ import {
 } from '../repositories/export.repo.js';
 import { getRecordingService } from './recordings.service.js';
 import { createJob } from '../repositories/job.repo.js';
+import { prisma } from '../lib/prisma.js';
 
 // NEW imports for signed R2 download URLs
 import { GetObjectCommand } from '@aws-sdk/client-s3';
@@ -45,8 +46,15 @@ function mapExportRowToDto(row: any): ExportDto {
         recordingId: row.recording_id,
         type: row.type,
         state: row.state,
+        combinedAssetId: row.combined_asset_id ?? undefined,
+        participantAssetId: row.participant_asset_id ?? undefined,
+        transcriptId: row.transcript_id ?? undefined,
         storageKey: row.storage_key ?? undefined,
         lastError: row.last_error ?? undefined,
+        failureReason: row.failure_reason ?? undefined,
+        startedAt: row.started_at?.toISOString(),
+        readyAt: row.ready_at?.toISOString(),
+        failedAt: row.failed_at?.toISOString(),
         createdAt: row.created_at.toISOString(),
         updatedAt: row.updated_at.toISOString(),
     };
@@ -95,10 +103,22 @@ export async function createExportService(
     if (recResult.code === 'not_found') return { code: 'not_found' };
     if (recResult.code === 'forbidden') return { code: 'forbidden' };
 
+    const defaultScope =
+        type === export_type.mp4 || type === export_type.mp4_captions
+            ? await prisma.combined_asset.findUnique({
+                where: { recording_id: recordingId },
+                select: { id: true },
+              })
+            : null;
+
     // idempotency: reuse existing export if any
-    const existing = await findActiveExportForRecording(recordingId, type);
+    const existing = await findActiveExportForRecording(recordingId, type, {
+        combinedAssetId: defaultScope?.id ?? null,
+    });
     const exportRow =
-        existing ?? (await createExportArtifact(recordingId, type));
+        existing ?? (await createExportArtifact(recordingId, type, {
+            combinedAssetId: defaultScope?.id ?? null,
+        }));
 
     // if we just created it, enqueue export job
     if (!existing) {

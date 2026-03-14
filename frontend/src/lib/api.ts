@@ -1,4 +1,10 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE!;
+type ApiAuthMode = 'default' | 'guest';
+let apiAuthMode: ApiAuthMode = 'default';
+
+export function setApiAuthMode(mode: ApiAuthMode) {
+  apiAuthMode = mode;
+}
 
 export type TrackDto = {
   id: string;
@@ -40,7 +46,8 @@ async function api<T>(
     cache: 'no-store',
   });
 
-  if (res.status === 401 && retryOnAuth && path !== '/auth/refresh') {
+  const canAttemptRefresh = retryOnAuth && apiAuthMode !== 'guest' && path !== '/auth/refresh';
+  if (res.status === 401 && canAttemptRefresh) {
     const refreshed = await tryRefreshSession().catch(() => false);
     if (refreshed) {
       return api<T>(path, options, false);
@@ -88,11 +95,18 @@ async function api<T>(
 export const AuthAPI = {
   me: async () => {
     const data = await api<{ user: { id: string; email: string; name?: string; imageUrl?: string } }>('/auth/me');
+    setApiAuthMode('default');
     return data.user; // unwrap here
   },
-  logout: () => fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' }),
+  logout: () => {
+    setApiAuthMode('default');
+    return fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' });
+  },
   // Google OAuth start is a redirect; just bounce the browser:
-  googleStart: () => { window.location.href = `${API_BASE}/auth/oauth/google/start`; },
+  googleStart: () => {
+    setApiAuthMode('default');
+    window.location.href = `${API_BASE}/auth/oauth/google/start`;
+  },
 };
 
 // ---- Recordings ----
@@ -108,6 +122,69 @@ export type ListRecordingsResponse = {
 export type GetRecordingResponse = {
   recording: { id: string; title?: string; status: string; createdAt: string };
   tracks: TrackDto[];
+};
+
+export type ProjectAssetState = 'missing' | 'pending' | 'processing' | 'ready' | 'failed';
+
+export type ProjectAssetActionDto = {
+  id: string;
+  label: string;
+  kind: 'open_url' | 'api';
+  href: string;
+  method: 'GET';
+};
+
+export type ProjectMediaAssetDto = {
+  id: string;
+  kind: 'combined' | 'participant';
+  label: string;
+  state: ProjectAssetState;
+  badges: string[];
+  durationMs?: number;
+  previewUrl?: string;
+  actions: ProjectAssetActionDto[];
+  participant?: {
+    id: string;
+    role: string;
+    name?: string;
+  };
+};
+
+export type ProjectTranscriptAssetDto = {
+  label: string;
+  state: ProjectAssetState;
+  badges: string[];
+  previewUrl?: string;
+  actions: ProjectAssetActionDto[];
+};
+
+export type ProjectExportAssetDto = {
+  type: 'wav' | 'mp4' | 'mp4_captions';
+  label: string;
+  state: ProjectAssetState;
+  badges: string[];
+  actions: ProjectAssetActionDto[];
+};
+
+export type GetProjectAssetsGraphResponse = {
+  project: {
+    recordingId: string;
+    title?: string;
+    status: string;
+    label: string;
+  };
+  combinedAsset: ProjectMediaAssetDto;
+  participantAssets: ProjectMediaAssetDto[];
+  transcript: ProjectTranscriptAssetDto;
+  captions: ProjectTranscriptAssetDto;
+  exports: {
+    requiredTotal: number;
+    ready: number;
+    processing: number;
+    failed: number;
+    missing: number;
+    items: ProjectExportAssetDto[];
+  };
 };
 
 export type RecordingSessionDto = {
@@ -256,7 +333,8 @@ export type FinalizeTrackResponse = {
 export type InitiateTrackChunkRequest = {
   trackId: string;
   seq: number;
-  protocol: 'tus' | 'multipart';
+  // Live recording transport is TUS-only.
+  protocol: 'tus';
   bytesExpected?: number;
 };
 
@@ -309,21 +387,14 @@ export type InitiateTrackChunkResponse = {
 };
 
 export type CompleteTrackChunkRequest = {
-  protocol: 'tus' | 'multipart';
+  // Live recording transport is TUS-only.
+  protocol: 'tus';
   bytesReceived?: number;
   storageKeyRaw?: string;
   etag?: string;
   checksumSha256?: string;
   tusUrl?: string;
 };
-
-export type InitiateMultipartTrackChunkRequest = {
-  trackId: string;
-  seq: number;
-  bytesExpected?: number;
-};
-
-export type CompleteMultipartTrackChunkRequest = Omit<CompleteTrackChunkRequest, 'protocol'>;
 
 export type CompleteTrackChunkResponse = {
   chunk: {
@@ -392,6 +463,8 @@ export const RecordingsAPI = {
   listMine: (limit = 20, cursor?: string) =>
     api<ListRecordingsResponse>(`/v1/recordings?owner=me&limit=${limit}${cursor ? `&cursor=${cursor}` : ''}`),
   getById: (id: string) => api<GetRecordingResponse>(`/v1/recordings/${id}`),
+  getProjectAssets: (id: string) =>
+    api<GetProjectAssetsGraphResponse>(`/v1/recordings/${id}/project-assets`),
   getSession: (id: string) =>
     api<RecordingSessionResponse>(`/v1/recordings/${id}/session`),
   startSession: (id: string) =>
@@ -426,16 +499,6 @@ export const RecordingsAPI = {
       method: 'POST',
       body: JSON.stringify(body),
     }),
-  initiateChunkMultipart: (id: string, body: InitiateMultipartTrackChunkRequest) =>
-    api<InitiateTrackChunkResponse>(`/v1/recordings/${id}/chunks/multipart/initiate`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
-  completeChunkMultipart: (id: string, chunkId: string, body: CompleteMultipartTrackChunkRequest) =>
-    api<CompleteTrackChunkResponse>(`/v1/recordings/${id}/chunks/multipart/${chunkId}/complete`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
 };
 
 // ---- Participants ----
@@ -453,11 +516,22 @@ export type ClaimGuestParticipantResponse = {
 };
 
 export const ParticipantsAPI = {
-  claimGuest: (token: string) =>
-    api<ClaimGuestParticipantResponse>('/v1/participants/claim', {
+  bootstrapGuest: async (payload: { token: string; displayName: string; email?: string }) => {
+    const response = await api<ClaimGuestParticipantResponse>('/v1/guest/bootstrap', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    setApiAuthMode('guest');
+    return response;
+  },
+  claimGuest: async (token: string) => {
+    const response = await api<ClaimGuestParticipantResponse>('/v1/participants/claim', {
       method: 'POST',
       body: JSON.stringify({ token }),
-    }),
+    });
+    setApiAuthMode('guest');
+    return response;
+  },
   create: (recordingId: string, payload: { role: 'host' | 'guest'; displayName: string; email?: string }) =>
     api<CreateParticipantResponse>(`/v1/recordings/${recordingId}/participants`, {
       method: 'POST',
@@ -575,14 +649,50 @@ export type TranscriptSegmentDto = {
   confidence: number | null;
 };
 
+export type TranscriptAssetDto = {
+  id?: string;
+  state: 'pending' | 'processing' | 'ready' | 'failed';
+  revision: number;
+  language?: string;
+  sourceType?: string;
+  sourceAssetId?: string;
+  segmentCount: number;
+  processingStartedAt?: string;
+  publishedAt?: string;
+  readyAt?: string;
+  failedAt?: string;
+  failureReason?: string;
+};
+
 export type GetTranscriptResponse = {
   recordingId: string;
-  segments: TranscriptSegmentDto[]
+  transcript: TranscriptAssetDto;
+  segments: TranscriptSegmentDto[];
+};
+
+export type SaveTranscriptSegmentInput = {
+  trackId?: string | null;
+  startMs: number;
+  endMs: number;
+  text: string;
+  speaker?: string | null;
+  confidence?: number | null;
+};
+
+export type SaveTranscriptRequest = {
+  baseRevision?: number;
+  publish?: boolean;
+  segments: SaveTranscriptSegmentInput[];
 };
 
 export const TranscriptAPI = {
   getForRecording: (recordingId: string) =>
     api<GetTranscriptResponse>(`/v1/recordings/${recordingId}/transcript`),
+  saveRevision: (recordingId: string, body: SaveTranscriptRequest) =>
+    api<GetTranscriptResponse>(`/v1/recordings/${recordingId}/transcript`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
 };
 
 // --- Exports types & API ---
@@ -594,8 +704,15 @@ export type ExportDto = {
   recordingId: string;
   type: ExportType;
   state: ExportState;
+  combinedAssetId?: string;
+  participantAssetId?: string;
+  transcriptId?: string;
   storageKey?: string;
   lastError?: string;
+  failureReason?: string;
+  startedAt?: string;
+  readyAt?: string;
+  failedAt?: string;
   createdAt: string;
   updatedAt: string;
 };
