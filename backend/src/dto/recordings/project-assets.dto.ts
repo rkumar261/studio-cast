@@ -16,6 +16,7 @@ export type ProjectMediaAssetDto = {
   badges: string[];
   durationMs?: number;
   previewUrl?: string;
+  blockedReason?: string;
   actions: ProjectAssetActionDto[];
   participant?: {
     id: string;
@@ -29,6 +30,7 @@ export type ProjectTranscriptAssetDto = {
   state: ProjectAssetState;
   badges: string[];
   previewUrl?: string;
+  blockedReason?: string;
   actions: ProjectAssetActionDto[];
 };
 
@@ -37,6 +39,7 @@ export type ProjectExportAssetDto = {
   label: string;
   state: ProjectAssetState;
   badges: string[];
+  blockedReason?: string;
   actions: ProjectAssetActionDto[];
 };
 

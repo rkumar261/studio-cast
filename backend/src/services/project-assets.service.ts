@@ -91,6 +91,7 @@ export async function getProjectAssetsGraphService(args: {
           storage_key: true,
           preview_key: true,
           duration_ms: true,
+          failure_reason: true,
         },
       },
       participant_asset: {
@@ -102,6 +103,7 @@ export async function getProjectAssetsGraphService(args: {
           storage_key: true,
           preview_key: true,
           duration_ms: true,
+          failure_reason: true,
           participant: {
             select: {
               role: true,
@@ -176,6 +178,7 @@ export async function getProjectAssetsGraphService(args: {
       badges: [toBadge(state), asset.participant.role === 'host' ? 'Host' : 'Guest'],
       durationMs: asset.duration_ms ?? undefined,
       previewUrl,
+      blockedReason: state === 'failed' ? (asset.failure_reason ?? undefined) : undefined,
       actions: actionForOpenUrl('Download', previewUrl),
       participant: {
         id: asset.participant_id,
@@ -219,6 +222,7 @@ export async function getProjectAssetsGraphService(args: {
       label: entry.label,
       state,
       badges: [toBadge(state)],
+      blockedReason: state === 'failed' ? (entry.row?.last_error ?? undefined) : undefined,
       actions,
     };
   });
@@ -257,6 +261,7 @@ export async function getProjectAssetsGraphService(args: {
       badges: [toBadge(combinedState)],
       durationMs: combinedAssetRow?.duration_ms ?? undefined,
       previewUrl: combinedPreviewUrl,
+      blockedReason: combinedState === 'failed' ? (combinedAssetRow?.failure_reason ?? undefined) : undefined,
       actions: actionForOpenUrl('Play', combinedPreviewUrl),
     },
     participantAssets,

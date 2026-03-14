@@ -149,6 +149,18 @@ test('GET /v1/recordings/:id/project-assets returns user-facing project asset gr
     assert.ok(mp4Export);
     assert.equal(mp4Export.state, 'ready');
     assert.equal(mp4Export.actions[0].href, '/v1/exports/export-mp4');
+    assert.equal(mp4Export.blockedReason, undefined);
+
+    const captionsExport = body.exports.items.find((item: any) => item.type === 'mp4_captions');
+    assert.ok(captionsExport);
+    assert.equal(captionsExport.state, 'failed');
+    assert.equal(captionsExport.blockedReason, 'captions_failed');
+
+    const guestAsset = body.participantAssets.find((a: any) => a.participant?.role === 'guest');
+    assert.ok(guestAsset);
+    assert.equal(guestAsset.state, 'processing');
+    assert.equal(guestAsset.blockedReason, undefined);
+
     assert.equal((body as any).tracks, undefined);
   } finally {
     for (const restore of restores.reverse()) restore();
