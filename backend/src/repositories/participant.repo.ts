@@ -6,6 +6,7 @@ export  type ParticipantCreateInput = {
     displayName?: string;
     email?: string;
     magicLinkHash?: string;
+    inviteExpiresAt?: Date | null;
     userId?: string | null;
 };
 
@@ -18,6 +19,7 @@ export async function createParticipant(input: ParticipantCreateInput) {
             display_name: input.displayName ?? null,
             email: input.email ?? null,
             magic_link_hash: input.magicLinkHash ?? null,
+            invite_expires_at: input.inviteExpiresAt ?? null,
             userId: input.userId ?? null,
         }
     });

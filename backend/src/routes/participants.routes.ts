@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { createHash } from 'crypto';
 import { CreateParticipantRequestBody, CreateParticipantResponse } from '../dto/participants/create.dto.js';
 import type {
   BootstrapGuestParticipantBody,
@@ -17,6 +18,12 @@ import { emitTelemetry } from '../lib/telemetry.js';
 
 const COOKIE_SECURE = String(process.env.COOKIE_SECURE ?? 'false') === 'true';
 
+function inviteTokenHashPrefix(token: string | undefined): string | undefined {
+  const normalized = token?.trim();
+  if (!normalized) return undefined;
+  return createHash('sha256').update(normalized).digest('hex').slice(0, 12);
+}
+
 export default async function participantRoutes(app: FastifyInstance) {
   app.post<{ Body: BootstrapGuestParticipantBody }>(
     '/v1/guest/bootstrap',
@@ -24,9 +31,31 @@ export default async function participantRoutes(app: FastifyInstance) {
       const body = req.body ?? { token: '', displayName: '' };
       const result = await bootstrapGuestParticipantService(body);
       if (result.code === 'invalid_token') {
+        emitTelemetry({
+          logger: req.log,
+          level: 'warn',
+          event: 'guest.bootstrap.rejected',
+          message: 'Guest bootstrap rejected',
+          actorKind: 'guest',
+          reason: result.reason,
+          inviteTokenHashPrefix: inviteTokenHashPrefix(body.token),
+          ip: req.ip,
+          userAgent: req.headers['user-agent'] ?? null,
+        });
         return res.code(401).send({ code: 'invalid_token', message: 'Invalid or expired guest invite token' });
       }
       if (result.code === 'invalid_display_name') {
+        emitTelemetry({
+          logger: req.log,
+          level: 'warn',
+          event: 'guest.bootstrap.rejected',
+          message: 'Guest bootstrap rejected',
+          actorKind: 'guest',
+          reason: 'invalid_display_name',
+          inviteTokenHashPrefix: inviteTokenHashPrefix(body.token),
+          ip: req.ip,
+          userAgent: req.headers['user-agent'] ?? null,
+        });
         return res.code(422).send({ code: 'invalid_display_name', message: result.message });
       }
 
@@ -60,6 +89,17 @@ export default async function participantRoutes(app: FastifyInstance) {
       const body = req.body ?? { token: '' };
       const result = await claimGuestParticipantService(body);
       if (result.code === 'invalid_token') {
+        emitTelemetry({
+          logger: req.log,
+          level: 'warn',
+          event: 'guest.claim.rejected',
+          message: 'Guest claim rejected',
+          actorKind: 'guest',
+          reason: result.reason,
+          inviteTokenHashPrefix: inviteTokenHashPrefix(body.token),
+          ip: req.ip,
+          userAgent: req.headers['user-agent'] ?? null,
+        });
         return res.code(401).send({ code: 'invalid_token', message: 'Invalid or expired guest invite token' });
       }
 

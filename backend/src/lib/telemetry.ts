@@ -8,7 +8,10 @@ type LoggerLike = {
 
 export const TASK17_TELEMETRY_EVENTS = [
   'guest.bootstrap.accepted',
+  'guest.bootstrap.rejected',
   'guest.claim.accepted',
+  'guest.claim.rejected',
+  'guest.access.blocked',
   'guest.joined.session',
   'recording.session.started',
   'recording.session.stopped',
@@ -124,4 +127,3 @@ export function emitTelemetry(args: EmitTelemetryArgs) {
   }
   console.log(line);
 }
-

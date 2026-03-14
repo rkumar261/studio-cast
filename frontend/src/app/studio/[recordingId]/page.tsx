@@ -17,6 +17,7 @@ import {
   type RollingRecorderChunk,
   type RollingRecorderSource,
 } from '@/lib/studio/useRollingChunkRecorder';
+import { deriveStudioUiAccess } from '@/lib/studio/access';
 import { useChunkUploadQueue, type ChunkUploadProtocol } from '@/lib/studio/useChunkUploadQueue';
 import { useSession } from '@/lib/useSession';
 import {
@@ -1623,9 +1624,6 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         const canFallbackToMesh = sessionMode === 'meet' || allowStudioMeshFallback;
         if (!canFallbackToMesh) {
           setFallbackNotice('LiveKit connection failed. Retry to rejoin. Mesh fallback is disabled in studio mode.');
-          if (sessionMode === 'meet') {
-            startPreJoinPreview();
-          }
           return false;
         }
 
@@ -1948,6 +1946,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   const localStudioRole: 'host' | 'guest' = canControlRecording ? 'host' : 'guest';
   const localStudioRoleLabel = localStudioRole === 'host' ? 'Host' : 'Guest';
+  const studioUiAccess = deriveStudioUiAccess(localStudioRole);
   const localParticipantProgress = progressParticipants.find((participant) =>
     recorderParticipantId
       ? participant.participantId === recorderParticipantId
@@ -2069,6 +2068,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     localStudioRole === 'host' &&
     hostStudioLifecyclePhase !== null &&
     hostStudioLifecyclePhase !== 'recording';
+  const uploadStatusPhase =
+    localStudioRole === 'host' && hostStudioLifecyclePhase && hostStudioLifecyclePhase !== 'recording'
+      ? hostStudioLifecyclePhase
+      : undefined;
   const uploadOverlayOpen =
     localStudioRole === 'host'
       ? hostUploadOverlayOpen
@@ -2134,7 +2137,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
     const result = await ParticipantsAPI.create(recordingId, {
       role,
-      displayName: `${role === 'host' ? 'Host' : 'Guest'} ${Date.now()}`,
+      displayName: `Guest ${Date.now()}`,
     });
     const participantId = result.participant.id;
     const guestToken = tokenFromMagicLink(result.magicLink);
@@ -2698,13 +2701,15 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   {uploadChipLabel}
                 </span>
               )}
-              <button
-                type="button"
-                className="flex items-center rounded-2xl border border-[#2a2f3b] bg-[#1c212e] px-4 py-2 text-sm font-medium hover:border-slate-500"
-              >
-                <span className="mr-1.5 text-lg">+</span>
-                Live stream
-              </button>
+              {studioUiAccess.canUseBroadcastControls && (
+                <button
+                  type="button"
+                  className="flex items-center rounded-2xl border border-[#2a2f3b] bg-[#1c212e] px-4 py-2 text-sm font-medium hover:border-slate-500"
+                >
+                  <span className="mr-1.5 text-lg">+</span>
+                  Live stream
+                </button>
+              )}
               <button
                 type="button"
                 className="flex h-10 w-10 items-center justify-center rounded-2xl border border-[#2a2f3b] bg-[#1c212e] text-sm"
@@ -2717,18 +2722,20 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               >
                 ⚙
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsInviteModalOpen(true);
-                  setShowAddParticipantPanel(false);
-                  setInviteNotice(null);
-                  setCopyState('idle');
-                }}
-                className="rounded-2xl border border-[#2a2f3b] bg-[#1c212e] px-4 py-2 text-sm font-medium hover:border-slate-500"
-              >
-                Invite
-              </button>
+              {studioUiAccess.canSendInvites && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsInviteModalOpen(true);
+                    setShowAddParticipantPanel(false);
+                    setInviteNotice(null);
+                    setCopyState('idle');
+                  }}
+                  className="rounded-2xl border border-[#2a2f3b] bg-[#1c212e] px-4 py-2 text-sm font-medium hover:border-slate-500"
+                >
+                  Invite
+                </button>
+              )}
             </div>
           </header>
 
@@ -2765,7 +2772,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           <div className="mt-3 flex min-h-0 flex-1 gap-4">
             <section className="flex min-h-0 flex-1 flex-col rounded-3xl bg-[#090b10] p-3">
               <div className={`flex min-h-0 flex-1 gap-3 ${shouldReserveUploadBarSpace ? 'mb-20' : ''}`}>
-                {showStudioInvitePanel && (
+                {studioUiAccess.canSendInvites && showStudioInvitePanel && (
                   <aside className="hidden w-[400px] shrink-0 rounded-3xl border border-[#2b303d] bg-[#1e222b] p-6 xl:flex xl:flex-col">
                     <div className="mb-8 flex items-start justify-between">
                       <h2 className="max-w-[260px] text-[44px] font-semibold leading-[0.98] text-slate-100">
@@ -2820,7 +2827,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 <div className="flex min-h-0 flex-1 rounded-3xl bg-[#05070c] p-2">
                   <div
                     className={`grid h-full w-full gap-3 ${
-                      showStudioInvitePanel ? 'mx-auto max-w-[980px]' : ''
+                      studioUiAccess.canSendInvites && showStudioInvitePanel ? 'mx-auto max-w-[980px]' : ''
                     } ${stageGridClass}`}
                   >
                     {visibleTiles.map((tile) => {
@@ -3033,7 +3040,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     ))}
                   </div>
 
-                  {showAddParticipantPanel && (
+                  {studioUiAccess.canManageParticipants && showAddParticipantPanel && (
                     <div className="mt-4 rounded-xl border border-[#2f3544] bg-[#242a36] p-3">
                       <button
                         type="button"
@@ -3064,13 +3071,15 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     </div>
                   )}
 
-                  <button
-                    type="button"
-                    onClick={() => setShowAddParticipantPanel((prev) => !prev)}
-                    className="mt-4 w-full rounded-xl border border-[#3a4051] bg-[#252b37] px-3 py-2.5 text-lg text-slate-100 hover:border-slate-500"
-                  >
-                    + Add participant
-                  </button>
+                  {studioUiAccess.canManageParticipants && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAddParticipantPanel((prev) => !prev)}
+                      className="mt-4 w-full rounded-xl border border-[#3a4051] bg-[#252b37] px-3 py-2.5 text-lg text-slate-100 hover:border-slate-500"
+                    >
+                      + Add participant
+                    </button>
+                  )}
                 </aside>
               )}
 
@@ -3134,7 +3143,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           open={uploadOverlayOpen}
           participants={progressParticipants}
           canOpenProject={canOpenProject}
-          phase={localStudioRole === 'host' ? hostStudioLifecyclePhase ?? undefined : undefined}
+          phase={uploadStatusPhase}
           variant={localStudioRole === 'host' ? 'floating' : 'modal'}
           floatingLayout={localStudioRole === 'host' ? floatingUploadLayout : undefined}
           summary={
@@ -3174,7 +3183,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           }}
         />
 
-        {isInviteModalOpen && (
+        {studioUiAccess.canSendInvites && isInviteModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
             <div className="w-full max-w-[760px] rounded-3xl border border-[#373d4a] bg-[#20242d] p-6 shadow-2xl">
               <div className="mb-4 flex items-center justify-between">

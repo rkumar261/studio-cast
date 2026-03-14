@@ -8,7 +8,7 @@ process.env.JWT_PRIVATE_KEY_PATH ??= fileURLToPath(new URL('../../certs/jwtRS256
 process.env.JWT_PUBLIC_KEY_PATH ??= fileURLToPath(new URL('../../certs/jwtRS256.key.pub', import.meta.url));
 process.env.R2_PUBLIC_BASE_URL ??= 'https://cdn.example.com/riverside-lite';
 
-const [{ default: recordingRoutes }, { signAccessJwt }] = await Promise.all([
+const [{ default: recordingRoutes }, { signAccessJwt, signGuestAccessJwt }] = await Promise.all([
   import('./recordings.routes.js'),
   import('../lib/jwt.js'),
 ]);
@@ -295,6 +295,43 @@ test('GET /v1/recordings/:id/project-assets returns 404 when recording does not 
 
     assert.equal(response.statusCode, 404);
     assert.deepEqual(response.json(), { code: 'not_found', message: 'Recording not found' });
+  } finally {
+    for (const restore of restores.reverse()) restore();
+    await app.close();
+  }
+});
+
+test('GET /v1/recordings/:id/project-assets rejects invited guest principal', async () => {
+  const restores: Array<() => void> = [];
+  const app = Fastify();
+
+  try {
+    await app.register(recordingRoutes);
+    const guestToken = await signGuestAccessJwt({
+      participantId: 'participant-guest-1',
+      recordingId: 'rec-1',
+    });
+
+    restores.push(
+      stubMethod(prisma.participant, 'findUnique', async () => ({
+        id: 'participant-guest-1',
+        recording_id: 'rec-1',
+        role: 'guest',
+        display_name: 'Guest One',
+        email: null,
+      }))
+    );
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/recordings/rec-1/project-assets',
+      headers: {
+        authorization: `Bearer ${guestToken}`,
+      },
+    });
+
+    assert.equal(response.statusCode, 403);
+    assert.deepEqual(response.json(), { code: 'forbidden', message: 'Not allowed' });
   } finally {
     for (const restore of restores.reverse()) restore();
     await app.close();

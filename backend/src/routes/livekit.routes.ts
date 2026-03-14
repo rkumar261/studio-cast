@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { AccessToken } from 'livekit-server-sdk';
 import { authGuard } from '../middlewares/auth.guard.js';
 import { getRequestPrincipal } from '../lib/request-principal.js';
+import { emitTelemetry } from '../lib/telemetry.js';
 
 type LivekitTokenBody = {
   roomName: string;
@@ -37,6 +38,20 @@ export default async function livekitRoutes(app: FastifyInstance) {
           .send({ error: 'bad_request', message: 'roomName is required' });
       }
       if (principal.kind === 'guest' && principal.recordingId !== roomName) {
+        emitTelemetry({
+          logger: req.log,
+          level: 'warn',
+          event: 'guest.access.blocked',
+          message: 'Guest LiveKit token request blocked',
+          actorKind: 'guest',
+          recordingId: principal.recordingId,
+          participantId: principal.participantId,
+          action: 'livekit_token',
+          targetRecordingId: roomName,
+          reason: 'recording_scope_mismatch',
+          ip: req.ip,
+          userAgent: req.headers['user-agent'] ?? null,
+        });
         return res
           .code(403)
           .send({ error: 'forbidden', message: 'Guest token request is out of recording scope' });

@@ -183,3 +183,173 @@ test('GET /v1/recordings/:id/session allows invited guest principal', async () =
     await app.close();
   }
 });
+
+test('GET /v1/recordings/:id rejects invited guest principal', async () => {
+  const restores: Array<() => void> = [];
+  const app = Fastify();
+
+  try {
+    await app.register(recordingRoutes);
+    const guestToken = await signGuestAccessJwt({
+      participantId: 'participant-guest-1',
+      recordingId: 'rec-1',
+    });
+
+    restores.push(
+      stubMethod(prisma.participant, 'findUnique', async () => ({
+        id: 'participant-guest-1',
+        recording_id: 'rec-1',
+        role: 'guest',
+        display_name: 'Guest One',
+        email: null,
+      }))
+    );
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/recordings/rec-1',
+      headers: {
+        authorization: `Bearer ${guestToken}`,
+      },
+    });
+
+    assert.equal(response.statusCode, 403);
+    assert.deepEqual(response.json(), { code: 'forbidden', message: 'Not allowed' });
+  } finally {
+    for (const restore of restores.reverse()) restore();
+    await app.close();
+  }
+});
+
+test('GET /v1/recordings rejects invited guest principal', async () => {
+  const restores: Array<() => void> = [];
+  const app = Fastify();
+
+  try {
+    await app.register(recordingRoutes);
+    const guestToken = await signGuestAccessJwt({
+      participantId: 'participant-guest-1',
+      recordingId: 'rec-1',
+    });
+
+    restores.push(
+      stubMethod(prisma.participant, 'findUnique', async () => ({
+        id: 'participant-guest-1',
+        recording_id: 'rec-1',
+        role: 'guest',
+        display_name: 'Guest One',
+        email: null,
+      }))
+    );
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/recordings',
+      headers: {
+        authorization: `Bearer ${guestToken}`,
+      },
+    });
+
+    assert.equal(response.statusCode, 403);
+    assert.deepEqual(response.json(), { code: 'forbidden', message: 'Not allowed' });
+  } finally {
+    for (const restore of restores.reverse()) restore();
+    await app.close();
+  }
+});
+
+test('POST /v1/recordings/:id/session/start rejects invited guest principal', async () => {
+  const restores: Array<() => void> = [];
+  const app = Fastify();
+
+  try {
+    await app.register(recordingRoutes);
+    const guestToken = await signGuestAccessJwt({
+      participantId: 'participant-guest-1',
+      recordingId: 'rec-1',
+    });
+
+    restores.push(
+      stubMethod(prisma.participant, 'findUnique', async () => ({
+        id: 'participant-guest-1',
+        recording_id: 'rec-1',
+        role: 'guest',
+        display_name: 'Guest One',
+        email: null,
+      }))
+    );
+    restores.push(
+      stubMethod(prisma.recording, 'findUnique', async () => ({
+        id: 'rec-1',
+        userId: 'owner-user-1',
+        status: 'uploading',
+        started_at: new Date('2026-03-12T05:00:00.000Z'),
+        stopped_at: null,
+        host_participant_id: 'participant-host-1',
+        control_version: 3,
+      }))
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/recordings/rec-1/session/start',
+      headers: {
+        authorization: `Bearer ${guestToken}`,
+      },
+    });
+
+    assert.equal(response.statusCode, 403);
+    assert.deepEqual(response.json(), { code: 'forbidden', message: 'Not allowed' });
+  } finally {
+    for (const restore of restores.reverse()) restore();
+    await app.close();
+  }
+});
+
+test('POST /v1/recordings/:id/session/stop rejects invited guest principal', async () => {
+  const restores: Array<() => void> = [];
+  const app = Fastify();
+
+  try {
+    await app.register(recordingRoutes);
+    const guestToken = await signGuestAccessJwt({
+      participantId: 'participant-guest-1',
+      recordingId: 'rec-1',
+    });
+
+    restores.push(
+      stubMethod(prisma.participant, 'findUnique', async () => ({
+        id: 'participant-guest-1',
+        recording_id: 'rec-1',
+        role: 'guest',
+        display_name: 'Guest One',
+        email: null,
+      }))
+    );
+    restores.push(
+      stubMethod(prisma.recording, 'findUnique', async () => ({
+        id: 'rec-1',
+        userId: 'owner-user-1',
+        status: 'uploading',
+        started_at: new Date('2026-03-12T05:00:00.000Z'),
+        stopped_at: null,
+        host_participant_id: 'participant-host-1',
+        control_version: 3,
+      }))
+    );
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/recordings/rec-1/session/stop',
+      headers: {
+        authorization: `Bearer ${guestToken}`,
+      },
+    });
+
+    assert.equal(response.statusCode, 403);
+    assert.deepEqual(response.json(), { code: 'forbidden', message: 'Not allowed' });
+  } finally {
+    for (const restore of restores.reverse()) restore();
+    await app.close();
+  }
+});
