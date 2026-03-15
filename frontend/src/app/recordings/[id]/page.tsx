@@ -96,6 +96,7 @@ export default function RecordingDetailPage() {
 
   const recording = data.recording;
   const projectState = projectAssets?.project.state ?? progress?.projectState ?? 'uploading';
+  const processingSummary = projectAssets?.processingSummary;
 
   async function handleAssetAction(action: ProjectAssetActionDto) {
     setAssetActionBusyId(action.id);
@@ -155,6 +156,55 @@ export default function RecordingDetailPage() {
         </div>
 
         <p className="mt-4 max-w-2xl text-sm text-slate-300">{stateSummaryCopy(projectState)}</p>
+
+        {processingSummary && (
+          <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/60 p-4 text-sm text-slate-300">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={`rounded-full border px-2 py-1 text-[11px] ${processingSummary.minimumReady ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-slate-700 text-slate-300'}`}>
+                {processingSummary.minimumReady ? 'Minimum ready' : 'Minimum ready pending'}
+              </span>
+              <span className={`rounded-full border px-2 py-1 text-[11px] ${processingSummary.fullyProcessed ? 'border-cyan-400/40 bg-cyan-500/10 text-cyan-200' : 'border-slate-700 text-slate-300'}`}>
+                {processingSummary.fullyProcessed ? 'Fully processed' : 'Processing continues'}
+              </span>
+            </div>
+            <p className="mt-3">
+              {processingSummary.minimumReady
+                ? 'The project is usable now. Remaining derivatives can finish in the background.'
+                : 'The project is still assembling its first playable assets.'}
+            </p>
+            <p className="mt-2 text-xs text-slate-400">
+              Combined ready: {processingSummary.readyPrimaryAsset ? 'yes' : 'no'} · Participant assets ready: {processingSummary.readyParticipantCount}/{processingSummary.participantCount}
+            </p>
+            {(processingSummary.pendingWork.length > 0 || processingSummary.failedWork.length > 0) && (
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-400">Pending work</p>
+                  {processingSummary.pendingWork.length > 0 ? (
+                    <ul className="mt-2 space-y-1 text-xs text-slate-300">
+                      {processingSummary.pendingWork.map((item) => (
+                        <li key={`pending-${item.label}-${item.participantId ?? 'project'}`}>{item.label}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-2 text-xs text-slate-500">No pending work.</p>
+                  )}
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-400">Failed work</p>
+                  {processingSummary.failedWork.length > 0 ? (
+                    <ul className="mt-2 space-y-1 text-xs text-slate-300">
+                      {processingSummary.failedWork.map((item) => (
+                        <li key={`failed-${item.label}-${item.participantId ?? 'project'}`}>{item.label}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-2 text-xs text-slate-500">No failed work.</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {progress && (
           <div className="mt-4 grid gap-2 text-sm text-slate-300 md:grid-cols-3">

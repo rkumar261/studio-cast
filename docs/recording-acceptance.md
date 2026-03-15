@@ -1,10 +1,23 @@
 # Recording Acceptance Scenarios (T20)
 
+Delivery-layer references:
+- [BRD/TRD 07 Delivery Audit](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-07-delivery-audit.md)
+- [BRD/TRD 07 Operations Runbook](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-07-operations-runbook.md)
+- [BRD/TRD 08 QA Traceability Matrix](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-08-qa-traceability.md)
+- [BRD/TRD 08 Scenario Pack](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-08-scenario-pack.md)
+- [BRD/TRD 08 Release Evidence Pack](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-08-release-evidence.md)
+
 This checklist validates release criteria for the full recording path:
 - Host-controlled session
 - Multi-guest room behavior (LiveKit path)
 - Chunk upload completion (live path: TUS-only)
 - Export readiness gate (`wav`, `mp4`, `mp4_captions`)
+
+Traceability IDs primarily covered here:
+- `HOST-CORE-001`
+- `FINALIZE-PROCESS-001`
+- `FINALIZE-PROCESS-003`
+- `PROJECT-ASSET-002`
 
 ## Automated Gate
 After running a scenario, verify final readiness with:

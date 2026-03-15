@@ -14,6 +14,7 @@
     "dev:worker:export": "tsx src/workers/export.worker.ts",
     "dev:worker:maintenance": "tsx src/workers/maintenance.worker.ts",
     "acceptance:recording": "tsx src/tools/recording-acceptance.ts",
+    "support:recording": "tsx src/tools/recording-support-snapshot.ts",
     "prebuild": "npm run prisma:gen",
     "build": "tsc",
     "start": "node dist/index.js",

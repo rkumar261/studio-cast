@@ -180,19 +180,37 @@ test('GET /v1/recordings/:id/project-assets returns user-facing project asset gr
 
     assert.equal(body.project.recordingId, 'rec-1');
     assert.equal(body.project.state, 'action required');
+    assert.equal(body.project.minimumReady, true);
+    assert.equal(body.project.fullyProcessed, false);
     assert.equal(body.combinedAsset.label, 'All participants');
     assert.equal(body.combinedAsset.state, 'ready');
+    assert.equal(body.combinedAsset.type, 'combined_playback');
+    assert.equal(body.combinedAsset.minimumReady, true);
+    assert.equal(body.combinedAsset.fullyProcessed, true);
     const publicBase = String(process.env.R2_PUBLIC_BASE_URL ?? '').trim().replace(/\/+$/, '');
     assert.equal(body.combinedAsset.previewUrl, `${publicBase}/recordings/rec-1/combined/all-participants.mp4`);
+    assert.equal(body.combinedAsset.playbackUrl, `${publicBase}/recordings/rec-1/combined/all-participants.mp4`);
     assert.equal(body.participantAssets.length, 2);
     assert.equal(body.participantAssets[0].label, 'Host User');
+    assert.equal(body.participantAssets[0].type, 'participant_playback');
+    assert.equal(body.participantAssets[0].minimumReady, true);
     assert.equal(body.participantAssets[1].state, 'processing');
+    assert.equal(body.participantAssets[1].fullyProcessed, false);
     assert.equal(body.transcript.state, 'ready');
+    assert.equal(body.transcript.type, 'transcript_artifact');
     assert.equal(body.captions.state, 'action required');
+    assert.equal(body.captions.type, 'caption_derivative');
     assert.equal(body.exports.requiredTotal, 3);
     assert.equal(body.exports.ready, 1);
     assert.equal(body.exports.processing, 1);
     assert.equal(body.exports.actionRequired, 1);
+    assert.equal(body.processingSummary.minimumReady, true);
+    assert.equal(body.processingSummary.fullyProcessed, false);
+    assert.equal(body.processingSummary.readyPrimaryAsset, true);
+    assert.equal(body.processingSummary.readyParticipantCount, 1);
+    assert.equal(body.processingSummary.participantCount, 2);
+    assert.equal(body.processingSummary.pendingWork.some((item: any) => item.label === 'Guest User'), true);
+    assert.equal(body.processingSummary.failedWork.some((item: any) => item.label === 'Captioned video (All participants)'), true);
 
     const mp4Export = body.exports.items.find((item: any) => item.type === 'mp4');
     assert.ok(mp4Export);
@@ -209,6 +227,7 @@ test('GET /v1/recordings/:id/project-assets returns user-facing project asset gr
     assert.ok(guestAsset);
     assert.equal(guestAsset.state, 'processing');
     assert.equal(guestAsset.blockedReason, 'This participant asset is still processing.');
+    assert.equal(guestAsset.pendingWork.length, 1);
 
     assert.equal((body as any).tracks, undefined);
   } finally {

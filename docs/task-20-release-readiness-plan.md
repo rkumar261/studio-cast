@@ -1,5 +1,18 @@
 # Task 20 Release Readiness, Migration, and Rollback Plan
 
+Superseded delivery-layer references for BRD/TRD 07:
+- [BRD/TRD 07 Delivery Audit](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-07-delivery-audit.md)
+- [BRD/TRD 07 Operations Runbook](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-07-operations-runbook.md)
+- [BRD/TRD 08 QA Traceability Matrix](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-08-qa-traceability.md)
+- [BRD/TRD 08 Release Evidence Pack](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-08-release-evidence.md)
+- [BRD/TRD 08 Observability and Runbook Pack](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-08-observability-runbooks.md)
+- [BRD/TRD 08 Severity and Governance](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-08-severity-and-governance.md)
+- [BRD/TRD 09 Telemetry Taxonomy and Metrics Map](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-09-telemetry-taxonomy.md)
+- [BRD/TRD 09 Dashboards and Alert Specification](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-09-dashboards-alerts.md)
+- [BRD/TRD 09 Diagnostics and Runbook Pack](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-09-diagnostics-runbooks.md)
+- [BRD/TRD 09 Production-Readiness Evidence Pack](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-09-production-readiness.md)
+- [BRD/TRD 09 Observability Governance](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-09-observability-governance.md)
+
 This plan is a staged rollout/rollback guide for implemented Tasks 02-19.
 
 ## 1) Migration Checklist
@@ -204,4 +217,3 @@ Boundary D (project experience):
 Boundary E (transcript/caption):
 1. Transcript transitions and revision/publish are explicit.
 2. Captioned export is produced only from publishable transcript state.
-

@@ -86,6 +86,16 @@ export default async function livekitRoutes(app: FastifyInstance) {
       });
 
       const jwt = await token.toJwt();
+      emitTelemetry({
+        logger: req.log,
+        event: 'session.join.requested',
+        message: 'Session join token issued',
+        recordingId: roomName,
+        sessionId: roomName,
+        participantId: principal.kind === 'guest' ? principal.participantId : undefined,
+        actorKind: principal.kind,
+        role: principal.kind === 'guest' ? 'guest' : 'host',
+      });
       const response: LivekitTokenResponse = { token: jwt, wsUrl };
 
       return res.code(200).send(response);

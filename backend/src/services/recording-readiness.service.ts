@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma.js';
 import { createJob } from '../repositories/job.repo.js';
 import { reconcileCombinedAssetForRecording } from './combined-asset.service.js';
 import { listParticipantMasterStatesForRecording } from './participant-asset.service.js';
+import { emitTelemetry } from '../lib/telemetry.js';
 
 export const REQUIRED_EXPORT_TYPES = [
   export_type.wav,
@@ -193,6 +194,15 @@ export async function reconcileRecordingReadiness(recordingId: string) {
         },
       });
     }
+    emitTelemetry({
+      level: 'error',
+      event: 'project.blocked',
+      message: 'Project blocked by failed participant asset',
+      recordingId,
+      participantId: failedParticipantMaster.participantId,
+      reason: (failedParticipantMaster.failureReason ?? 'participant_master_failed').slice(0, 1000),
+      blockedStage: 'participant_asset',
+    });
     return { code: 'skipped' as const, reason: 'participant_assets_failed' as const };
   }
 
@@ -249,6 +259,14 @@ export async function reconcileRecordingReadiness(recordingId: string) {
         },
       });
     }
+    emitTelemetry({
+      level: 'error',
+      event: 'project.blocked',
+      message: 'Project blocked by combined asset failure',
+      recordingId,
+      reason: combined.message.slice(0, 1000),
+      blockedStage: 'combined_asset',
+    });
     return { code: 'skipped' as const, reason: 'combined_failed' as const };
   }
 
@@ -306,6 +324,14 @@ export async function reconcileRecordingReadiness(recordingId: string) {
         },
       });
     }
+    emitTelemetry({
+      level: 'error',
+      event: 'project.blocked',
+      message: 'Project blocked by required export failure',
+      recordingId,
+      reason: 'required_export_failed',
+      blockedStage: 'required_export',
+    });
 
     return { code: 'ok' as const, status: recording_status.error };
   }
@@ -323,6 +349,14 @@ export async function reconcileRecordingReadiness(recordingId: string) {
         },
       });
     }
+    emitTelemetry({
+      event: 'project.fully_ready',
+      message: 'Project fully ready',
+      recordingId,
+      requiredExportCount: canonical.length,
+      combinedReady: true,
+      participantAssetCount: applicableParticipantMasters.length,
+    });
 
     return { code: 'ok' as const, status: recording_status.ready };
   }
@@ -339,6 +373,14 @@ export async function reconcileRecordingReadiness(recordingId: string) {
       },
     });
   }
+  emitTelemetry({
+    event: 'project.minimum_ready',
+    message: 'Project minimum-ready threshold reached while optional processing continues',
+    recordingId,
+    requiredExportCount: canonical.length,
+    combinedReady: true,
+    participantAssetCount: applicableParticipantMasters.length,
+  });
 
   return { code: 'ok' as const, status: recording_status.processing };
 }

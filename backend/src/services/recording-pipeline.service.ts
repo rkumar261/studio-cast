@@ -43,6 +43,7 @@ async function loadRecordingStopState(recordingId: string) {
 }
 
 async function markTrackReadyForStitch(args: {
+  recordingId: string;
   trackId: string;
   lifecycleState?: string | null;
   ingestReadyAt?: Date | null;
@@ -58,6 +59,13 @@ async function markTrackReadyForStitch(args: {
       failure_reason: null,
     },
   }).catch(() => {});
+  emitTelemetry({
+    event: 'track.ready_for_stitch',
+    message: 'Track is ready for stitch',
+    recordingId: args.recordingId,
+    trackId: args.trackId,
+    ingestReadyAt: (args.ingestReadyAt ?? now).toISOString(),
+  });
 }
 
 export async function maybeEnqueueStitchJobsForRecording(recordingId: string) {
@@ -94,6 +102,7 @@ export async function maybeEnqueueStitchJobsForRecording(recordingId: string) {
   for (const track of tracks) {
     if (!trackReadyForStitch(track)) continue;
     await markTrackReadyForStitch({
+      recordingId,
       trackId: track.id,
       lifecycleState: track.lifecycle_state,
       ingestReadyAt: track.ingest_ready_at,
@@ -148,6 +157,7 @@ export async function maybeEnqueueStitchJobForTrack(recordingId: string, trackId
   }
 
   await markTrackReadyForStitch({
+    recordingId,
     trackId: track.id,
     lifecycleState: track.lifecycle_state,
     ingestReadyAt: track.ingest_ready_at,
