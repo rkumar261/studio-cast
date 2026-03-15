@@ -11,16 +11,13 @@
 
 type ProgressResponse = {
   recordingId: string;
-  status: 'draft' | 'uploading' | 'processing' | 'ready' | 'error';
-  phase: 'recording' | 'uploading' | 'processing' | 'ready' | 'error';
+  studioState: 'recording' | 'uploading' | 'upload complete' | 'processing' | 'ready' | 'action required';
+  projectState: 'recording' | 'uploading' | 'upload complete' | 'processing' | 'ready' | 'action required';
   summary: {
     participantsTotal: number;
-    chunksPending: number;
-  };
-  exports: {
-    requiredTotal: number;
-    requiredSucceeded: number;
-    requiredFailed: number;
+    participantsComplete: number;
+    participantsUploading: number;
+    actionRequiredParticipants: number;
   };
 };
 
@@ -67,47 +64,39 @@ async function run() {
 
   const startedAt = Date.now();
   let seenProcessing = false;
-  let seenPendingChunks = false;
+  let seenUploading = false;
 
   while (Date.now() - startedAt <= TIMEOUT_SEC * 1000) {
     const progress = await getJson<ProgressResponse>(`/v1/recordings/${RECORDING_ID}/progress`);
 
-    if (progress.phase === 'processing') seenProcessing = true;
-    if (progress.summary.chunksPending > 0) seenPendingChunks = true;
+    if (progress.projectState === 'processing') seenProcessing = true;
+    if (progress.summary.participantsUploading > 0) seenUploading = true;
 
     const participantsOk = progress.summary.participantsTotal >= TARGET_PARTICIPANTS;
-    const exportsReady =
-      progress.exports.requiredTotal === 3 &&
-      progress.exports.requiredSucceeded === 3 &&
-      progress.exports.requiredFailed === 0;
-    const chunksDone = progress.summary.chunksPending === 0;
-    const recordingReady = progress.status === 'ready' && progress.phase === 'ready';
+    const uploadsDone = progress.summary.participantsComplete >= TARGET_PARTICIPANTS;
+    const recordingReady = progress.projectState === 'ready';
 
     console.log('[acceptance] snapshot', {
-      phase: progress.phase,
-      status: progress.status,
+      studioState: progress.studioState,
+      projectState: progress.projectState,
       participants: progress.summary.participantsTotal,
-      chunksPending: progress.summary.chunksPending,
-      exports: {
-        requiredSucceeded: progress.exports.requiredSucceeded,
-        requiredTotal: progress.exports.requiredTotal,
-        requiredFailed: progress.exports.requiredFailed,
-      },
+      participantsComplete: progress.summary.participantsComplete,
+      participantsUploading: progress.summary.participantsUploading,
+      actionRequiredParticipants: progress.summary.actionRequiredParticipants,
       participantsOk,
-      chunksDone,
-      exportsReady,
+      uploadsDone,
       recordingReady,
     });
 
-    if (participantsOk && chunksDone && exportsReady && recordingReady) {
+    if (participantsOk && uploadsDone && recordingReady) {
       console.log('[acceptance] PASS', {
         seenProcessing,
-        seenPendingChunks,
+        seenUploading,
       });
       process.exit(0);
     }
 
-    if (progress.phase === 'error' || progress.status === 'error') {
+    if (progress.studioState === 'action required' || progress.projectState === 'action required') {
       throw new Error('Recording reached error state before acceptance criteria were met.');
     }
 

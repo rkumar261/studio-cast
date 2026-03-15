@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { RecordingsAPI, type ListRecordingsResponse, type ProjectAssetState } from '@/lib/api';
+import { consumerStateBadgeClass, toConsumerStateLabel } from '@/lib/recording-journey';
 
 type ProjectCardSummary = {
   combinedState: ProjectAssetState;
@@ -12,22 +13,6 @@ type ProjectCardSummary = {
   exportsReady: number;
   exportsTotal: number;
 };
-
-function stateBadgeClass(state: ProjectAssetState) {
-  if (state === 'ready') return 'border-emerald-600/50 bg-emerald-500/10 text-emerald-200';
-  if (state === 'processing') return 'border-cyan-600/50 bg-cyan-500/10 text-cyan-200';
-  if (state === 'failed') return 'border-red-600/50 bg-red-500/10 text-red-200';
-  if (state === 'pending') return 'border-amber-600/50 bg-amber-500/10 text-amber-200';
-  return 'border-slate-700 bg-slate-950 text-slate-300';
-}
-
-function stateLabel(state: ProjectAssetState) {
-  if (state === 'ready') return 'Ready';
-  if (state === 'processing') return 'Processing';
-  if (state === 'failed') return 'Failed';
-  if (state === 'pending') return 'Pending';
-  return 'Missing';
-}
 
 export default function RecordingsPage() {
   const router = useRouter();
@@ -144,8 +129,8 @@ export default function RecordingsPage() {
                       <div className="mb-3 grid gap-2 rounded-xl border border-slate-800 bg-slate-950/60 p-3 text-xs">
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-slate-400">Primary output</span>
-                          <span className={`rounded-full border px-2 py-0.5 ${stateBadgeClass(summary?.combinedState ?? 'missing')}`}>
-                            {stateLabel(summary?.combinedState ?? 'missing')}
+                          <span className={`rounded-full border px-2 py-0.5 ${consumerStateBadgeClass(summary?.combinedState ?? 'processing')}`}>
+                            {toConsumerStateLabel(summary?.combinedState ?? 'processing')}
                           </span>
                         </div>
                         <div className="text-slate-300">
@@ -170,12 +155,6 @@ export default function RecordingsPage() {
                       <p className="text-xs text-slate-500">
                         Created {new Date(r.createdAt).toLocaleString()}
                       </p>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <span className="rounded-full border border-slate-700 bg-slate-950 px-2 py-1 text-[11px] text-slate-300">
-                        {r.status}
-                      </span>
                     </div>
                   </div>
 

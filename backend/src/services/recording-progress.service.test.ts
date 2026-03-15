@@ -104,7 +104,7 @@ function makeParticipantMasterRow(args: {
   };
 }
 
-test('recording progress exposes participant asset blockers before export blockers', async () => {
+test('recording progress reports upload complete in studio while project processing continues', async () => {
   const restores: Array<() => void> = [];
 
   try {
@@ -124,14 +124,16 @@ test('recording progress exposes participant asset blockers before export blocke
 
     assert.equal(result.code, 'ok');
     if (result.code !== 'ok') throw new Error('expected ok result');
-    assert.equal(result.data.readiness.blockedReasons.includes('participant_assets_pending'), true);
-    assert.equal(result.data.readiness.blockedReasons.includes('exports_pending'), false);
+    assert.equal(result.data.studioState, 'upload complete');
+    assert.equal(result.data.projectState, 'processing');
+    assert.equal(result.data.studio.canOpenProject, true);
+    assert.equal(result.data.summary.participantsComplete, 1);
   } finally {
     for (const restore of restores.reverse()) restore();
   }
 });
 
-test('recording progress exposes combined asset blockers once participant masters are ready', async () => {
+test('recording progress keeps project processing while combined asset is still building', async () => {
   const restores: Array<() => void> = [];
 
   try {
@@ -167,8 +169,58 @@ test('recording progress exposes combined asset blockers once participant master
 
     assert.equal(result.code, 'ok');
     if (result.code !== 'ok') throw new Error('expected ok result');
-    assert.equal(result.data.readiness.blockedReasons.includes('combined_asset_pending'), true);
-    assert.equal(result.data.readiness.blockedReasons.includes('participant_assets_pending'), false);
+    assert.equal(result.data.studioState, 'upload complete');
+    assert.equal(result.data.projectState, 'processing');
+    assert.equal(result.data.summary.participantsUploading, 0);
+  } finally {
+    for (const restore of restores.reverse()) restore();
+  }
+});
+
+test('recording progress surfaces action required when a participant upload is not finalized', async () => {
+  const restores: Array<() => void> = [];
+
+  try {
+    restores.push(
+      stubMethod(
+        prisma.recording,
+        'findUnique',
+        async () =>
+          makeRecordingForProgress({
+            participant: [
+              {
+                id: 'part-1',
+                role: 'host',
+                display_name: 'Host User',
+                track: [
+                  {
+                    id: 'track-1',
+                    kind: 'video',
+                    state: 'uploaded',
+                    storage_key_raw: null,
+                    final_seq: null,
+                    capture_closed_at: null,
+                    track_chunk: [],
+                    upload: [],
+                  },
+                ],
+              },
+            ],
+          })
+      )
+    );
+    restores.push(stubMethod(prisma.participant, 'findMany', async () => []));
+
+    const result = await getRecordingProgressService({
+      recordingId: 'rec-1',
+      principal: { kind: 'user', userId: 'user-1' },
+    });
+
+    assert.equal(result.code, 'ok');
+    if (result.code !== 'ok') throw new Error('expected ok result');
+    assert.equal(result.data.studioState, 'action required');
+    assert.equal(result.data.participants[0].state, 'action required');
+    assert.match(result.data.participants[0].blockedReason ?? '', /Finish recording/);
   } finally {
     for (const restore of restores.reverse()) restore();
   }

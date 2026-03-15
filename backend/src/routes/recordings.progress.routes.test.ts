@@ -7,7 +7,7 @@ import { prisma } from '../lib/prisma.js';
 process.env.JWT_PRIVATE_KEY_PATH ??= fileURLToPath(new URL('../../certs/jwtRS256.key', import.meta.url));
 process.env.JWT_PUBLIC_KEY_PATH ??= fileURLToPath(new URL('../../certs/jwtRS256.key.pub', import.meta.url));
 
-const [{ default: recordingRoutes }, { signGuestAccessJwt }] = await Promise.all([
+const [{ default: recordingRoutes }, { signAccessJwt, signGuestAccessJwt }] = await Promise.all([
   import('./recordings.routes.js'),
   import('../lib/jwt.js'),
 ]);
@@ -86,7 +86,55 @@ test('GET /v1/recordings/:id/progress allows invited guest principal', async () 
     assert.equal(response.statusCode, 200);
     const body = response.json();
     assert.equal(body.recordingId, 'rec-1');
-    assert.equal(body.phase, 'recording');
+    assert.equal(body.studioState, 'recording');
+  } finally {
+    for (const restore of restores.reverse()) restore();
+    await app.close();
+  }
+});
+
+test('GET /v1/recordings/:id returns consumer recording metadata without track internals', async () => {
+  const restores: Array<() => void> = [];
+  const app = Fastify();
+
+  try {
+    await app.register(recordingRoutes);
+    const token = await signAccessJwt({ sub: 'user-1' });
+
+    restores.push(
+      stubMethod(prisma.user, 'findUnique', async () => ({
+        id: 'user-1',
+        name: 'Owner',
+        email: 'owner@example.com',
+        imageUrl: null,
+      }))
+    );
+    restores.push(
+      stubMethod(prisma.recording, 'findUnique', async () => ({
+        id: 'rec-1',
+        title: 'Weekly Sync',
+        status: 'processing',
+        created_at: new Date('2026-03-12T05:00:00.000Z'),
+        userId: 'user-1',
+      }))
+    );
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/v1/recordings/rec-1',
+      headers: {
+        authorization: `Bearer ${token}`,
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), {
+      recording: {
+        id: 'rec-1',
+        title: 'Weekly Sync',
+        createdAt: '2026-03-12T05:00:00.000Z',
+      },
+    });
   } finally {
     for (const restore of restores.reverse()) restore();
     await app.close();

@@ -1,8 +1,8 @@
 import type { Prisma, export_type, transcript_state } from '@prisma/client';
 import type {
+  ProjectAssetState,
   GetProjectAssetsGraphResponse,
   ProjectAssetActionDto,
-  ProjectAssetState,
 } from '../dto/recordings/project-assets.dto.js';
 import { prisma } from '../lib/prisma.js';
 import { toPublicAssetUrl } from '../lib/public-assets.js';
@@ -14,11 +14,12 @@ type ServiceResult<T> =
   | { code: 'forbidden' };
 
 function toBadge(state: ProjectAssetState): string {
-  if (state === 'ready') return 'Ready';
+  if (state === 'upload complete') return 'Upload complete';
+  if (state === 'action required') return 'Action required';
   if (state === 'processing') return 'Processing';
-  if (state === 'failed') return 'Failed';
-  if (state === 'pending') return 'Pending';
-  return 'Missing';
+  if (state === 'uploading') return 'Uploading';
+  if (state === 'ready') return 'Ready';
+  return 'Recording';
 }
 
 function actionForOpenUrl(label: string, url?: string): ProjectAssetActionDto[] {
@@ -46,18 +47,18 @@ function pickCanonicalExport<T extends { type: export_type; updated_at: Date }>(
 function mapExportState(
   state?: 'queued' | 'running' | 'succeeded' | 'failed'
 ): ProjectAssetState {
-  if (!state) return 'missing';
+  if (!state) return 'processing';
   if (state === 'succeeded') return 'ready';
-  if (state === 'failed') return 'failed';
+  if (state === 'failed') return 'action required';
   return 'processing';
 }
 
 function mapTranscriptState(
   state?: transcript_state | null
 ): ProjectAssetState {
-  if (!state) return 'missing';
+  if (!state) return 'processing';
   if (state === 'ready') return 'ready';
-  if (state === 'failed') return 'failed';
+  if (state === 'failed') return 'action required';
   return 'processing';
 }
 
@@ -69,21 +70,28 @@ function normalizeJsonObject(value: Prisma.JsonValue | null | undefined): Record
 function mapAssetState(
   state?: 'missing' | 'pending' | 'processing' | 'ready' | 'failed' | null
 ): ProjectAssetState {
-  if (!state) return 'missing';
+  if (!state) return 'processing';
   if (state === 'ready') return 'ready';
-  if (state === 'failed') return 'failed';
-  if (state === 'processing') return 'processing';
-  return 'pending';
+  if (state === 'failed') return 'action required';
+  return 'processing';
 }
 
 function blockedReasonForExport(args: {
   state: ProjectAssetState;
   lastError?: string | null;
 }) {
-  if (args.state === 'failed') return args.lastError ?? 'export_failed';
-  if (args.state === 'processing') return 'building_export';
-  if (args.state === 'missing' || args.state === 'pending') return 'waiting_for_export';
+  if (args.state === 'action required') return args.lastError ?? 'Export needs attention.';
+  if (args.state === 'processing') return 'Processing is still running for this export.';
+  if (args.state === 'uploading') return 'Uploads must finish before this export can start.';
   return undefined;
+}
+
+function mapRecordingState(status: string): ProjectAssetState {
+  if (status === 'ready') return 'ready';
+  if (status === 'processing') return 'processing';
+  if (status === 'error') return 'action required';
+  if (status === 'uploading') return 'uploading';
+  return 'recording';
 }
 
 export async function getProjectAssetsGraphService(args: {
@@ -149,15 +157,26 @@ export async function getProjectAssetsGraphService(args: {
   const anyParticipantMasterPending = applicableParticipants.some(
     (participant) => participant.state === 'pending' || participant.state === 'processing'
   );
+  const anyExportFailed = recording.export_artifact.some((artifact) => artifact.state === 'failed');
+  const projectState = anyParticipantMasterFailed
+    || anyExportFailed
+    || combinedAssetRow?.state === 'failed'
+    || recording.status === 'error'
+    ? 'action required'
+    : recording.status === 'ready'
+      ? 'ready'
+      : recording.status === 'uploading'
+        ? 'uploading'
+        : 'processing';
   const combinedState: ProjectAssetState = combinedAssetRow
     ? mapAssetState(combinedAssetRow.state)
     : anyParticipantMasterFailed
-      ? 'failed'
+      ? 'action required'
       : anyParticipantMasterPending
-        ? 'pending'
-        : applicableParticipants.length > 0
-          ? 'processing'
-          : 'pending';
+        ? projectState === 'uploading'
+          ? 'uploading'
+          : 'processing'
+        : 'processing';
   const combinedPreviewUrl = toPublicAssetUrl(
     combinedAssetRow?.preview_key ?? combinedAssetRow?.storage_key
   );
@@ -176,10 +195,13 @@ export async function getProjectAssetsGraphService(args: {
       badges: [toBadge(state), participant.participantRole === 'host' ? 'Host' : 'Guest'],
       durationMs: participant.asset?.durationMs,
       previewUrl,
-      blockedReason:
-        state === 'failed'
-          ? (participant.failureReason ?? 'participant_master_failed')
-          : participant.blockedReason,
+      blockedReason: state === 'action required'
+        ? participant.failureReason ?? 'This participant asset needs attention.'
+        : state === 'processing'
+          ? 'This participant asset is still processing.'
+          : state === 'uploading'
+            ? 'Uploads must finish before this participant asset is ready.'
+            : participant.blockedReason,
       actions: actionForOpenUrl('Download', previewUrl),
       participant: {
         id: participant.participantId,
@@ -254,7 +276,7 @@ export async function getProjectAssetsGraphService(args: {
     project: {
       recordingId: recording.id,
       title: recording.title ?? undefined,
-      status: recording.status,
+      state: projectState,
       label: recording.title?.trim() || 'Untitled project',
     },
     combinedAsset: {
@@ -266,16 +288,16 @@ export async function getProjectAssetsGraphService(args: {
       durationMs: combinedAssetRow?.duration_ms ?? undefined,
       previewUrl: combinedPreviewUrl,
       blockedReason:
-        combinedState === 'failed'
+        combinedState === 'action required'
           ? (combinedAssetRow?.failure_reason ??
             applicableParticipants.find((participant) => participant.state === 'failed')?.failureReason ??
-            'combined_asset_failed')
+            'The combined recording needs attention.')
           : combinedState === 'processing'
-            ? 'building_combined_asset'
-            : combinedState === 'pending'
+            ? 'The combined recording is still processing.'
+            : combinedState === 'uploading'
               ? anyParticipantMasterPending
-                ? 'waiting_for_participant_masters'
-                : 'waiting_for_combined_asset'
+                ? 'Participant uploads must finish before the combined recording is ready.'
+                : 'Uploads are still being finalized before the combined recording can start.'
               : undefined,
       actions: actionForOpenUrl('Play', combinedPreviewUrl),
     },
@@ -286,14 +308,14 @@ export async function getProjectAssetsGraphService(args: {
       badges: [toBadge(transcriptState)],
       previewUrl: transcriptPreviewUrl,
       blockedReason:
-        transcriptState === 'failed'
+        transcriptState === 'action required'
           ? (transcriptRow?.failure_reason ??
             (normalizeJsonObject(transcriptRow?.metadata_json)?.failureReason as string | undefined) ??
-            'transcript_failed')
+            'Transcript needs attention.')
           : transcriptState === 'processing'
-            ? 'building_transcript'
-            : transcriptState === 'missing' || transcriptState === 'pending'
-              ? 'waiting_for_transcript'
+            ? 'Transcript is still processing.'
+            : transcriptState === 'uploading'
+              ? 'Uploads must finish before the transcript can start.'
               : undefined,
       actions: actionForOpenUrl('Open transcript', transcriptPreviewUrl),
     },
@@ -312,8 +334,7 @@ export async function getProjectAssetsGraphService(args: {
       requiredTotal: exportItems.length,
       ready,
       processing,
-      failed,
-      missing,
+      actionRequired: failed + missing,
       items: exportItems,
     },
   };

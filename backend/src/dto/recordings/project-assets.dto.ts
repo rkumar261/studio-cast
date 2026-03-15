@@ -1,4 +1,6 @@
-export type ProjectAssetState = 'missing' | 'pending' | 'processing' | 'ready' | 'failed';
+import type { ConsumerRecordingState } from './progress.dto.js';
+
+export type ProjectAssetState = ConsumerRecordingState;
 
 export type ProjectAssetActionDto = {
   id: string;
@@ -47,7 +49,7 @@ export type GetProjectAssetsGraphResponse = {
   project: {
     recordingId: string;
     title?: string;
-    status: string;
+    state: ConsumerRecordingState;
     label: string;
   };
   combinedAsset: ProjectMediaAssetDto;
@@ -58,8 +60,7 @@ export type GetProjectAssetsGraphResponse = {
     requiredTotal: number;
     ready: number;
     processing: number;
-    failed: number;
-    missing: number;
+    actionRequired: number;
     items: ProjectExportAssetDto[];
   };
 };

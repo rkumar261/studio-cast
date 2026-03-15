@@ -1,14 +1,29 @@
 import { test, expect } from '@playwright/test';
+import { e2eData } from './test-data';
 
-test('guest invite flow reaches pre-join without login', async ({ browser }) => {
+test('guest invite flow reaches studio without login', async ({ browser }) => {
     const guestContext = await browser.newContext();
     const guestPage = await guestContext.newPage();
 
-    // Replace these with a real recording id + invite token from your app
-    const recordingId = 'REPLACE_RECORDING_ID';
-    const inviteToken = 'REPLACE_INVITE_TOKEN';
+    const tokenResponses: number[] = [];
+    const progressResponses: number[] = [];
+    const refreshRequests: string[] = [];
 
-    await guestPage.goto(`/studio/${recordingId}?invite=${inviteToken}`);
+    guestPage.on('response', async (response) => {
+        const url = response.url();
+        if (url.includes('/v1/livekit/token')) tokenResponses.push(response.status());
+        if (url.includes(`/v1/recordings/${e2eData.recordingId}/progress`)) {
+            progressResponses.push(response.status());
+        }
+    });
+
+    guestPage.on('request', (request) => {
+        if (request.url().includes('/auth/refresh')) {
+            refreshRequests.push(request.url());
+        }
+    });
+
+    await guestPage.goto(e2eData.guestStudioUrl());
 
     await expect(
         guestPage.getByText(/join this recording as a guest/i)
@@ -16,27 +31,30 @@ test('guest invite flow reaches pre-join without login', async ({ browser }) => 
 
     await guestPage.getByRole('button', { name: /continue as guest/i }).click();
 
-    await expect(
-        guestPage.getByLabel(/your name/i)
-    ).toBeVisible();
+    const nameInput = guestPage.getByPlaceholder(/your name \(required\)/i);
+    const emailInput = guestPage.getByPlaceholder(/email \(optional\)/i);
+    const joinButton = guestPage.getByRole('button', { name: /join as guest/i });
+
+    await expect(nameInput).toBeVisible();
+    await expect(emailInput).toBeVisible();
+
+    await joinButton.click();
+
+    await expect(guestPage.getByText(/name is required|required/i)).toBeVisible();
+
+    await nameInput.fill('Guest User');
+    await joinButton.click();
 
     await expect(
-        guestPage.getByLabel(/email/i)
+        guestPage.getByText(/people|leave|invite people/i)
     ).toBeVisible();
 
-    // Name required
-    await guestPage.getByRole('button', { name: /join as guest/i }).click();
+    expect(tokenResponses.some((status) => status === 200)).toBeTruthy();
+    expect(refreshRequests.length).toBe(0);
 
-    // This check may need adjustment depending on your validation text
-    await expect(guestPage.getByText(/required/i)).toBeVisible();
-
-    await guestPage.getByLabel(/your name/i).fill('Guest User');
-    await guestPage.getByRole('button', { name: /join as guest/i }).click();
-
-    // Adjust this assertion to something stable in your studio UI
-    await expect(
-        guestPage.getByText(/people|leave|recording/i)
-    ).toBeVisible();
+    if (progressResponses.length > 0) {
+        expect(progressResponses.every((status) => status === 200)).toBeTruthy();
+    }
 
     await guestContext.close();
 });

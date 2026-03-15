@@ -179,6 +179,7 @@ test('GET /v1/recordings/:id/project-assets returns user-facing project asset gr
     const body = response.json();
 
     assert.equal(body.project.recordingId, 'rec-1');
+    assert.equal(body.project.state, 'action required');
     assert.equal(body.combinedAsset.label, 'All participants');
     assert.equal(body.combinedAsset.state, 'ready');
     const publicBase = String(process.env.R2_PUBLIC_BASE_URL ?? '').trim().replace(/\/+$/, '');
@@ -187,12 +188,11 @@ test('GET /v1/recordings/:id/project-assets returns user-facing project asset gr
     assert.equal(body.participantAssets[0].label, 'Host User');
     assert.equal(body.participantAssets[1].state, 'processing');
     assert.equal(body.transcript.state, 'ready');
-    assert.equal(body.captions.state, 'failed');
+    assert.equal(body.captions.state, 'action required');
     assert.equal(body.exports.requiredTotal, 3);
     assert.equal(body.exports.ready, 1);
     assert.equal(body.exports.processing, 1);
-    assert.equal(body.exports.failed, 1);
-    assert.equal(body.exports.missing, 0);
+    assert.equal(body.exports.actionRequired, 1);
 
     const mp4Export = body.exports.items.find((item: any) => item.type === 'mp4');
     assert.ok(mp4Export);
@@ -202,13 +202,13 @@ test('GET /v1/recordings/:id/project-assets returns user-facing project asset gr
 
     const captionsExport = body.exports.items.find((item: any) => item.type === 'mp4_captions');
     assert.ok(captionsExport);
-    assert.equal(captionsExport.state, 'failed');
+    assert.equal(captionsExport.state, 'action required');
     assert.equal(captionsExport.blockedReason, 'captions_failed');
 
     const guestAsset = body.participantAssets.find((a: any) => a.participant?.role === 'guest');
     assert.ok(guestAsset);
     assert.equal(guestAsset.state, 'processing');
-    assert.equal(guestAsset.blockedReason, 'building_participant_master');
+    assert.equal(guestAsset.blockedReason, 'This participant asset is still processing.');
 
     assert.equal((body as any).tracks, undefined);
   } finally {

@@ -118,11 +118,18 @@ export type ListRecordingsResponse = {
 };
 
 export type GetRecordingResponse = {
-  recording: { id: string; title?: string; status: string; createdAt: string };
-  tracks: TrackDto[];
+  recording: { id: string; title?: string; createdAt: string };
 };
 
-export type ProjectAssetState = 'missing' | 'pending' | 'processing' | 'ready' | 'failed';
+export type ConsumerRecordingState =
+  | 'recording'
+  | 'uploading'
+  | 'upload complete'
+  | 'processing'
+  | 'ready'
+  | 'action required';
+
+export type ProjectAssetState = ConsumerRecordingState;
 
 export type ProjectAssetActionDto = {
   id: string;
@@ -171,7 +178,7 @@ export type GetProjectAssetsGraphResponse = {
   project: {
     recordingId: string;
     title?: string;
-    status: string;
+    state: ConsumerRecordingState;
     label: string;
   };
   combinedAsset: ProjectMediaAssetDto;
@@ -182,8 +189,7 @@ export type GetProjectAssetsGraphResponse = {
     requiredTotal: number;
     ready: number;
     processing: number;
-    failed: number;
-    missing: number;
+    actionRequired: number;
     items: ProjectExportAssetDto[];
   };
 };
@@ -202,101 +208,34 @@ export type RecordingSessionResponse = {
   canControl: boolean;
 };
 
-export type RecordingProgressPhase = 'recording' | 'uploading' | 'processing' | 'ready' | 'error';
-
-export type RecordingTrackBlockedReason =
-  | 'track_not_finalized'
-  | 'invalid_final_seq'
-  | 'missing_chunks'
-  | 'chunks_pending_upload'
-  | 'already_stitched';
-
-export type RecordingBlockedReason =
-  | 'recording_active'
-  | 'tracks_not_finalized'
-  | 'invalid_final_seq'
-  | 'missing_chunks'
-  | 'chunks_pending_upload'
-  | 'ready_for_stitch'
-  | 'stitching_in_progress'
-  | 'participant_assets_pending'
-  | 'participant_assets_failed'
-  | 'combined_asset_pending'
-  | 'combined_asset_failed'
-  | 'exports_pending'
-  | 'exports_failed';
-
-export type RecordingTrackProgressDto = {
-  trackId: string;
-  kind: 'audio' | 'video' | 'screen';
-  state: string;
-  uploadState: string;
-  blockedReason?: RecordingTrackBlockedReason;
-  protocol?: 'tus' | 'multipart';
-  isFinalized: boolean;
-  finalSeq?: number;
-  readyForStitch: boolean;
-  bytesReceived: number;
-  chunkTotal: number;
-  chunkUploaded: number;
-  chunkPending: number;
-  expectedTotal?: number;
-  highestSeq: number;
-  highestContiguousSeq: number;
-  missingSeqs: number[];
-  updatedAt?: string;
-};
-
 export type RecordingParticipantProgressDto = {
   participantId: string;
   role: 'host' | 'guest' | string;
   displayName?: string;
-  trackCount: number;
-  uploadedCount: number;
-  processedCount: number;
-  pendingCount: number;
-  tracks: RecordingTrackProgressDto[];
+  state: ConsumerRecordingState;
+  progressPct: number;
+  blockedReason?: string;
 };
 
 export type RecordingProgressResponse = {
   recordingId: string;
-  status: 'draft' | 'uploading' | 'processing' | 'ready' | 'error';
-  phase: RecordingProgressPhase;
-  readiness: {
-    readyForStitch: boolean;
-    blockedReasons: RecordingBlockedReason[];
-  };
+  studioState: ConsumerRecordingState;
+  projectState: ConsumerRecordingState;
   session: {
     startedAt?: string;
     stoppedAt?: string;
     hostParticipantId?: string;
     controlVersion: number;
   };
+  studio: {
+    canOpenProject: boolean;
+    keepPageOpen: boolean;
+  };
   summary: {
     participantsTotal: number;
-    participantsCompleted: number;
-    tracksTotal: number;
-    tracksUploaded: number;
-    tracksProcessed: number;
-    uploadsInProgress: number;
-    uploadsCompleted: number;
-    bytesReceived: number;
-    chunksTotal: number;
-    chunksUploaded: number;
-    chunksPending: number;
-  };
-  exports: {
-    requiredTotal: number;
-    requiredSucceeded: number;
-    requiredPending: number;
-    requiredFailed: number;
-    required: Array<{
-      type: 'wav' | 'mp4' | 'mp4_captions';
-      state: 'missing' | 'queued' | 'running' | 'succeeded' | 'failed';
-      exportId?: string;
-      updatedAt?: string;
-      lastError?: string;
-    }>;
+    participantsComplete: number;
+    participantsUploading: number;
+    actionRequiredParticipants: number;
   };
   participants: RecordingParticipantProgressDto[];
 };

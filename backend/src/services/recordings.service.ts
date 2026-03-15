@@ -2,12 +2,9 @@ import { createRecording } from '../repositories/recording.repo.js';
 import type { CreateRecordingResponse } from '../dto/recordings/create.dto.js';
 import type { GetRecordingResponse } from '../dto/recordings/get.dto.js';
 
-import { findRecordingById, listTrackByRecordingId } from '../repositories/recording.repo.js';
+import { findRecordingById } from '../repositories/recording.repo.js';
 import { ListRecordingsResponse } from '../dto/recordings/list.dto.js';
 import { listRecordingsByOwner } from '../repositories/recording.repo.js';
-import { listParticipantAssetsForRecording } from './participant-asset.service.js';
-import { getCombinedAssetForRecording } from './combined-asset.service.js';
-import { toPublicAssetUrl } from '../lib/public-assets.js';
 
 
 export type CreateRecordingArgs = {
@@ -66,60 +63,12 @@ export async function getRecordingService(
     return { code: 'forbidden' };
   }
 
-  const tracks = await listTrackByRecordingId(rec.id);
-  const participantAssets = await listParticipantAssetsForRecording(rec.id);
-  const combinedAsset = await getCombinedAssetForRecording(rec.id);
-
   const data: GetRecordingResponse = {
     recording: {
       id: rec.id,
       title: rec.title ?? undefined,
-      status: rec.status,
       createdAt: rec.created_at.toISOString(),
     },
-    tracks: tracks.map((t: any) => ({
-      id: t.id,
-      recordingId: t.recording_id,
-      participantId: t.participant_id,
-      kind: t.kind,
-      codec: t.codec ?? undefined,
-      durationMs: t.duration_ms ?? undefined,
-      state: t.state,
-    })),
-    participantAssets: participantAssets.map((asset) => ({
-      id: asset.id,
-      recordingId: asset.recordingId,
-      participantId: asset.participantId,
-      participantRole: asset.participantRole,
-      participantName: asset.participantName,
-      participantEmail: asset.participantEmail,
-      state: asset.state,
-      previewUrl: toPublicAssetUrl(asset.previewKey ?? asset.storageKey),
-      durationMs: asset.durationMs,
-      resolution: asset.resolution,
-      processingStartedAt: asset.processingStartedAt,
-      readyAt: asset.readyAt,
-      failedAt: asset.failedAt,
-      failureReason: asset.failureReason,
-      exportSet: asset.exportSet,
-      metadata: asset.metadata,
-    })),
-    combinedAsset: combinedAsset
-      ? {
-          id: combinedAsset.id,
-          recordingId: combinedAsset.recordingId,
-          state: combinedAsset.state,
-          previewUrl: toPublicAssetUrl(combinedAsset.previewKey ?? combinedAsset.storageKey),
-          durationMs: combinedAsset.durationMs,
-          resolution: combinedAsset.resolution,
-          processingStartedAt: combinedAsset.processingStartedAt,
-          readyAt: combinedAsset.readyAt,
-          failedAt: combinedAsset.failedAt,
-          failureReason: combinedAsset.failureReason,
-          exportSet: combinedAsset.exportSet,
-          metadata: combinedAsset.metadata,
-        }
-      : undefined,
   };
 
   return { code: 'ok', data };
