@@ -150,6 +150,10 @@ async function runJob(job: JobRow) {
     data: {
       state: track_state.uploaded,
       storage_key_raw: outcome.rawKey,
+      stitched_at: new Date(),
+      failed_at: null,
+      failure_reason: null,
+      lifecycle_state: 'stitched',
     },
   });
 

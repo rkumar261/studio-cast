@@ -186,6 +186,7 @@ export async function reconcileRecordingReadiness(recordingId: string) {
         where: { id: recordingId },
         data: {
           status: recording_status.error,
+          lifecycle_state: 'blocked',
           failed_at: new Date(),
           failure_reason:
             (failedParticipantMaster.failureReason ?? 'participant_master_failed').slice(0, 1000),
@@ -207,6 +208,8 @@ export async function reconcileRecordingReadiness(recordingId: string) {
         where: { id: recordingId },
         data: {
           status: recording_status.processing,
+          lifecycle_state: 'processing',
+          processing_started_at: new Date(),
           failed_at: null,
           failure_reason: null,
         },
@@ -222,6 +225,8 @@ export async function reconcileRecordingReadiness(recordingId: string) {
         where: { id: recordingId },
         data: {
           status: recording_status.processing,
+          lifecycle_state: 'processing',
+          processing_started_at: new Date(),
           failed_at: null,
           failure_reason: null,
         },
@@ -238,6 +243,7 @@ export async function reconcileRecordingReadiness(recordingId: string) {
         where: { id: recordingId },
         data: {
           status: recording_status.error,
+          lifecycle_state: 'blocked',
           failed_at: new Date(),
           failure_reason: combined.message.slice(0, 1000),
         },
@@ -294,7 +300,9 @@ export async function reconcileRecordingReadiness(recordingId: string) {
         where: { id: recordingId },
         data: {
           status: recording_status.error,
+          lifecycle_state: 'blocked',
           failed_at: new Date(),
+          failure_reason: 'required_export_failed',
         },
       });
     }
@@ -308,6 +316,8 @@ export async function reconcileRecordingReadiness(recordingId: string) {
         where: { id: recordingId },
         data: {
           status: recording_status.ready,
+          lifecycle_state: 'ready',
+          ready_at: new Date(),
           failed_at: null,
           failure_reason: null,
         },
@@ -322,6 +332,8 @@ export async function reconcileRecordingReadiness(recordingId: string) {
       where: { id: recordingId },
       data: {
         status: recording_status.processing,
+        lifecycle_state: 'processing',
+        processing_started_at: new Date(),
         failed_at: null,
         failure_reason: null,
       },

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as tus from 'tus-js-client';
-import { RecordingsAPI } from '@/lib/api';
+import { StudioRecordingAPI } from '@/lib/studio/internal-api';
 import {
   reconcileTrackRecoveryItems,
   selectTrackSerializedBatch,
@@ -362,7 +362,7 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
         );
       }
 
-      const initiated = await RecordingsAPI.initiateChunk(item.recordingId, {
+      const initiated = await StudioRecordingAPI.initiateChunk(item.recordingId, {
         trackId: item.trackId,
         seq: item.seq,
         protocol: 'tus',
@@ -495,7 +495,7 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
         tusUrl = await startTusUpload();
       }
 
-      await RecordingsAPI.completeChunk(item.recordingId, initiated.chunk.id, {
+      await StudioRecordingAPI.completeChunk(item.recordingId, initiated.chunk.id, {
         protocol: 'tus',
         bytesReceived: item.bytes,
         tusUrl: tusUrl || undefined,

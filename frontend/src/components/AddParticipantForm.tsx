@@ -32,7 +32,7 @@ export default function AddParticipantForm({ recordingId, onCreated }: Props) {
       setEmail('');
       nameRef.current?.focus();
 
-      // notify parent to refresh list (used by RecordingDetailPage → UploadInitiateCard)
+      // Notify parent to refresh any participant list after creation.
       onCreated?.();
 
       alert(res.magicLink ? `Guest link:\n${res.magicLink}` : 'Participant added');

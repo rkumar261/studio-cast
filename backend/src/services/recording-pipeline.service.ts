@@ -34,9 +34,30 @@ async function loadRecordingStopState(recordingId: string) {
     select: {
       id: true,
       status: true,
+      lifecycle_state: true,
       stopped_at: true,
+      upload_completed_at: true,
+      processing_started_at: true,
     },
   });
+}
+
+async function markTrackReadyForStitch(args: {
+  trackId: string;
+  lifecycleState?: string | null;
+  ingestReadyAt?: Date | null;
+}) {
+  if (args.lifecycleState === 'ready_for_stitch' && args.ingestReadyAt) return;
+  const now = new Date();
+  await prisma.track.update({
+    where: { id: args.trackId },
+    data: {
+      lifecycle_state: 'ready_for_stitch',
+      ingest_ready_at: args.ingestReadyAt ?? now,
+      failed_at: null,
+      failure_reason: null,
+    },
+  }).catch(() => {});
 }
 
 export async function maybeEnqueueStitchJobsForRecording(recordingId: string) {
@@ -56,6 +77,8 @@ export async function maybeEnqueueStitchJobsForRecording(recordingId: string) {
       final_seq: true,
       capture_closed_at: true,
       storage_key_raw: true,
+      lifecycle_state: true,
+      ingest_ready_at: true,
       track_chunk: {
         orderBy: { seq: 'asc' },
         select: {
@@ -70,6 +93,11 @@ export async function maybeEnqueueStitchJobsForRecording(recordingId: string) {
   const queuedTrackIds: string[] = [];
   for (const track of tracks) {
     if (!trackReadyForStitch(track)) continue;
+    await markTrackReadyForStitch({
+      trackId: track.id,
+      lifecycleState: track.lifecycle_state,
+      ingestReadyAt: track.ingest_ready_at,
+    });
     const result = await enqueueStitchJob(recordingId, track.id);
     if (result.created) {
       queuedTrackIds.push(track.id);
@@ -102,6 +130,8 @@ export async function maybeEnqueueStitchJobForTrack(recordingId: string, trackId
       final_seq: true,
       capture_closed_at: true,
       storage_key_raw: true,
+      lifecycle_state: true,
+      ingest_ready_at: true,
       track_chunk: {
         orderBy: { seq: 'asc' },
         select: {
@@ -116,6 +146,12 @@ export async function maybeEnqueueStitchJobForTrack(recordingId: string, trackId
   if (!track || !trackReadyForStitch(track)) {
     return { queued: false as const, reason: 'track_not_ready' as const };
   }
+
+  await markTrackReadyForStitch({
+    trackId: track.id,
+    lifecycleState: track.lifecycle_state,
+    ingestReadyAt: track.ingest_ready_at,
+  });
 
   const result = await enqueueStitchJob(recordingId, track.id);
   if (result.created) {
@@ -140,8 +176,6 @@ export async function maybeMarkRecordingProcessing(recordingId: string) {
   const finalizedTracks = await prisma.track.findMany({
     where: {
       recording_id: recordingId,
-      capture_closed_at: { not: null },
-      final_seq: { not: null },
     },
     select: {
       id: true,
@@ -160,7 +194,7 @@ export async function maybeMarkRecordingProcessing(recordingId: string) {
   });
   if (finalizedTracks.length === 0) return { updated: false };
 
-  const allFinalizedChunksMaterialized = finalizedTracks.every((track) => {
+  const allUploadsComplete = finalizedTracks.every((track) => {
     const completeness = evaluateTrackUploadCompleteness({
       captureClosedAt: track.capture_closed_at,
       finalSeq: track.final_seq,
@@ -168,7 +202,31 @@ export async function maybeMarkRecordingProcessing(recordingId: string) {
     });
     return completeness.complete;
   });
-  if (!allFinalizedChunksMaterialized) return { updated: false };
+  const now = new Date();
+  if (!allUploadsComplete) {
+    if (recording.stopped_at && recording.lifecycle_state !== 'post_stop_uploading') {
+      await prisma.recording.update({
+        where: { id: recordingId },
+        data: {
+          lifecycle_state: 'post_stop_uploading',
+        },
+      });
+      return { updated: true };
+    }
+    return { updated: false };
+  }
+
+  if (!recording.upload_completed_at || recording.lifecycle_state !== 'upload_complete') {
+    await prisma.recording.update({
+      where: { id: recordingId },
+      data: {
+        lifecycle_state: 'upload_complete',
+        upload_completed_at: recording.upload_completed_at ?? now,
+        failed_at: null,
+        failure_reason: null,
+      },
+    });
+  }
 
   const tracksRequiringStitch = finalizedTracks.filter((track) => (track.final_seq ?? 0) > 0);
   const allTracksStitched = tracksRequiringStitch.every((track) => !!track.storage_key_raw);
@@ -180,7 +238,14 @@ export async function maybeMarkRecordingProcessing(recordingId: string) {
   ) {
     await prisma.recording.update({
       where: { id: recordingId },
-      data: { status: recording_status.processing },
+      data: {
+        status: recording_status.processing,
+        lifecycle_state: 'processing',
+        upload_completed_at: recording.upload_completed_at ?? now,
+        processing_started_at: recording.processing_started_at ?? now,
+        failed_at: null,
+        failure_reason: null,
+      },
     });
 
     emitTelemetry({

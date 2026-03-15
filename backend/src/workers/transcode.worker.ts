@@ -147,7 +147,7 @@ async function runJob(job: JobRow) {
                 ready_at: now,
                 failed_at: null,
                 failure_reason: null,
-                lifecycle_state: 'ready',
+                lifecycle_state: 'processed',
                 codec: codec ?? undefined,
                 duration_ms: duration_ms ?? undefined,
             },
@@ -182,7 +182,7 @@ async function runJob(job: JobRow) {
             data: {
                 failed_at: new Date(),
                 failure_reason: reason.slice(0, 1000),
-                lifecycle_state: 'failed',
+                lifecycle_state: 'blocked',
             },
         }).catch(() => {});
         await reconcileParticipantMasterAsset({

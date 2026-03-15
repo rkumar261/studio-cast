@@ -18,6 +18,7 @@ import {
   deriveHostStudioPhase,
   toConsumerStateLabel,
 } from '@/lib/recording-journey';
+import { StudioRecordingAPI } from '@/lib/studio/internal-api';
 import {
   useRollingChunkRecorder,
   type RollingRecorderChunk,
@@ -1252,7 +1253,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       if (registeringKindsRef.current.has(kind)) return;
 
       registeringKindsRef.current.add(kind);
-      void RecordingsAPI.registerTrack(recordingId, {
+      void StudioRecordingAPI.registerTrack(recordingId, {
         participantId: recorderParticipantId,
         kind,
       })
@@ -1305,7 +1306,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       recoveringTrackIdsRef.current.add(trackId);
 
       try {
-        const response = await RecordingsAPI.getTrackChunkRecovery(recordingId, trackId);
+        const response = await StudioRecordingAPI.getTrackChunkRecovery(recordingId, trackId);
         const highestExistingSeq = Math.max(0, Math.floor(response.recovery.highestExistingSeq));
         const highestContiguousUploadedSeq = Math.max(
           0,
@@ -1415,7 +1416,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
             ? Math.max(0, Math.floor(recoveredNextSeq) - 1)
             : 0;
         const finalSeq = Math.max(observedFinalSeq, recoveredFinalSeq);
-        await RecordingsAPI.finalizeTrack(recordingId, trackId, {
+        await StudioRecordingAPI.finalizeTrack(recordingId, trackId, {
           finalSeq,
           captureClosedAt,
         });

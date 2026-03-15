@@ -254,9 +254,8 @@ export async function getProjectAssetsGraphService(args: {
   });
 
   const ready = exportItems.filter((item) => item.state === 'ready').length;
-  const failed = exportItems.filter((item) => item.state === 'failed').length;
   const processing = exportItems.filter((item) => item.state === 'processing').length;
-  const missing = exportItems.filter((item) => item.state === 'missing').length;
+  const actionRequired = exportItems.filter((item) => item.state === 'action required').length;
 
   const captionsState = mapExportState(exportCaptions?.state as any);
   const captionsActions: ProjectAssetActionDto[] =
@@ -334,7 +333,7 @@ export async function getProjectAssetsGraphService(args: {
       requiredTotal: exportItems.length,
       ready,
       processing,
-      actionRequired: failed + missing,
+      actionRequired,
       items: exportItems,
     },
   };

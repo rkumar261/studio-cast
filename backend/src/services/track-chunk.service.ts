@@ -741,6 +741,7 @@ export async function getTrackChunkRecoveryService(args: {
       recovery: {
         highestExistingSeq,
         highestContiguousUploadedSeq,
+        nextExpectedSeq: highestExistingSeq + 1,
         nextSeq: highestExistingSeq + 1,
         incompleteChunks,
         ...(resumable?.tusId

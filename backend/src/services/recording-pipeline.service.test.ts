@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { prisma } from '../lib/prisma.js';
-import { maybeEnqueueStitchJobsForRecording } from './recording-pipeline.service.js';
+import {
+  maybeEnqueueStitchJobsForRecording,
+  maybeMarkRecordingProcessing,
+} from './recording-pipeline.service.js';
 
 type AnyRecord = Record<string, any>;
 
@@ -264,6 +267,54 @@ test('stop before late final chunk does not enqueue early stitch', async () => {
 
     const result = await maybeEnqueueStitchJobsForRecording('rec-1');
     assert.deepEqual(result.queuedTrackIds, []);
+  } finally {
+    for (const restore of restores.reverse()) restore();
+  }
+});
+
+test('recording upload completion is captured before processing starts', async () => {
+  const restores: Array<() => void> = [];
+  const updates: any[] = [];
+  const tracks: TrackShape[] = [
+    {
+      ...finalizedTrack({
+        id: 'track-1',
+        finalSeq: 1,
+        chunks: [{ seq: 1, state: 'uploaded' }],
+      }),
+      storage_key_raw: 'recordings/rec-1/tracks/track-1/raw.webm',
+    },
+  ];
+
+  try {
+    restores.push(
+      stubMethod(prisma.recording, 'findUnique', async () => ({
+        id: 'rec-1',
+        status: 'uploading',
+        lifecycle_state: 'post_stop_uploading',
+        stopped_at: new Date('2026-03-15T04:00:00.000Z'),
+        upload_completed_at: null,
+        processing_started_at: null,
+      }))
+    );
+    restores.push(
+      stubMethod(prisma.track, 'findMany', async () => tracks)
+    );
+    restores.push(
+      stubMethod(prisma.recording, 'update', async (args: any) => {
+        updates.push(args);
+        return {} as any;
+      })
+    );
+
+    const result = await maybeMarkRecordingProcessing('rec-1');
+
+    assert.equal(result.updated, true);
+    assert.equal(updates.length, 2);
+    assert.equal(updates[0].data.lifecycle_state, 'upload_complete');
+    assert.ok(updates[0].data.upload_completed_at instanceof Date);
+    assert.equal(updates[1].data.lifecycle_state, 'processing');
+    assert.ok(updates[1].data.processing_started_at instanceof Date);
   } finally {
     for (const restore of restores.reverse()) restore();
   }

@@ -128,6 +128,7 @@ export async function getRecordingProgressService(args: {
                   seq: true,
                   protocol: true,
                   state: true,
+                  storage_key_raw: true,
                   bytes_received: true,
                   updated_at: true,
                 },
@@ -152,8 +153,9 @@ export async function getRecordingProgressService(args: {
   if (args.principal.kind === 'user') {
     if (recording.userId && recording.userId !== args.principal.userId) return { code: 'forbidden' };
   } else {
-    if (args.principal.recordingId !== args.recordingId) return { code: 'forbidden' };
-    const isInvitedGuest = recording.participant.some((participant) => participant.id === args.principal.participantId);
+    const guestPrincipal = args.principal;
+    if (guestPrincipal.recordingId !== args.recordingId) return { code: 'forbidden' };
+    const isInvitedGuest = recording.participant.some((participant) => participant.id === guestPrincipal.participantId);
     if (!isInvitedGuest) return { code: 'forbidden' };
   }
 

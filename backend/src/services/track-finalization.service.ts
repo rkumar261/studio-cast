@@ -72,6 +72,9 @@ export async function finalizeTrackCaptureService(args: {
       capture_closed_at: nextCaptureClosedAt,
       finalized_at: nextFinalizedAt,
       finalize_requested_at: finalizeRequestedAt,
+      lifecycle_state: 'finalized',
+      failed_at: null,
+      failure_reason: null,
     },
     select: {
       id: true,

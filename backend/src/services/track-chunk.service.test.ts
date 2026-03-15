@@ -641,3 +641,65 @@ test('guest cannot read recovery snapshot for another participant track', async 
     for (const restore of restores.reverse()) restore();
   }
 });
+
+test('recovery snapshot returns canonical nextExpectedSeq alongside nextSeq', async () => {
+  const restores: Array<() => void> = [];
+
+  try {
+    restores.push(
+      stubMethod(
+        prisma.recording,
+        'findUnique',
+        (async () => ({ id: 'rec-1', userId: 'owner-1' }))
+      )
+    );
+    restores.push(
+      stubMethod(
+        prisma.track,
+        'findUnique',
+        (async () => ({
+          id: 'track-1',
+          recording_id: 'rec-1',
+          participant_id: 'participant-1',
+          final_seq: 3,
+          capture_closed_at: new Date('2026-03-15T04:00:00.000Z'),
+        }))
+      )
+    );
+    restores.push(
+      stubMethod(
+        prisma.track_chunk,
+        'findMany',
+        (async () => [
+          makeChunkRow({
+            id: 'chunk-1',
+            track_id: 'track-1',
+            seq: 1,
+            state: 'uploaded',
+            storage_key_raw: 'recordings/rec-1/tracks/track-1/chunks/1.webm',
+          }),
+          makeChunkRow({
+            id: 'chunk-2',
+            track_id: 'track-1',
+            seq: 2,
+            state: 'uploading',
+          }),
+        ])
+      )
+    );
+
+    const result = await getTrackChunkRecoveryService({
+      recordingId: 'rec-1',
+      trackId: 'track-1',
+      principal: { kind: 'user', userId: 'owner-1' },
+    });
+
+    assert.equal(result.code, 'ok');
+    assert.equal(result.data.recovery.highestExistingSeq, 2);
+    assert.equal(result.data.recovery.highestContiguousUploadedSeq, 1);
+    assert.equal(result.data.recovery.nextExpectedSeq, 3);
+    assert.equal(result.data.recovery.nextSeq, 3);
+  } finally {
+    for (const restore of restores.reverse()) restore();
+  }
+});

@@ -9,6 +9,7 @@ import { getRequestPrincipal } from '../lib/request-principal.js';
 import { createRecordingService, getRecordingService } from '../services/recordings.service.js';
 import type { GetRecordingResponse } from '../dto/recordings/get.dto.js';
 import type { GetProjectAssetsGraphResponse } from '../dto/recordings/project-assets.dto.js';
+import type { RecordingLifecycleDiagnosticsResponse } from '../dto/recordings/lifecycle-diagnostics.dto.js';
 import { ListRecordingsResponse } from '../dto/recordings/list.dto.js';
 import { listRecordingService } from '../services/recordings.service.js';
 import { authGuard } from '../middlewares/auth.guard.js';
@@ -27,6 +28,7 @@ import {
 } from '../services/track-chunk.service.js';
 import { broadcastStudioRoomEvent } from '../websocket/studioWebsocket.js';
 import { getProjectAssetsGraphService } from '../services/project-assets.service.js';
+import { getRecordingLifecycleDiagnosticsService } from '../services/recording-lifecycle.service.js';
 import { emitTelemetry } from '../lib/telemetry.js';
 
 const LIVE_RECORDING_TRANSPORT = 'tus';
@@ -126,6 +128,33 @@ export default async function recordingRoutes(app: FastifyInstance) {
         if (result.code === 'forbidden') return res.code(403).send({ code: 'forbidden', message: 'Not allowed' });
 
         return res.code(200).send(result.data as GetProjectAssetsGraphResponse);
+    });
+
+    app.get<{
+        Params: { id: string }
+    }>('/v1/recordings/:id/lifecycle-diagnostics', { preHandler: authGuard }, async (req, res) => {
+        const requesterId = (req as any).user?.id as string | undefined;
+        const guest = (req as any).guest as { participantId?: string; recordingId?: string } | undefined;
+        if (!requesterId) {
+            if (guest?.participantId) {
+                emitGuestAccessBlocked(req, {
+                    recordingId: guest.recordingId ?? req.params.id,
+                    participantId: guest.participantId,
+                    action: 'lifecycle_diagnostics',
+                    reason: 'owner_credentials_required',
+                });
+                return res.code(403).send({ code: 'forbidden', message: 'Not allowed' });
+            }
+            return res.code(401).send({ error: 'Unauthorized', message: 'User not authenticated, Login required' });
+        }
+
+        const { id } = req.params;
+        const result = await getRecordingLifecycleDiagnosticsService({ recordingId: id, requesterId });
+
+        if (result.code === 'not_found') return res.code(404).send({ code: 'not_found', message: 'Recording not found' });
+        if (result.code === 'forbidden') return res.code(403).send({ code: 'forbidden', message: 'Not allowed' });
+
+        return res.code(200).send(result.data as RecordingLifecycleDiagnosticsResponse);
     });
 
 

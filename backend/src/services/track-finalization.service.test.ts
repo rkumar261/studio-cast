@@ -82,6 +82,7 @@ test('finalize persists final_seq and finalization timestamps', async () => {
     assert.equal(updateArgs.data.capture_closed_at.toISOString(), captureClosedAt);
     assert.ok(updateArgs.data.finalized_at instanceof Date);
     assert.ok(updateArgs.data.finalize_requested_at instanceof Date);
+    assert.equal(updateArgs.data.lifecycle_state, 'finalized');
   } finally {
     for (const restore of restores.reverse()) restore();
   }
@@ -156,6 +157,7 @@ test('finalize keeps final seq and finalized_at monotonic on repeat finalize', a
     assert.equal(updateArgs.data.capture_closed_at.toISOString(), existingCaptureClosedAt.toISOString());
     assert.equal(updateArgs.data.finalized_at.toISOString(), existingFinalizedAt.toISOString());
     assert.ok(updateArgs.data.finalize_requested_at instanceof Date);
+    assert.equal(updateArgs.data.lifecycle_state, 'finalized');
   } finally {
     for (const restore of restores.reverse()) restore();
   }
