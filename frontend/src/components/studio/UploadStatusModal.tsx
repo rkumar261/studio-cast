@@ -44,8 +44,7 @@ export default function UploadStatusModal(props: UploadStatusModalProps) {
   const variant = props.variant ?? 'modal';
   const participantRows = props.participants;
   const primaryParticipant = participantRows[0];
-  const [isHoveringDetailsZone, setIsHoveringDetailsZone] = useState(false);
-  const [suppressHoverOpen, setSuppressHoverOpen] = useState(false);
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
   const title =
     props.state === 'recording'
@@ -78,15 +77,14 @@ export default function UploadStatusModal(props: UploadStatusModalProps) {
 
   useEffect(() => {
     if (variant !== 'floating') return;
-    setIsHoveringDetailsZone(false);
-    setSuppressHoverOpen(false);
+    setIsDetailsOpen(false);
   }, [props.open, props.state, variant]);
 
-  const showFloatingDetails = isHoveringDetailsZone && !suppressHoverOpen;
+  const showFloatingDetails = isDetailsOpen;
 
   const handleCloseDetails = () => {
     if (variant === 'floating') {
-      setSuppressHoverOpen(true);
+      setIsDetailsOpen(false);
       return;
     }
     props.onClose();
@@ -194,16 +192,18 @@ export default function UploadStatusModal(props: UploadStatusModalProps) {
     };
 
     return (
+      <>
+        {showFloatingDetails && (
+          <div
+            className="fixed inset-0 z-30"
+            onClick={() => setIsDetailsOpen(false)}
+          />
+        )}
       <div className="fixed z-40 pointer-events-none" style={floatingFrameStyle}>
         <div className="pointer-events-auto relative w-full">
           {showFloatingDetails && (
             <div
               className="absolute left-1/2 top-0 z-20 w-full max-w-md -translate-x-1/2 -translate-y-[calc(100%+34px)]"
-              onMouseEnter={() => setIsHoveringDetailsZone(true)}
-              onMouseLeave={() => {
-                setIsHoveringDetailsZone(false);
-                setSuppressHoverOpen(false);
-              }}
             >
               {detailsCard}
             </div>
@@ -213,11 +213,7 @@ export default function UploadStatusModal(props: UploadStatusModalProps) {
 
             <button
               type="button"
-              onMouseEnter={() => setIsHoveringDetailsZone(true)}
-              onMouseLeave={() => {
-                setIsHoveringDetailsZone(false);
-                setSuppressHoverOpen(false);
-              }}
+              onClick={() => setIsDetailsOpen((prev) => !prev)}
               className="absolute left-1/2 top-1/2 flex h-11 min-w-[88px] -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-xl border border-[#45506d] bg-[#20293a] px-2 hover:border-[#64749b]"
             >
               <div className="relative h-8 w-12 overflow-hidden rounded-md border border-[#5b6380] bg-gradient-to-br from-[#2a3347] to-[#111726]">
@@ -227,6 +223,7 @@ export default function UploadStatusModal(props: UploadStatusModalProps) {
           </div>
         </div>
       </div>
+      </>
     );
   }
 

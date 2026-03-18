@@ -199,14 +199,17 @@ export async function getRecordingProgressService(args: {
     const hasUploadGap = internalTracks.some(
       (track) => track.blockedReason === 'missing_chunks' || track.blockedReason === 'chunks_not_uploaded'
     );
-    const blockedReason = hasFinalizeIssue
-      ? toParticipantBlockedReason('not_finalized')
-      : hasUploadGap
-        ? toParticipantBlockedReason('chunks_not_uploaded')
-        : undefined;
+    const isStillRecording = !recording.stopped_at;
+    const blockedReason = isStillRecording
+      ? undefined
+      : hasFinalizeIssue
+        ? toParticipantBlockedReason('not_finalized')
+        : hasUploadGap
+          ? toParticipantBlockedReason('chunks_not_uploaded')
+          : undefined;
 
     let state: ConsumerRecordingState;
-    if (!recording.stopped_at) {
+    if (isStillRecording) {
       state = 'recording';
     } else if (hasFinalizeIssue) {
       state = 'action required';

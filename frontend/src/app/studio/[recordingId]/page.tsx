@@ -2491,21 +2491,22 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         id: 'local-live',
         label: displayName || 'You',
         role: localStudioRoleLabel,
-        percent: uploadedPercent,
-        note: hasLiveUploadActivity ? `${uploadedPercent}% uploaded` : 'Recording...',
-        showProgressBar: hasLiveUploadActivity,
+        percent: isRecording ? 0 : uploadedPercent,
+        note: isRecording ? 'Recording...' : hasLiveUploadActivity ? `${uploadedPercent}% uploaded` : 'Waiting...',
+        showProgressBar: !isRecording && hasLiveUploadActivity,
       },
       // Use backend participant data (role + upload progress) when available;
       // fall back to live-presence peers (no role/progress info) before first poll.
       ...(remoteProgressParticipants.length > 0
         ? remoteProgressParticipants.map((p) => {
+            const isParticipantRecording = p.state === 'recording';
             return {
               id: p.participantId,
               label: p.displayName || p.participantId.slice(0, 8),
               role: p.role === 'host' ? 'Host' : 'Guest',
-              percent: p.progressPct,
-              note: p.blockedReason ?? toConsumerStateLabel(p.state),
-              showProgressBar: p.state !== 'recording' || p.progressPct > 0,
+              percent: isParticipantRecording ? 0 : p.progressPct,
+              note: isParticipantRecording ? 'Recording...' : (p.blockedReason ?? toConsumerStateLabel(p.state)),
+              showProgressBar: !isParticipantRecording && p.progressPct > 0,
             };
           })
         : active.peers.map((peer) => ({
