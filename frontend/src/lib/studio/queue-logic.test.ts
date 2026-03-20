@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import {
   reconcileTrackRecoveryItems,
   selectTrackSerializedBatch,
-  selectTusResumeCandidate,
 } from './queue-logic';
 
 test('queue scheduler never selects same-track chunks concurrently', () => {
@@ -101,7 +100,7 @@ test('reconcile keeps seq > highestExisting and requeues failed incomplete chunk
         trackId: 'track-a',
         seq: 1,
         status: 'queued',
-        protocol: 'tus',
+        protocol: 'presigned_url',
         nextAttemptAt: 10,
         createdAt: 1,
         updatedAt: 10,
@@ -112,7 +111,7 @@ test('reconcile keeps seq > highestExisting and requeues failed incomplete chunk
         trackId: 'track-a',
         seq: 4,
         status: 'failed',
-        protocol: 'tus',
+        protocol: 'presigned_url',
         nextAttemptAt: Number.MAX_SAFE_INTEGER,
         createdAt: 4,
         updatedAt: 10,
@@ -123,7 +122,7 @@ test('reconcile keeps seq > highestExisting and requeues failed incomplete chunk
         trackId: 'track-a',
         seq: 5,
         status: 'failed',
-        protocol: 'tus',
+        protocol: 'presigned_url',
         nextAttemptAt: Number.MAX_SAFE_INTEGER,
         createdAt: 5,
         updatedAt: 10,
@@ -134,7 +133,7 @@ test('reconcile keeps seq > highestExisting and requeues failed incomplete chunk
         trackId: 'track-a',
         seq: 6,
         status: 'queued',
-        protocol: 'tus',
+        protocol: 'presigned_url',
         nextAttemptAt: 10,
         createdAt: 6,
         updatedAt: 10,
@@ -170,7 +169,7 @@ test('reconcile requeues stale processing items and preserves future local chunk
         trackId: 'track-a',
         seq: 2,
         status: 'processing',
-        protocol: 'tus',
+        protocol: 'presigned_url',
         nextAttemptAt: 10,
         createdAt: 2,
         updatedAt: 10,
@@ -181,7 +180,7 @@ test('reconcile requeues stale processing items and preserves future local chunk
         trackId: 'track-a',
         seq: 4,
         status: 'processing',
-        protocol: 'tus',
+        protocol: 'presigned_url',
         nextAttemptAt: 10,
         createdAt: 4,
         updatedAt: 10,
@@ -192,7 +191,7 @@ test('reconcile requeues stale processing items and preserves future local chunk
         trackId: 'track-a',
         seq: 7,
         status: 'processing',
-        protocol: 'tus',
+        protocol: 'presigned_url',
         nextAttemptAt: 10,
         createdAt: 7,
         updatedAt: 10,
@@ -216,81 +215,6 @@ test('reconcile requeues stale processing items and preserves future local chunk
       { id: 'seq-7', status: 'queued', nextAttemptAt: 123 },
     ]
   );
-});
-
-test('reconcile applies resumable TUS metadata when server provides it', () => {
-  const actions = reconcileTrackRecoveryItems({
-    items: [
-      {
-        id: 'seq-5',
-        recordingId: 'rec-1',
-        trackId: 'track-a',
-        seq: 5,
-        status: 'failed',
-        protocol: 'tus',
-        nextAttemptAt: Number.MAX_SAFE_INTEGER,
-        createdAt: 5,
-        updatedAt: 10,
-      },
-    ],
-    inFlightItemIds: new Set<string>(),
-    snapshot: {
-      recordingId: 'rec-1',
-      trackId: 'track-a',
-      highestExistingSeq: 5,
-      highestContiguousUploadedSeq: 4,
-      resumableTus: {
-        chunkId: 'chunk-5',
-        seq: 5,
-        tusId: 'tus-5',
-        tusUrl: 'http://localhost:1080/tus/tus-5',
-        tusUploadState: 'uploading',
-      },
-    },
-    now: 99,
-  });
-
-  assert.equal(actions.deleteIds.length, 0);
-  assert.deepEqual(actions.upserts, [
-    {
-      id: 'seq-5',
-      recordingId: 'rec-1',
-      trackId: 'track-a',
-      seq: 5,
-      status: 'queued',
-      protocol: 'tus',
-      nextAttemptAt: 99,
-      createdAt: 5,
-      updatedAt: 99,
-      resumableTusId: 'tus-5',
-      resumableTusUrl: 'http://localhost:1080/tus/tus-5',
-      resumableTusChunkId: 'chunk-5',
-      resumableTusUploadState: 'uploading',
-    },
-  ]);
-});
-
-test('TUS retry picks canonical resumable identity before creating fresh upload', () => {
-  const byItemUrl = selectTusResumeCandidate({
-    itemTusUrl: 'http://localhost:1080/tus/item-url',
-    endpoint: 'http://localhost:1080/tus/',
-    buildTusUrlFromId: (id, endpoint) => `${endpoint}${id}`,
-  });
-  assert.equal(byItemUrl, 'http://localhost:1080/tus/item-url');
-
-  const byResumePlan = selectTusResumeCandidate({
-    resumePlanTusResourceUrl: 'http://localhost:1080/tus/plan-url',
-    endpoint: 'http://localhost:1080/tus/',
-    buildTusUrlFromId: (id, endpoint) => `${endpoint}${id}`,
-  });
-  assert.equal(byResumePlan, 'http://localhost:1080/tus/plan-url');
-
-  const byId = selectTusResumeCandidate({
-    itemTusId: 'canonical-id',
-    endpoint: 'http://localhost:1080/tus/',
-    buildTusUrlFromId: (id, endpoint) => `${endpoint}${id}`,
-  });
-  assert.equal(byId, 'http://localhost:1080/tus/canonical-id');
 });
 
 test('offline retry backoff prevents immediate re-dispatch before reconnect window', () => {
@@ -334,7 +258,7 @@ test('recovery reconcile does not mutate items still marked in-flight on reconne
         trackId: 'track-a',
         seq: 5,
         status: 'processing',
-        protocol: 'tus',
+        protocol: 'presigned_url',
         nextAttemptAt: 10,
         createdAt: 5,
         updatedAt: 10,
@@ -346,12 +270,6 @@ test('recovery reconcile does not mutate items still marked in-flight on reconne
       trackId: 'track-a',
       highestExistingSeq: 5,
       highestContiguousUploadedSeq: 3,
-      resumableTus: {
-        chunkId: 'chunk-5',
-        seq: 5,
-        tusId: 'tus-5',
-        tusUrl: 'http://localhost:1080/tus/tus-5',
-      },
     },
     now: 99,
   });
