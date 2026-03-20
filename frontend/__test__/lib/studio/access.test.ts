@@ -1,6 +1,6 @@
-import test from 'node:test';
+import { test } from '@jest/globals';
 import assert from 'node:assert/strict';
-import { deriveStudioUiAccess } from './access';
+import { deriveStudioUiAccess } from '../../../src/lib/studio/access';
 
 test('deriveStudioUiAccess enables host-only controls for hosts', () => {
   assert.deepEqual(deriveStudioUiAccess('host'), {

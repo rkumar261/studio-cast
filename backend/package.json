@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "test": "node --test --import tsx src/*.test.ts src/**/*.test.ts",
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest --config ./jest.config.cjs --runInBand",
+    "test:coverage": "NODE_OPTIONS=--experimental-vm-modules jest --config ./jest.config.cjs --coverage --runInBand",
     "dev:all": "bash scripts/dev-all.sh",
     "dev:api": "tsx src/index.ts",
     "dev:worker:stitch": "tsx src/workers/stitch.worker.ts",
@@ -28,9 +29,12 @@
   "license": "ISC",
   "description": "",
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/node": "^24.6.1",
+    "jest": "^30.3.0",
     "openapi-typescript": "^7.9.1",
     "prisma": "^6.16.3",
+    "ts-jest": "^29.4.6",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   },

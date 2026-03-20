@@ -1,7 +1,6 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { prisma } from '../lib/prisma.js';
-import { claimGuestParticipantService, createParticipantService } from './participants.service.js';
+import { prisma } from '../../src/lib/prisma.js';
+import { claimGuestParticipantService, createParticipantService } from '../../src/services/participants.service.js';
 
 process.env.MAGIC_LINK_BASE_URL ??= 'https://studio.example.com/invite';
 

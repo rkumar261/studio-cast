@@ -1,7 +1,6 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { prisma } from '../lib/prisma.js';
-import { reconcileRecordingReadiness } from './recording-readiness.service.js';
+import { prisma } from '../../src/lib/prisma.js';
+import { reconcileRecordingReadiness } from '../../src/services/recording-readiness.service.js';
 
 type AnyRecord = Record<string, any>;
 

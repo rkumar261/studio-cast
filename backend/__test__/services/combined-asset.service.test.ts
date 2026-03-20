@@ -1,7 +1,6 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { prisma } from '../lib/prisma.js';
-import { reconcileCombinedAssetForRecording } from './combined-asset.service.js';
+import { prisma } from '../../src/lib/prisma.js';
+import { reconcileCombinedAssetForRecording } from '../../src/services/combined-asset.service.js';
 
 type AnyRecord = Record<string, any>;
 

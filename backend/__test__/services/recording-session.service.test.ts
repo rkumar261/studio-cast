@@ -1,10 +1,9 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { prisma } from '../lib/prisma.js';
+import { prisma } from '../../src/lib/prisma.js';
 import {
   startRecordingSessionService,
   stopRecordingSessionService,
-} from './recording-session.service.js';
+} from '../../src/services/recording-session.service.js';
 
 type AnyRecord = Record<string, any>;
 

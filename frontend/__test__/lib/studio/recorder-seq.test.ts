@@ -1,6 +1,6 @@
-import test from 'node:test';
+import { test } from '@jest/globals';
 import assert from 'node:assert/strict';
-import { consumeNextSeq, seedSeqFromServerTruth } from './recorder-seq';
+import { consumeNextSeq, sanitizeNextSeq, seedSeqFromServerTruth } from '../../../src/lib/studio/recorder-seq';
 
 test('refresh/reconnect seeds next seq from server truth', () => {
   const seqByTrack = new Map<string, number>();
@@ -42,4 +42,11 @@ test('server truth seed does not regress a track that already advanced locally',
   });
 
   assert.equal(next, 12);
+});
+
+test('sanitizeNextSeq normalizes invalid, fractional, and low values', () => {
+  assert.equal(sanitizeNextSeq(undefined), 1);
+  assert.equal(sanitizeNextSeq(Number.NaN), 1);
+  assert.equal(sanitizeNextSeq(4.9), 4);
+  assert.equal(sanitizeNextSeq(0), 1);
 });

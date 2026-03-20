@@ -1,7 +1,6 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { prisma } from '../lib/prisma.js';
-import { getRecordingProgressService } from './recording-progress.service.js';
+import { prisma } from '../../src/lib/prisma.js';
+import { getRecordingProgressService } from '../../src/services/recording-progress.service.js';
 
 type AnyRecord = Record<string, any>;
 

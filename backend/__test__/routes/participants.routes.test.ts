@@ -1,16 +1,12 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
-import { fileURLToPath } from 'node:url';
-import { prisma } from '../lib/prisma.js';
+import { prisma } from '../../src/lib/prisma.js';
+import participantRoutes from '../../src/routes/participants.routes.js';
 
-process.env.JWT_PRIVATE_KEY_PATH ??= fileURLToPath(new URL('../../certs/jwtRS256.key', import.meta.url));
-process.env.JWT_PUBLIC_KEY_PATH ??= fileURLToPath(new URL('../../certs/jwtRS256.key.pub', import.meta.url));
-
-const [{ default: participantRoutes }] = await Promise.all([
-  import('./participants.routes.js'),
-]);
+process.env.JWT_PRIVATE_KEY_PATH ??= path.resolve(process.cwd(), 'certs/jwtRS256.key');
+process.env.JWT_PUBLIC_KEY_PATH ??= path.resolve(process.cwd(), 'certs/jwtRS256.key.pub');
 
 type AnyRecord = Record<string, any>;
 

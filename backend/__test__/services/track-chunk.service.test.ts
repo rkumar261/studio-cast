@@ -1,11 +1,10 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { prisma } from '../lib/prisma.js';
+import { prisma } from '../../src/lib/prisma.js';
 import {
   completeTrackChunkService,
   getTrackChunkRecoveryService,
   initiateTrackChunkService,
-} from './track-chunk.service.js';
+} from '../../src/services/track-chunk.service.js';
 
 type AnyRecord = Record<string, any>;
 

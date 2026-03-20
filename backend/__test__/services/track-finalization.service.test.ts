@@ -1,7 +1,6 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { prisma } from '../lib/prisma.js';
-import { finalizeTrackCaptureService } from './track-finalization.service.js';
+import { prisma } from '../../src/lib/prisma.js';
+import { finalizeTrackCaptureService } from '../../src/services/track-finalization.service.js';
 
 type AnyRecord = Record<string, any>;
 

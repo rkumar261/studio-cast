@@ -1,9 +1,10 @@
-import test from 'node:test';
+import { test } from '@jest/globals';
 import assert from 'node:assert/strict';
 import {
   reconcileTrackRecoveryItems,
   selectTrackSerializedBatch,
-} from './queue-logic';
+  trackExecutionKey,
+} from '../../../src/lib/studio/queue-logic';
 
 test('queue scheduler never selects same-track chunks concurrently', () => {
   const selected = selectTrackSerializedBatch({
@@ -46,6 +47,10 @@ test('queue scheduler never selects same-track chunks concurrently', () => {
     selected.map((item) => item.id),
     ['a-1', 'b-1']
   );
+});
+
+test('trackExecutionKey namespaces serialized work by recording and track', () => {
+  assert.equal(trackExecutionKey({ recordingId: 'rec-9', trackId: 'track-z' }), 'rec-9:track-z');
 });
 
 test('queue scheduler skips tracks that already have an in-flight item', () => {

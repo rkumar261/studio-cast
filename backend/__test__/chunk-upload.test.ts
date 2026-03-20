@@ -6,10 +6,12 @@
  * are writable — no mock.module() needed.
  */
 
-import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { prisma } from './lib/prisma.js';
-import { r2Adapter } from './lib/r2.js';
+import { prisma } from '../src/lib/prisma.js';
+import { r2Adapter } from '../src/lib/r2.js';
+import { initiateTrackChunkService } from '../src/services/track-chunk.service.js';
+import { validateRequiredEnv } from '../src/lib/validate-env.js';
+import { isLikelyR2Key } from '../src/lib/storage.js';
 
 type AnyRecord = Record<string, any>;
 
@@ -18,13 +20,6 @@ function stubMethod(target: AnyRecord, key: string, impl: any): () => void {
   target[key] = impl;
   return () => { target[key] = original; };
 }
-
-// ---------------------------------------------------------------------------
-// Import services after mocks are importable (no top-level mock.module calls)
-// ---------------------------------------------------------------------------
-const { initiateTrackChunkService } = await import('./services/track-chunk.service.js');
-const { validateRequiredEnv } = await import('./lib/validate-env.js');
-const { isLikelyR2Key } = await import('./lib/storage.js');
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -67,8 +62,6 @@ function mockPresignPutUrl(restores: Array<() => void>) {
 // ---------------------------------------------------------------------------
 
 describe('BRD-10: presigned URL chunk upload', () => {
-  before(() => {});
-
   describe('A — initiateTrackChunkService: happy path', () => {
     it('returns presigned_url uploadPlan with url, key, expiresAt', async () => {
       const restores: Array<() => void> = [];

@@ -1,6 +1,5 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { prisma } from '../lib/prisma.js';
+import { prisma } from '../../src/lib/prisma.js';
 import {
   listParticipantAssetsForRecording,
   markParticipantAssetFailed,
@@ -8,7 +7,7 @@ import {
   markParticipantAssetReady,
   reconcileParticipantMasterAsset,
   selectParticipantMasterTrack,
-} from './participant-asset.service.js';
+} from '../../src/services/participant-asset.service.js';
 
 type AnyRecord = Record<string, any>;
 

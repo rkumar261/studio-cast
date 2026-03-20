@@ -1,17 +1,13 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import Fastify from 'fastify';
-import { fileURLToPath } from 'node:url';
-import { prisma } from '../lib/prisma.js';
+import { prisma } from '../../src/lib/prisma.js';
+import recordingRoutes from '../../src/routes/recordings.routes.js';
+import { signAccessJwt, signGuestAccessJwt } from '../../src/lib/jwt.js';
 
-process.env.JWT_PRIVATE_KEY_PATH ??= fileURLToPath(new URL('../../certs/jwtRS256.key', import.meta.url));
-process.env.JWT_PUBLIC_KEY_PATH ??= fileURLToPath(new URL('../../certs/jwtRS256.key.pub', import.meta.url));
+process.env.JWT_PRIVATE_KEY_PATH ??= path.resolve(process.cwd(), 'certs/jwtRS256.key');
+process.env.JWT_PUBLIC_KEY_PATH ??= path.resolve(process.cwd(), 'certs/jwtRS256.key.pub');
 process.env.R2_PUBLIC_BASE_URL ??= 'https://cdn.example.com/riverside-lite';
-
-const [{ default: recordingRoutes }, { signAccessJwt, signGuestAccessJwt }] = await Promise.all([
-  import('./recordings.routes.js'),
-  import('../lib/jwt.js'),
-]);
 
 type AnyRecord = Record<string, any>;
 
