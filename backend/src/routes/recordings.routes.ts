@@ -31,7 +31,7 @@ import { getProjectAssetsGraphService } from '../services/project-assets.service
 import { getRecordingLifecycleDiagnosticsService } from '../services/recording-lifecycle.service.js';
 import { emitTelemetry } from '../lib/telemetry.js';
 
-const LIVE_RECORDING_TRANSPORT = 'tus';
+const LIVE_RECORDING_TRANSPORT = 'presigned_url';
 
 function emitGuestAccessBlocked(req: any, args: {
     recordingId?: string;
@@ -410,8 +410,8 @@ export default async function recordingRoutes(app: FastifyInstance) {
         const body = req.body;
         if (body.protocol !== LIVE_RECORDING_TRANSPORT) {
             return res.code(410).send({
-                code: 'live_transport_tus_only',
-                message: 'Live recording chunk transport is TUS-only. Use /v1/uploads/* for manual/import multipart workflows.',
+                code: 'live_transport_protocol_mismatch',
+                message: 'Live recording chunk transport requires presigned_url protocol. Use /v1/uploads/* for manual/import multipart workflows.',
             });
         }
         const result = await initiateTrackChunkService({ recordingId: id, principal, body });
@@ -423,15 +423,6 @@ export default async function recordingRoutes(app: FastifyInstance) {
         }
         if (result.code === 'invalid_protocol') {
             return res.code(422).send({ code: 'invalid_protocol', message: 'Unsupported chunk protocol' });
-        }
-        if (result.code === 'tus_not_uploaded_yet') {
-            return res.code(409).send({ code: result.code, message: result.message, details: result.details });
-        }
-        if (result.code === 'tus_upload_orphaned') {
-            return res.code(409).send({ code: result.code, message: result.message, details: result.details });
-        }
-        if (result.code === 'tus_storage_misconfigured') {
-            return res.code(500).send({ code: result.code, message: result.message, details: result.details });
         }
         if (result.code === 'invalid_seq' || result.code === 'seq_integrity_error') {
             return res.code(409).send({ code: result.code, message: result.message, details: result.details });
@@ -453,8 +444,8 @@ export default async function recordingRoutes(app: FastifyInstance) {
         const body = req.body;
         if (body.protocol !== LIVE_RECORDING_TRANSPORT) {
             return res.code(410).send({
-                code: 'live_transport_tus_only',
-                message: 'Live recording chunk transport is TUS-only. Use /v1/uploads/* for manual/import multipart workflows.',
+                code: 'live_transport_protocol_mismatch',
+                message: 'Live recording chunk transport requires presigned_url protocol. Use /v1/uploads/* for manual/import multipart workflows.',
             });
         }
         const result = await completeTrackChunkService({
@@ -471,15 +462,6 @@ export default async function recordingRoutes(app: FastifyInstance) {
         }
         if (result.code === 'invalid_protocol') {
             return res.code(422).send({ code: 'invalid_protocol', message: 'Unsupported chunk protocol' });
-        }
-        if (result.code === 'tus_not_uploaded_yet') {
-            return res.code(409).send({ code: result.code, message: result.message, details: result.details });
-        }
-        if (result.code === 'tus_upload_orphaned') {
-            return res.code(409).send({ code: result.code, message: result.message, details: result.details });
-        }
-        if (result.code === 'tus_storage_misconfigured') {
-            return res.code(500).send({ code: result.code, message: result.message, details: result.details });
         }
         if (result.code === 'invalid_seq' || result.code === 'seq_integrity_error') {
             return res.code(409).send({ code: result.code, message: result.message, details: result.details });

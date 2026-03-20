@@ -41,7 +41,7 @@ export type FinalizeTrackResponse = {
 export type InitiateTrackChunkRequest = {
   trackId: string;
   seq: number;
-  protocol: 'tus';
+  protocol: 'presigned_url';
   bytesExpected?: number;
 };
 
@@ -57,9 +57,6 @@ export type InitiateTrackChunkResponse = {
     state: string;
     bytesExpected?: number;
     bytesReceived?: number;
-    tusUploadId?: string;
-    tusResourceUrl?: string;
-    tusUploadState?: string;
     failureReason?: string;
     lastErrorAt?: string;
     materializedAt?: string;
@@ -69,23 +66,10 @@ export type InitiateTrackChunkResponse = {
   existed?: boolean;
   already?: boolean;
   uploadPlan?: {
-    protocol: 'tus';
-    tusEndpoint: string;
-    metadata: {
-      chunkId: string;
-      recordingId: string;
-      trackId: string;
-      seq: string;
-    };
-  };
-  resumeUploadPlan?: {
-    protocol: 'tus';
-    tusEndpoint: string;
-    chunkId: string;
-    tusId?: string;
-    tusUrl?: string;
-    tusResourceUrl?: string;
-    tusUploadState?: string;
+    protocol: 'presigned_url';
+    url: string;
+    key: string;
+    expiresAt: string;
   };
   reconciliation?: {
     requestedSeq: number;
@@ -94,12 +78,11 @@ export type InitiateTrackChunkResponse = {
 };
 
 export type CompleteTrackChunkRequest = {
-  protocol: 'tus';
+  protocol: 'presigned_url';
   bytesReceived?: number;
-  storageKeyRaw?: string;
+  storageKeyRaw: string;
   etag?: string;
   checksumSha256?: string;
-  tusUrl?: string;
 };
 
 export type CompleteTrackChunkResponse = {
@@ -112,9 +95,6 @@ export type CompleteTrackChunkResponse = {
     bytesReceived: number;
     bytesExpected?: number;
     storageKeyRaw?: string;
-    tusUploadId?: string;
-    tusResourceUrl?: string;
-    tusUploadState?: string;
     failureReason?: string;
     lastErrorAt?: string;
     materializedAt?: string;
@@ -124,6 +104,8 @@ export type CompleteTrackChunkResponse = {
     updatedAt: string;
   };
   already?: boolean;
+  nextExpectedSeq?: number;
+  highestContiguousUploadedSeq?: number;
 };
 
 export type TrackChunkRecoveryResponse = {
@@ -144,20 +126,10 @@ export type TrackChunkRecoveryResponse = {
       state: string;
       bytesExpected?: number;
       bytesReceived: number;
-      tusId?: string;
-      tusUrl?: string;
-      tusUploadState?: string;
       failureReason?: string;
       lastErrorAt?: string;
       updatedAt: string;
     }>;
-    resumableTus?: {
-      chunkId: string;
-      seq: number;
-      tusId: string;
-      tusUrl?: string;
-      tusUploadState?: string;
-    };
   };
 };
 

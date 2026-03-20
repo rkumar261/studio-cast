@@ -1,18 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import * as tus from 'tus-js-client';
 import { StudioRecordingAPI } from '@/lib/studio/internal-api';
 import {
   reconcileTrackRecoveryItems,
   selectTrackSerializedBatch,
-  selectTusResumeCandidate,
   trackExecutionKey,
 } from './queue-logic';
 
-// Live studio recording uploads are canonicalized to TUS-only.
-export type ChunkUploadProtocol = 'tus';
-type PersistedChunkUploadProtocol = 'tus' | 'multipart';
+export type ChunkUploadProtocol = 'presigned_url';
 type ChunkKind = 'audio' | 'video' | 'screen';
 type QueueStatus = 'queued' | 'processing' | 'failed';
 
@@ -33,17 +29,13 @@ type PersistedQueueItem = {
   trackId: string;
   seq: number;
   kind: ChunkKind;
-  protocol: PersistedChunkUploadProtocol;
+  protocol: ChunkUploadProtocol;
   blob: Blob;
   bytes: number;
   emittedAt: number;
   attempts: number;
   status: QueueStatus;
   nextAttemptAt: number;
-  resumableTusId?: string;
-  resumableTusUrl?: string;
-  resumableTusChunkId?: string;
-  resumableTusUploadState?: string;
   lastError?: string;
   createdAt: number;
   updatedAt: number;
@@ -73,17 +65,10 @@ export type TrackChunkRecoverySnapshot = {
   trackId: string;
   highestExistingSeq: number;
   highestContiguousUploadedSeq: number;
-  resumableTus?: {
-    chunkId: string;
-    seq: number;
-    tusId: string;
-    tusUrl?: string;
-    tusUploadState?: string;
-  };
 };
 
 const DB_NAME = 'studio-cast-chunk-queue';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // bumped: removed TUS fields from schema
 const STORE_NAME = 'chunks';
 const NON_RETRYABLE_HTTP_STATUS = new Set([400, 401, 403, 404, 409, 410, 413, 415, 422]);
 
@@ -106,9 +91,11 @@ function openQueueDb(): Promise<IDBDatabase> {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+      // Drop old store on version upgrade (removes stale TUS items).
+      if (db.objectStoreNames.contains(STORE_NAME)) {
+        db.deleteObjectStore(STORE_NAME);
       }
+      db.createObjectStore(STORE_NAME, { keyPath: 'id' });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error ?? new Error('Failed to open IndexedDB.'));
@@ -139,99 +126,13 @@ function nextBackoffMs(attempt: number): number {
   return Math.min(base, 30_000);
 }
 
-function isLoopbackHost(hostname: string) {
-  return hostname === '127.0.0.1' || hostname === '0.0.0.0' || hostname === 'localhost';
+function isPresignedUrlExpired(expiresAt: string): boolean {
+  // Consider expired if within 30 seconds of expiry to account for clock skew.
+  return Date.now() >= new Date(expiresAt).getTime() - 30_000;
 }
 
-function normalizeTusEndpoint(endpoint?: string | null): string | null {
-  const raw = endpoint?.trim();
-  if (!raw) return null;
-  if (typeof window === 'undefined') return raw;
-
-  try {
-    const parsed = new URL(raw, window.location.origin);
-    const apiBase = process.env.NEXT_PUBLIC_API_BASE?.trim();
-    if (!apiBase) {
-      return parsed.toString();
-    }
-
-    const apiUrl = new URL(apiBase, window.location.origin);
-    if (isLoopbackHost(parsed.hostname)) {
-      parsed.protocol = apiUrl.protocol;
-      parsed.host = apiUrl.host;
-    }
-    return parsed.toString();
-  } catch {
-    return raw;
-  }
-}
-
-function normalizeTusResourceUrl(uploadUrl: string, endpoint: string): string {
-  if (!uploadUrl) return uploadUrl;
-  if (typeof window === 'undefined') return uploadUrl;
-  try {
-    const resolved = new URL(uploadUrl, endpoint);
-    const endpointUrl = new URL(endpoint, window.location.origin);
-    if (isLoopbackHost(resolved.hostname) && resolved.host !== endpointUrl.host) {
-      resolved.protocol = endpointUrl.protocol;
-      resolved.host = endpointUrl.host;
-    }
-    return resolved.toString();
-  } catch {
-    return uploadUrl;
-  }
-}
-
-function parseTusIdFromUrl(url?: string | null): string | undefined {
-  if (!url) return undefined;
-  try {
-    const cleaned = url.split('?')[0]?.replace(/\/+$/, '');
-    const maybeId = cleaned?.split('/').pop()?.trim();
-    return maybeId || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function tusUrlFromId(tusId: string, endpoint: string): string {
-  return normalizeTusResourceUrl(`${endpoint}${tusId}`, endpoint);
-}
-
-function getStatusFromUploadError(err: unknown): number | null {
-  const maybe = err as {
-    originalResponse?: {
-      getStatus?: () => number;
-      getUnderlyingObject?: () => { status?: number } | null;
-    };
-  };
-  const status = maybe?.originalResponse?.getStatus?.();
-  if (typeof status === 'number' && status > 0) return status;
-  const underlying = maybe?.originalResponse?.getUnderlyingObject?.();
-  if (underlying && typeof underlying.status === 'number' && underlying.status > 0) {
-    return underlying.status;
-  }
-  return null;
-}
-
-function isHardTusFailure(err: unknown): boolean {
-  const status = getStatusFromUploadError(err);
-  if (status != null && NON_RETRYABLE_HTTP_STATUS.has(status)) return true;
-
-  const message = (err as Error | undefined)?.message?.toLowerCase() ?? '';
-  if (!message) return false;
-  if (message.includes('seq mismatch')) return true;
-  if (message.includes('did not include tus upload endpoint')) return true;
-  if (message.includes('failed to resume upload') && message.includes('response code: n/a')) return true;
-  if (message.includes('failed to fetch')) return true;
-  return false;
-}
-
-function isTusResumeFailure(err: unknown): boolean {
-  const message = (err as Error | undefined)?.message?.toLowerCase() ?? '';
-  if (!message) return false;
-  if (message.includes('failed to resume upload')) return true;
-  if (message.includes('method: head')) return true;
-  return false;
+function isHardFailureStatus(status: number): boolean {
+  return NON_RETRYABLE_HTTP_STATUS.has(status);
 }
 
 export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
@@ -282,12 +183,8 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
   const scopedCompleted = useCallback(() => {
     if (scopeRecordingId) {
       const value = completedByRecordingRef.current.get(scopeRecordingId);
-      return {
-        count: value?.count ?? 0,
-        bytes: value?.bytes ?? 0,
-      };
+      return { count: value?.count ?? 0, bytes: value?.bytes ?? 0 };
     }
-
     let count = 0;
     let bytes = 0;
     for (const value of completedByRecordingRef.current.values()) {
@@ -325,10 +222,9 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
     const completed = scopedCompleted();
     const bytesUploaded = completed.bytes;
     const bytesTotal = bytesPending + bytesFailed + bytesProcessing + bytesUploaded;
-    const inFlightCount = scopedInFlightCount();
     setStats({
       pending,
-      processing: processing + inFlightCount,
+      processing: processing + scopedInFlightCount(),
       failed,
       completed: completed.count,
       bytesPending,
@@ -356,18 +252,15 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
       if (scopeRecordingId && item.recordingId !== scopeRecordingId) {
         throw new Error('Queue item belongs to a different recording scope.');
       }
-      if (item.protocol !== 'tus') {
-        throw new Error(
-          'Live studio chunk transport is TUS-only. Multipart queue items are deprecated and blocked.'
-        );
-      }
 
+      // Step 1: initiate — get presigned PUT URL from backend.
       const initiated = await StudioRecordingAPI.initiateChunk(item.recordingId, {
         trackId: item.trackId,
         seq: item.seq,
-        protocol: 'tus',
+        protocol: 'presigned_url',
         bytesExpected: item.bytes,
       });
+
       if (initiated.status === 'seq_mismatch') {
         throw new Error(
           `Seq mismatch on initiate (track=${item.trackId}, requested=${item.seq}, nextExpected=${initiated.nextExpectedSeq ?? 'unknown'})`
@@ -380,128 +273,66 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
         throw new Error('Chunk initiate response did not include chunk id.');
       }
 
-      const uploadPlan = initiated.uploadPlan;
-      const endpoint = normalizeTusEndpoint(uploadPlan?.tusEndpoint);
-      if (!endpoint) {
-        throw new Error('Chunk initiate response did not include tus upload endpoint.');
+      let { uploadPlan } = initiated;
+      if (!uploadPlan) {
+        throw new Error('Chunk initiate response did not include upload plan.');
       }
 
-      const chunkId =
-        item.resumableTusChunkId ??
-        initiated.resumeUploadPlan?.chunkId ??
-        uploadPlan?.metadata.chunkId ??
-        initiated.chunk.id;
-      let persistedTusUrl = item.resumableTusUrl;
-      let persistedTusId = item.resumableTusId;
-      let persistedChunkId = item.resumableTusChunkId;
-      const persistResumableIdentity = async (candidateUrl?: string) => {
-        if (!candidateUrl) return;
-        const normalized = normalizeTusResourceUrl(candidateUrl, endpoint);
-        const tusId = parseTusIdFromUrl(normalized);
-        if (
-          normalized === persistedTusUrl &&
-          tusId === persistedTusId &&
-          chunkId === persistedChunkId
-        ) {
-          return;
-        }
-        persistedTusUrl = normalized;
-        persistedTusId = tusId;
-        persistedChunkId = chunkId;
-        await markItem({
-          ...item,
-          resumableTusId: tusId,
-          resumableTusUrl: normalized,
-          resumableTusChunkId: chunkId,
-          resumableTusUploadState: 'uploading',
-          updatedAt: nowMs(),
+      // Step 2: if presigned URL is expired, re-initiate to get a fresh one.
+      if (isPresignedUrlExpired(uploadPlan.expiresAt)) {
+        const refreshed = await StudioRecordingAPI.initiateChunk(item.recordingId, {
+          trackId: item.trackId,
+          seq: item.seq,
+          protocol: 'presigned_url',
+          bytesExpected: item.bytes,
         });
-      };
-
-      const startTusUpload = (resumeUrl?: string) =>
-        new Promise<string>((resolve, reject) => {
-          const upload = new tus.Upload(item.blob, {
-            endpoint,
-            ...(resumeUrl ? { uploadUrl: normalizeTusResourceUrl(resumeUrl, endpoint) } : {}),
-            metadata: {
-              'chunk-id': chunkId,
-              'recording-id': item.recordingId,
-              'track-id': item.trackId,
-              seq: String(item.seq),
-            },
-            uploadSize: item.bytes,
-            removeFingerprintOnSuccess: true,
-            storeFingerprintForResuming: true,
-            fingerprint: async () => `${item.recordingId}:${item.trackId}:${item.seq}:tus`,
-            retryDelays: [300, 600, 1200, 2500],
-            chunkSize: 5 * 1024 * 1024,
-            onShouldRetry: (error) => !isHardTusFailure(error),
-            onError: (err) => {
-              if (upload.url) {
-                void persistResumableIdentity(upload.url);
-              }
-              reject(err);
-            },
-            onProgress: (sent) => {
-              progressBytesByIdRef.current.set(item.id, sent);
-              if (upload.url) {
-                void persistResumableIdentity(upload.url);
-              }
-              void refreshStats();
-            },
-            onSuccess: () => {
-              if (upload.url) {
-                void persistResumableIdentity(upload.url);
-              }
-              resolve(normalizeTusResourceUrl(upload.url ?? '', endpoint));
-            },
-          });
-
-          if (!resumeUrl) {
-            void upload.findPreviousUploads().then((previousUploads) => {
-              const previous = previousUploads[0];
-              if (previous) upload.resumeFromPreviousUpload(previous);
-              upload.start();
-            }).catch(() => {
-              upload.start();
-            });
-            return;
-          }
-
-          upload.start();
-        });
-
-      let tusUrl = '';
-      const resumeUrl = selectTusResumeCandidate({
-        itemTusUrl: item.resumableTusUrl,
-        itemTusId: item.resumableTusId,
-        resumePlanTusId: initiated.resumeUploadPlan?.tusId,
-        resumePlanTusResourceUrl: initiated.resumeUploadPlan?.tusResourceUrl,
-        resumePlanTusUrl: initiated.resumeUploadPlan?.tusUrl,
-        endpoint,
-        buildTusUrlFromId: tusUrlFromId,
-      });
-      if (resumeUrl) {
-        await persistResumableIdentity(resumeUrl);
-      }
-      if (resumeUrl) {
-        try {
-          tusUrl = await startTusUpload(resumeUrl);
-        } catch (err) {
-          if (!isTusResumeFailure(err)) throw err;
-          tusUrl = await startTusUpload();
+        if (refreshed.already || refreshed.chunk?.state === 'uploaded') return;
+        if (!refreshed.uploadPlan) {
+          throw new Error('Refreshed initiate response did not include upload plan.');
         }
-      } else {
-        tusUrl = await startTusUpload();
+        uploadPlan = refreshed.uploadPlan;
       }
 
+      // Step 3: PUT the blob directly to R2 via the presigned URL.
+      progressBytesByIdRef.current.set(item.id, 0);
+      let putRes: Response;
+      try {
+        putRes = await fetch(uploadPlan.url, {
+          method: 'PUT',
+          body: item.blob,
+          headers: { 'Content-Type': 'video/webm' },
+        });
+      } catch (err) {
+        if (err instanceof TypeError) {
+          // CORS misconfiguration or network outage — fetch couldn't reach R2.
+          console.error(
+            '[studio-cast] R2 PUT blocked. Verify R2 bucket CORS allows PUT from this origin.',
+            { key: uploadPlan.key, origin: typeof window !== 'undefined' ? window.location.origin : 'unknown' }
+          );
+          throw new Error('Upload network error (possible CORS or connectivity issue)');
+        }
+        throw err;
+      }
+
+      progressBytesByIdRef.current.set(item.id, item.bytes);
+
+      if (!putRes.ok) {
+        const isHard = isHardFailureStatus(putRes.status);
+        const msg = `R2 PUT failed: ${putRes.status}`;
+        if (isHard) {
+          throw Object.assign(new Error(msg), { hard: true });
+        }
+        throw new Error(msg);
+      }
+
+      // Step 4: notify backend that the chunk is durably in R2.
       await StudioRecordingAPI.completeChunk(item.recordingId, initiated.chunk.id, {
-        protocol: 'tus',
+        protocol: 'presigned_url',
+        storageKeyRaw: uploadPlan.key,
         bytesReceived: item.bytes,
-        tusUrl: tusUrl || undefined,
       });
     },
-    [markItem, refreshStats, scopeRecordingId]
+    [scopeRecordingId]
   );
 
   const processItem = useCallback(
@@ -513,21 +344,16 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
       inFlightTrackIdsRef.current.add(trackKey);
 
       try {
-        const processingItem: PersistedQueueItem = {
-          ...item,
-          status: 'processing',
-          attempts: item.attempts + 1,
-          updatedAt: nowMs(),
-        };
-        await markItem(processingItem);
+        await markItem({ ...item, status: 'processing', attempts: item.attempts + 1, updatedAt: nowMs() });
         progressBytesByIdRef.current.set(id, 0);
         await refreshStats();
 
-        await runUpload(processingItem);
+        await runUpload({ ...item, status: 'processing', attempts: item.attempts + 1, updatedAt: nowMs() });
         await deleteItem(id);
-        addCompleted(processingItem.recordingId, processingItem.bytes);
+        addCompleted(item.recordingId, item.bytes);
       } catch (err) {
         const message = (err as Error)?.message ?? 'Chunk upload failed';
+        const isHard = (err as any)?.hard === true;
         setLastError(message);
         const latest =
           dbRef.current == null
@@ -537,19 +363,17 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
               );
         const base = latest ?? item;
         const attempts = Math.max(base.attempts, item.attempts + 1);
-        const retryBlocked = isHardTusFailure(err);
-        const failedItem: PersistedQueueItem = {
+        await markItem({
           ...base,
           attempts,
           status: 'failed',
           lastError: message,
           nextAttemptAt:
-            attempts >= maxRetries || retryBlocked
+            attempts >= maxRetries || isHard
               ? Number.MAX_SAFE_INTEGER
               : nowMs() + nextBackoffMs(attempts),
           updatedAt: nowMs(),
-        };
-        await markItem(failedItem);
+        });
       } finally {
         progressBytesByIdRef.current.delete(id);
         inFlightRef.current.delete(id);
@@ -586,9 +410,7 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
   const enqueue = useCallback(
     async (intent: QueueChunkIntent) => {
       const db = dbRef.current;
-      if (!db) {
-        throw new Error('Chunk upload queue is not ready yet.');
-      }
+      if (!db) throw new Error('Chunk upload queue is not ready yet.');
       if (scopeRecordingId && intent.recordingId !== scopeRecordingId) {
         throw new Error('Chunk intent recording does not match queue recording scope.');
       }
@@ -611,10 +433,6 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
         attempts: existing?.attempts ?? 0,
         status: 'queued',
         nextAttemptAt: nowMs(),
-        resumableTusId: existing?.resumableTusId,
-        resumableTusUrl: existing?.resumableTusUrl,
-        resumableTusChunkId: existing?.resumableTusChunkId,
-        resumableTusUploadState: existing?.resumableTusUploadState,
         createdAt: existing?.createdAt ?? nowMs(),
         updatedAt: nowMs(),
       };
@@ -636,14 +454,7 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
       all
         .filter(isItemInScope)
         .filter((item) => item.status === 'failed')
-        .map((item) =>
-          markItem({
-            ...item,
-            status: 'queued',
-            nextAttemptAt: now,
-            updatedAt: now,
-          })
-        )
+        .map((item) => markItem({ ...item, status: 'queued', nextAttemptAt: now, updatedAt: now }))
     );
 
     await refreshStats();
@@ -668,7 +479,7 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
         await Promise.all(recoveryActions.deleteIds.map((id) => deleteItem(id)));
       }
       if (recoveryActions.upserts.length > 0) {
-        await Promise.all(recoveryActions.upserts.map((item) => markItem(item)));
+        await Promise.all(recoveryActions.upserts.map((item) => markItem(item as PersistedQueueItem)));
       }
 
       await refreshStats();
@@ -713,18 +524,13 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
       return;
     }
 
-    if (tickTimerRef.current) {
-      window.clearInterval(tickTimerRef.current);
-    }
+    if (tickTimerRef.current) window.clearInterval(tickTimerRef.current);
 
     tickTimerRef.current = window.setInterval(() => {
       void tick();
     }, 1500);
 
-    const onOnline = () => {
-      void tick();
-    };
-
+    const onOnline = () => { void tick(); };
     window.addEventListener('online', onOnline);
     return () => {
       if (tickTimerRef.current) {
@@ -738,19 +544,9 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
   const isOnline = typeof navigator === 'undefined' ? true : navigator.onLine;
 
   const queueSummary = useMemo(
-    () => ({
-      ...stats,
-      inFlight: scopedInFlightCount(),
-      online: isOnline,
-    }),
+    () => ({ ...stats, inFlight: scopedInFlightCount(), online: isOnline }),
     [isOnline, scopedInFlightCount, stats]
   );
 
-  return {
-    enqueue,
-    retryFailed,
-    reconcileTrackRecovery,
-    stats: queueSummary,
-    lastError,
-  };
+  return { enqueue, retryFailed, reconcileTrackRecovery, stats: queueSummary, lastError };
 }

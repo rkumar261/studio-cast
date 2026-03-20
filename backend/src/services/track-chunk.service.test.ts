@@ -118,7 +118,7 @@ test('initiate same (trackId, seq) twice returns accepted then existing', async 
       body: {
         trackId: 'track-1',
         seq: 1,
-        protocol: 'multipart',
+        protocol: 'presigned_url',
         bytesExpected: 100,
       },
     });
@@ -133,7 +133,7 @@ test('initiate same (trackId, seq) twice returns accepted then existing', async 
       body: {
         trackId: 'track-1',
         seq: 1,
-        protocol: 'multipart',
+        protocol: 'presigned_url',
         bytesExpected: 100,
       },
     });
@@ -152,7 +152,7 @@ test('complete same chunk twice is idempotent', async () => {
     id: 'chunk-1',
     track_id: 'track-1',
     seq: 1,
-    protocol: 'multipart',
+    protocol: 'presigned_url',
     state: 'initiated',
     bytes_expected: BigInt(100),
   });
@@ -216,7 +216,7 @@ test('complete same chunk twice is idempotent', async () => {
       chunkId: 'chunk-1',
       principal: { kind: 'user', userId: 'owner-1' },
       body: {
-        protocol: 'multipart',
+        protocol: 'presigned_url',
         bytesReceived: 100,
         storageKeyRaw: 'recordings/rec-1/tracks/track-1/chunks/1.webm',
       },
@@ -232,7 +232,7 @@ test('complete same chunk twice is idempotent', async () => {
       chunkId: 'chunk-1',
       principal: { kind: 'user', userId: 'owner-1' },
       body: {
-        protocol: 'multipart',
+        protocol: 'presigned_url',
         bytesReceived: 100,
         storageKeyRaw: 'recordings/rec-1/tracks/track-1/chunks/1.webm',
       },
@@ -320,7 +320,7 @@ test('initiate recovers from unique conflict race and returns existing row', asy
       body: {
         trackId: 'track-1',
         seq: 1,
-        protocol: 'multipart',
+        protocol: 'presigned_url',
         bytesExpected: 100,
       },
     });
@@ -383,7 +383,7 @@ test('seq mismatch returns recovery-friendly payload', async () => {
       body: {
         trackId: 'track-1',
         seq: 3,
-        protocol: 'multipart',
+        protocol: 'presigned_url',
       },
     });
     assert.equal(result.code, 'ok');
@@ -438,7 +438,7 @@ test('stale seq mismatch returns recovery-friendly payload', async () => {
       body: {
         trackId: 'track-1',
         seq: 2,
-        protocol: 'multipart',
+        protocol: 'presigned_url',
       },
     });
     assert.equal(result.code, 'ok');
@@ -534,7 +534,7 @@ test('guest can upload only own participant track', async () => {
       body: {
         trackId: 'track-guest',
         seq: 1,
-        protocol: 'multipart',
+        protocol: 'presigned_url',
       },
     });
     assert.equal(ownTrackResult.code, 'ok');
@@ -546,7 +546,7 @@ test('guest can upload only own participant track', async () => {
       body: {
         trackId: 'track-host',
         seq: 1,
-        protocol: 'multipart',
+        protocol: 'presigned_url',
       },
     });
     assert.equal(otherTrackResult.code, 'forbidden');
@@ -561,7 +561,7 @@ test('guest cannot complete chunk for another participant track', async () => {
     id: 'chunk-host-1',
     track_id: 'track-host',
     seq: 1,
-    protocol: 'multipart',
+    protocol: 'presigned_url',
     state: 'initiated',
   });
 
@@ -593,7 +593,7 @@ test('guest cannot complete chunk for another participant track', async () => {
       chunkId: 'chunk-host-1',
       principal: { kind: 'guest', participantId: 'guest-participant', recordingId: 'rec-1' },
       body: {
-        protocol: 'multipart',
+        protocol: 'presigned_url',
         bytesReceived: 100,
         storageKeyRaw: 'recordings/rec-1/tracks/track-host/chunks/1.webm',
       },
