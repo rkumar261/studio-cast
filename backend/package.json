@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "test": "node --test --import tsx src/**/*.test.ts",
+    "test": "node --test --import tsx src/*.test.ts src/**/*.test.ts",
     "dev:all": "bash scripts/dev-all.sh",
     "dev:api": "tsx src/index.ts",
     "dev:worker:stitch": "tsx src/workers/stitch.worker.ts",

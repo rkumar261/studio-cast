@@ -1,8 +1,6 @@
 import type { CompleteTrackChunkBody, CompleteTrackChunkResponse } from '../dto/chunks/complete.dto.js';
 import type { InitiateTrackChunkBody, InitiateTrackChunkResponse } from '../dto/chunks/initiate.dto.js';
 import type { TrackChunkRecoveryResponse } from '../dto/chunks/recovery.dto.js';
-import { PutObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
   getTrackChunkById,
   getTrackChunkByTrackSeq,
@@ -14,10 +12,9 @@ import { maybeEnqueueStitchJobForTrack, maybeMarkRecordingProcessing } from './r
 import type { RequestPrincipal } from '../lib/request-principal.js';
 import { emitTelemetry } from '../lib/telemetry.js';
 import { evaluateTrackUploadCompleteness } from './track-contiguity.service.js';
-import { getR2Client, R2_BUCKET } from '../lib/r2.js';
+import { r2Adapter } from '../lib/r2.js';
 
 // Presigned PUT URLs expire after 60 minutes — long enough for slow connections.
-const PRESIGNED_URL_EXPIRY_SECONDS = 60 * 60;
 
 type ServiceResult<T> =
   | { code: 'ok'; data: T }
@@ -216,20 +213,6 @@ function buildChunkKey(recordingId: string, trackId: string, seq: number): strin
   return `recordings/${recordingId}/tracks/${trackId}/chunks/${seq}.webm`;
 }
 
-/**
- * Generate a presigned PUT URL for direct browser → R2 upload.
- */
-async function generatePresignedPutUrl(key: string): Promise<{ url: string; expiresAt: string }> {
-  const r2 = getR2Client();
-  const cmd = new PutObjectCommand({
-    Bucket: R2_BUCKET,
-    Key: key,
-    ContentType: 'video/webm',
-  });
-  const url = await getSignedUrl(r2, cmd, { expiresIn: PRESIGNED_URL_EXPIRY_SECONDS });
-  const expiresAt = new Date(Date.now() + PRESIGNED_URL_EXPIRY_SECONDS * 1000).toISOString();
-  return { url, expiresAt };
-}
 
 export async function initiateTrackChunkService(args: {
   recordingId: string;
@@ -276,7 +259,7 @@ export async function initiateTrackChunkService(args: {
 
     // Not yet uploaded — return a fresh presigned URL for this chunk.
     const key = buildChunkKey(args.recordingId, args.body.trackId, args.body.seq);
-    const { url, expiresAt } = await generatePresignedPutUrl(key);
+    const { url, expiresAt } = await r2Adapter.presignPutUrl(key);
     return {
       code: 'ok',
       data: {
@@ -340,7 +323,7 @@ export async function initiateTrackChunkService(args: {
       }
 
       const key = buildChunkKey(args.recordingId, args.body.trackId, args.body.seq);
-      const { url, expiresAt } = await generatePresignedPutUrl(key);
+      const { url, expiresAt } = await r2Adapter.presignPutUrl(key);
       return {
         code: 'ok',
         data: {
@@ -366,7 +349,7 @@ export async function initiateTrackChunkService(args: {
   }
 
   const key = buildChunkKey(args.recordingId, args.body.trackId, args.body.seq);
-  const { url, expiresAt } = await generatePresignedPutUrl(key);
+  const { url, expiresAt } = await r2Adapter.presignPutUrl(key);
 
   return {
     code: 'ok',
