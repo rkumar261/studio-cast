@@ -37,7 +37,7 @@ test('POST /v1/guest/bootstrap accepts valid invite, requires name, and sets gue
         role: 'guest',
         display_name: null,
         email: null,
-        invite_expires_at: new Date('2026-03-20T00:00:00.000Z'),
+        invite_expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
         invite_revoked_at: null,
         invite_claimed_at: null,
       }))
@@ -49,7 +49,7 @@ test('POST /v1/guest/bootstrap accepts valid invite, requires name, and sets gue
         role: 'guest',
         display_name: 'Guest One',
         email: 'guest@example.com',
-        invite_expires_at: new Date('2026-03-20T00:00:00.000Z'),
+        invite_expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000),
         invite_revoked_at: null,
         invite_claimed_at: new Date('2026-03-14T00:00:00.000Z'),
       }))

@@ -53,9 +53,9 @@ test('POST /v1/recordings/:id/chunks/initiate rejects live multipart transport',
 
     assert.equal(response.statusCode, 410);
     assert.deepEqual(response.json(), {
-      code: 'live_transport_tus_only',
+      code: 'live_transport_protocol_mismatch',
       message:
-        'Live recording chunk transport is TUS-only. Use /v1/uploads/* for manual/import multipart workflows.',
+        'Live recording chunk transport requires presigned_url protocol. Use /v1/uploads/* for manual/import multipart workflows.',
     });
   } finally {
     for (const restore of restores.reverse()) restore();
@@ -93,9 +93,9 @@ test('POST /v1/recordings/:id/chunks/:chunkId/complete rejects live multipart tr
 
     assert.equal(response.statusCode, 410);
     assert.deepEqual(response.json(), {
-      code: 'live_transport_tus_only',
+      code: 'live_transport_protocol_mismatch',
       message:
-        'Live recording chunk transport is TUS-only. Use /v1/uploads/* for manual/import multipart workflows.',
+        'Live recording chunk transport requires presigned_url protocol. Use /v1/uploads/* for manual/import multipart workflows.',
     });
   } finally {
     for (const restore of restores.reverse()) restore();
