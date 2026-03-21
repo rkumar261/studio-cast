@@ -8,7 +8,6 @@ import { emitTelemetry } from '../lib/telemetry.js';
 export const REQUIRED_EXPORT_TYPES = [
   export_type.wav,
   export_type.mp4,
-  export_type.mp4_captions,
 ] as const;
 
 function hasExportId(payload: unknown, exportId: string): boolean {

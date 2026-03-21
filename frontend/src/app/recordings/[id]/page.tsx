@@ -181,8 +181,8 @@ export default function RecordingDetailPage() {
                   <p className="text-xs uppercase tracking-wide text-slate-400">Pending work</p>
                   {processingSummary.pendingWork.length > 0 ? (
                     <ul className="mt-2 space-y-1 text-xs text-slate-300">
-                      {processingSummary.pendingWork.map((item) => (
-                        <li key={`pending-${item.label}-${item.participantId ?? 'project'}`}>{item.label}</li>
+                      {processingSummary.pendingWork.map((item, idx) => (
+                        <li key={`pending-${idx}`}>{item.label}</li>
                       ))}
                     </ul>
                   ) : (
@@ -193,8 +193,8 @@ export default function RecordingDetailPage() {
                   <p className="text-xs uppercase tracking-wide text-slate-400">Failed work</p>
                   {processingSummary.failedWork.length > 0 ? (
                     <ul className="mt-2 space-y-1 text-xs text-slate-300">
-                      {processingSummary.failedWork.map((item) => (
-                        <li key={`failed-${item.label}-${item.participantId ?? 'project'}`}>{item.label}</li>
+                      {processingSummary.failedWork.map((item, idx) => (
+                        <li key={`failed-${idx}`}>{item.label}</li>
                       ))}
                     </ul>
                   ) : (

@@ -28,6 +28,7 @@ type CompositionSource = {
   id: string;
   storageKey: string;
   updatedAtIso: string;
+  audioStorageKey?: string;
 };
 
 function normalizeJsonObject(value: Prisma.JsonValue | null | undefined): Record<string, unknown> | undefined {
@@ -79,7 +80,9 @@ function resolveCompositionMode(): CombinedCompositionMode {
 }
 
 function buildSourceFingerprint(mode: CombinedCompositionMode, sources: CompositionSource[]) {
-  const sourceHash = sources.map((source) => `${source.id}:${source.updatedAtIso}`).join('|');
+  const sourceHash = sources
+    .map((source) => `${source.id}:${source.updatedAtIso}:${source.audioStorageKey ?? ''}`)
+    .join('|');
   return `${mode}:${sourceHash}`;
 }
 
@@ -103,7 +106,7 @@ export async function reconcileCombinedAssetForRecording(args: {
   composeRunner?: (args: {
     recordingId: string;
     mode: CombinedCompositionMode;
-    sources: Array<{ id: string; storageKey: string }>;
+    sources: Array<{ id: string; storageKey: string; audioStorageKey?: string }>;
   }) => Promise<CombinedCompositionOutcome>;
 }): Promise<
   | { code: 'ok'; composed: boolean; asset: CombinedAssetPayload }
@@ -188,18 +191,40 @@ export async function reconcileCombinedAssetForRecording(args: {
   }
 
   const mode = resolveCompositionMode();
+
+  // Gather processed audio tracks per participant to mix into video sources.
+  const participantIds = readyParticipants.map((p) => p.participantId);
+  const audioTracks = participantIds.length > 0
+    ? await prisma.track.findMany({
+        where: {
+          recording_id: args.recordingId,
+          participant_id: { in: participantIds },
+          kind: 'audio',
+          state: 'processed',
+          storage_key_final: { not: null },
+        },
+        select: { participant_id: true, storage_key_final: true },
+        orderBy: { created_at: 'asc' },
+      })
+    : [];
+  const audioByParticipant = new Map(
+    audioTracks.map((t) => [t.participant_id, t.storage_key_final!])
+  );
+
   const selectedSources: CompositionSource[] =
     mode === 'primary_only'
       ? [
           {
             id: readyParticipants[0]!.asset!.id,
             storageKey: readyParticipants[0]!.asset!.storageKey as string,
+            audioStorageKey: audioByParticipant.get(readyParticipants[0]!.participantId),
             updatedAtIso: readyParticipants[0]!.asset!.readyAt ?? readyParticipants[0]!.asset!.processingStartedAt ?? new Date(0).toISOString(),
           },
         ]
       : readyParticipants.map((participant) => ({
           id: participant.asset!.id,
           storageKey: participant.asset!.storageKey as string,
+          audioStorageKey: audioByParticipant.get(participant.participantId),
           updatedAtIso:
             participant.asset!.readyAt ??
             participant.asset!.processingStartedAt ??
@@ -272,6 +297,7 @@ export async function reconcileCombinedAssetForRecording(args: {
       sources: selectedSources.map((source) => ({
         id: source.id,
         storageKey: source.storageKey,
+        audioStorageKey: source.audioStorageKey,
       })),
     });
 
