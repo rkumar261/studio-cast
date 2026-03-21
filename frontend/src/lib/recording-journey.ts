@@ -12,6 +12,7 @@ export type HostStudioPhase =
 export function toConsumerStateLabel(state: ConsumerRecordingState) {
   if (state === 'upload complete') return 'Upload complete';
   if (state === 'action required') return 'Action required';
+  if (state === 'invited') return 'Invited';
   return state.charAt(0).toUpperCase() + state.slice(1);
 }
 

@@ -1,4 +1,5 @@
 export type ConsumerRecordingState =
+  | 'invited'
   | 'recording'
   | 'uploading'
   | 'upload complete'

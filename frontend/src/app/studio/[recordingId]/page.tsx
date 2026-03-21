@@ -2483,8 +2483,13 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       chunkUploadQueue.stats.pending > 0 ||
       uploadedPercent > 0;
     const localParticipantId = recorderParticipantId ?? effectiveRequestedParticipantId;
+    // B3: guard against null localParticipantId — fall back to filtering by role
+    // B2: during live recording, intersect with LiveKit peers so disconnected guests don't ghost
+    const liveParticipantIds = new Set(active.peers.map((p) => p.id));
     const remoteProgressParticipants = progressParticipants.filter(
-      (p) => p.participantId !== localParticipantId
+      (p) =>
+        (localParticipantId ? p.participantId !== localParticipantId : p.role !== 'host') &&
+        (isRecording ? liveParticipantIds.has(p.participantId) : true)
     );
     const livePeopleForPanel = [
       {
