@@ -4,6 +4,7 @@ import { use, useEffect } from 'react';
 import Link from 'next/link';
 import { Space_Grotesk } from 'next/font/google';
 import { setApiAuthMode } from '@/lib/api';
+import { deriveGuestUploadState, toConsumerStateLabel } from '@/lib/recording-journey';
 import { useChunkUploadQueue } from '@/lib/studio/useChunkUploadQueue';
 
 const spaceGrotesk = Space_Grotesk({
@@ -33,21 +34,32 @@ export default function StudioGuestThanksPage({ params }: GuestThanksProps) {
   const totalBytes = queue.stats.bytesTotal;
   const uploadedBytes = queue.stats.bytesUploaded + queue.stats.bytesProcessing;
   const uploadPercent = totalBytes > 0 ? Math.min(100, Math.round((uploadedBytes * 100) / totalBytes)) : 100;
-  const isUploading = pending > 0 || (queue.stats.failed > 0 && queue.stats.completed === 0);
+  const uploadState = deriveGuestUploadState({
+    pendingUploads: pending,
+    failedUploads: queue.stats.failed,
+  });
 
   return (
     <main className={`${spaceGrotesk.className} flex min-h-screen items-center justify-center bg-[#07090f] px-6 text-slate-100`}>
       <div className="w-full max-w-2xl rounded-3xl border border-slate-800 bg-[#111620] p-8 text-center">
-        <p className="text-5xl font-semibold">{isUploading ? 'Uploading...' : 'All set!'}</p>
+        <p className="text-5xl font-semibold">
+          {uploadState === 'uploading'
+            ? 'Uploading'
+            : uploadState === 'action required'
+              ? 'Action required'
+              : 'Upload complete'}
+        </p>
         <p className="mt-4 text-lg text-slate-300">
-          {isUploading
-            ? 'Your upload is continuing in the background. Keep this tab open until it reaches 100%.'
-            : 'Your recording upload is complete. You can close this tab now.'}
+          {uploadState === 'uploading'
+            ? 'Your upload is still running. Keep this tab open until it finishes.'
+            : uploadState === 'action required'
+              ? 'This upload needs attention. Retry the failed upload before closing the page.'
+              : 'Your recording upload is complete. You can close this tab now.'}
         </p>
         <div className="mt-6 rounded-xl border border-slate-700 bg-[#181f2d] p-4 text-left">
           <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Upload status</p>
           <div className="mt-2 flex items-center justify-between text-sm text-slate-200">
-            <span>{isUploading ? 'In progress' : 'Completed'}</span>
+            <span>{toConsumerStateLabel(uploadState)}</span>
             <span>{uploadPercent}%</span>
           </div>
           <div className="mt-3 h-2 rounded-full bg-[#2c3446]">

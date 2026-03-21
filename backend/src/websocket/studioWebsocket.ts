@@ -161,6 +161,18 @@ export function handleStudioWsConnection(
         }
 
         app.log.info({ roomId, peerId, role }, `${logPrefix} peer joined room`);
+        emitTelemetry({
+          logger: app.log,
+          event: 'session.joined',
+          message: 'Peer joined studio session',
+          recordingId: roomId,
+          sessionId: roomId,
+          participantId: role === 'guest' ? peerId : undefined,
+          peerId,
+          role,
+          actorKind: role,
+          participantCount: room.size,
+        });
         if (role === 'guest') {
           emitTelemetry({
             logger: app.log,
@@ -252,6 +264,17 @@ export function handleStudioWsConnection(
           { roomId, peerId },
           `${logPrefix} peer left room via message`
         );
+        emitTelemetry({
+          logger: app.log,
+          event: 'session.left',
+          message: 'Peer left studio session',
+          recordingId: roomId,
+          sessionId: roomId,
+          participantId: principal.kind === 'guest' ? peerId : undefined,
+          peerId,
+          actorKind: principal.kind,
+          participantCount: room.size,
+        });
         break;
       }
 
@@ -289,5 +312,17 @@ export function handleStudioWsConnection(
       { roomId: currentRoomId, peerId: currentPeerId },
       `${logPrefix} peer disconnected`
     );
+    emitTelemetry({
+      logger: app.log,
+      event: 'session.left',
+      message: 'Peer connection closed in studio session',
+      recordingId: currentRoomId,
+      sessionId: currentRoomId,
+      participantId: principal.kind === 'guest' ? currentPeerId : undefined,
+      peerId: currentPeerId,
+      actorKind: principal.kind,
+      participantCount: room.size,
+      disconnect: true,
+    });
   });
 }

@@ -1,7 +1,7 @@
 export type InitiateTrackChunkBody = {
   trackId: string;
   seq: number;
-  protocol: 'tus' | 'multipart';
+  protocol: 'presigned_url';
   bytesExpected?: number;
 };
 
@@ -17,9 +17,6 @@ export type InitiateTrackChunkResponse = {
     state: string;
     bytesExpected?: number;
     bytesReceived?: number;
-    tusUploadId?: string;
-    tusResourceUrl?: string;
-    tusUploadState?: string;
     failureReason?: string;
     lastErrorAt?: string;
     materializedAt?: string;
@@ -28,24 +25,15 @@ export type InitiateTrackChunkResponse = {
   };
   existed?: boolean;
   already?: boolean;
+  /** Present when the chunk needs to be uploaded. */
   uploadPlan?: {
-    protocol: 'tus';
-    tusEndpoint: string;
-    metadata: {
-      chunkId: string;
-      recordingId: string;
-      trackId: string;
-      seq: string;
-    };
-  };
-  resumeUploadPlan?: {
-    protocol: 'tus';
-    tusEndpoint: string;
-    chunkId: string;
-    tusId?: string;
-    tusUrl?: string;
-    tusResourceUrl?: string;
-    tusUploadState?: string;
+    protocol: 'presigned_url';
+    /** Presigned R2 PUT URL — valid for expiresAt. */
+    url: string;
+    /** Canonical R2 object key to pass back in completeChunk.storageKeyRaw. */
+    key: string;
+    /** ISO 8601 expiry time for the presigned URL. */
+    expiresAt: string;
   };
   reconciliation?: {
     requestedSeq: number;

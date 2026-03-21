@@ -1,10 +1,10 @@
 export type CompleteTrackChunkBody = {
-  protocol: 'tus' | 'multipart';
+  protocol: 'presigned_url';
   bytesReceived?: number;
-  storageKeyRaw?: string;
+  /** R2 object key returned in the uploadPlan from initiateChunk. */
+  storageKeyRaw: string;
   etag?: string;
   checksumSha256?: string;
-  tusUrl?: string;
 };
 
 export type CompleteTrackChunkResponse = {
@@ -17,9 +17,6 @@ export type CompleteTrackChunkResponse = {
     bytesReceived: number;
     bytesExpected?: number;
     storageKeyRaw?: string;
-    tusUploadId?: string;
-    tusResourceUrl?: string;
-    tusUploadState?: string;
     failureReason?: string;
     lastErrorAt?: string;
     materializedAt?: string;

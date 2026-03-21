@@ -171,8 +171,14 @@ export async function startRecordingSessionService(args: {
     where: { id: args.recordingId },
     data: {
       status: transition.next,
+      lifecycle_state: 'recording',
       started_at: startedAt,
       stopped_at: null,
+      upload_completed_at: null,
+      processing_started_at: null,
+      ready_at: null,
+      failed_at: null,
+      failure_reason: null,
       host_participant_id: hostParticipantId,
       control_version: { increment: 1 },
     },
@@ -212,6 +218,7 @@ export async function stopRecordingSessionService(args: {
     where: { id: args.recordingId },
     data: {
       status: transition.next,
+      lifecycle_state: 'post_stop_uploading',
       stopped_at: new Date(),
       control_version: { increment: 1 },
     },

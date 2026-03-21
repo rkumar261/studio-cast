@@ -9,6 +9,7 @@ import { getRequestPrincipal } from '../lib/request-principal.js';
 import { createRecordingService, getRecordingService } from '../services/recordings.service.js';
 import type { GetRecordingResponse } from '../dto/recordings/get.dto.js';
 import type { GetProjectAssetsGraphResponse } from '../dto/recordings/project-assets.dto.js';
+import type { RecordingLifecycleDiagnosticsResponse } from '../dto/recordings/lifecycle-diagnostics.dto.js';
 import { ListRecordingsResponse } from '../dto/recordings/list.dto.js';
 import { listRecordingService } from '../services/recordings.service.js';
 import { authGuard } from '../middlewares/auth.guard.js';
@@ -27,9 +28,31 @@ import {
 } from '../services/track-chunk.service.js';
 import { broadcastStudioRoomEvent } from '../websocket/studioWebsocket.js';
 import { getProjectAssetsGraphService } from '../services/project-assets.service.js';
+import { getRecordingLifecycleDiagnosticsService } from '../services/recording-lifecycle.service.js';
 import { emitTelemetry } from '../lib/telemetry.js';
 
-const LIVE_RECORDING_TRANSPORT = 'tus';
+const LIVE_RECORDING_TRANSPORT = 'presigned_url';
+
+function emitGuestAccessBlocked(req: any, args: {
+    recordingId?: string;
+    participantId?: string;
+    action: string;
+    reason: string;
+}) {
+    emitTelemetry({
+        logger: req.log,
+        level: 'warn',
+        event: 'guest.access.blocked',
+        message: 'Guest action blocked',
+        actorKind: 'guest',
+        recordingId: args.recordingId,
+        participantId: args.participantId,
+        action: args.action,
+        reason: args.reason,
+        ip: req.ip,
+        userAgent: req.headers['user-agent'] ?? null,
+    });
+}
 
 export default async function recordingRoutes(app: FastifyInstance) {
 
@@ -57,7 +80,17 @@ export default async function recordingRoutes(app: FastifyInstance) {
         Params: { id: string }
     }>('/v1/recordings/:id', { preHandler: authGuard }, async (req, res) => {
         const requesterId = (req as any).user?.id as string | undefined;
+        const guest = (req as any).guest as { participantId?: string; recordingId?: string } | undefined;
         if (!requesterId) {
+            if (guest?.participantId) {
+                emitGuestAccessBlocked(req, {
+                    recordingId: guest.recordingId ?? req.params.id,
+                    participantId: guest.participantId,
+                    action: 'recording_detail',
+                    reason: 'owner_credentials_required',
+                });
+                return res.code(403).send({ code: 'forbidden', message: 'Not allowed' });
+            }
             return res.code(401).send({ error: 'Unauthorized', message: 'User not authenticated, Login required' });
         }
 
@@ -74,7 +107,17 @@ export default async function recordingRoutes(app: FastifyInstance) {
         Params: { id: string }
     }>('/v1/recordings/:id/project-assets', { preHandler: authGuard }, async (req, res) => {
         const requesterId = (req as any).user?.id as string | undefined;
+        const guest = (req as any).guest as { participantId?: string; recordingId?: string } | undefined;
         if (!requesterId) {
+            if (guest?.participantId) {
+                emitGuestAccessBlocked(req, {
+                    recordingId: guest.recordingId ?? req.params.id,
+                    participantId: guest.participantId,
+                    action: 'project_assets',
+                    reason: 'owner_credentials_required',
+                });
+                return res.code(403).send({ code: 'forbidden', message: 'Not allowed' });
+            }
             return res.code(401).send({ error: 'Unauthorized', message: 'User not authenticated, Login required' });
         }
 
@@ -87,12 +130,50 @@ export default async function recordingRoutes(app: FastifyInstance) {
         return res.code(200).send(result.data as GetProjectAssetsGraphResponse);
     });
 
+    app.get<{
+        Params: { id: string }
+    }>('/v1/recordings/:id/lifecycle-diagnostics', { preHandler: authGuard }, async (req, res) => {
+        const requesterId = (req as any).user?.id as string | undefined;
+        const guest = (req as any).guest as { participantId?: string; recordingId?: string } | undefined;
+        if (!requesterId) {
+            if (guest?.participantId) {
+                emitGuestAccessBlocked(req, {
+                    recordingId: guest.recordingId ?? req.params.id,
+                    participantId: guest.participantId,
+                    action: 'lifecycle_diagnostics',
+                    reason: 'owner_credentials_required',
+                });
+                return res.code(403).send({ code: 'forbidden', message: 'Not allowed' });
+            }
+            return res.code(401).send({ error: 'Unauthorized', message: 'User not authenticated, Login required' });
+        }
+
+        const { id } = req.params;
+        const result = await getRecordingLifecycleDiagnosticsService({ recordingId: id, requesterId });
+
+        if (result.code === 'not_found') return res.code(404).send({ code: 'not_found', message: 'Recording not found' });
+        if (result.code === 'forbidden') return res.code(403).send({ code: 'forbidden', message: 'Not allowed' });
+
+        return res.code(200).send(result.data as RecordingLifecycleDiagnosticsResponse);
+    });
+
 
     app.get('/v1/recordings', { preHandler: authGuard }, async (req, res) => {
         const ayReq = req as any;
         const userId: string | undefined = ayReq.user?.id;
 
-        if (!userId) return res.code(401).send({ error: 'Unauthorized', message: 'User not authenticated, Login required' });
+        if (!userId) {
+            if (ayReq.guest?.participantId) {
+                emitGuestAccessBlocked(req, {
+                    recordingId: ayReq.guest.recordingId,
+                    participantId: ayReq.guest.participantId,
+                    action: 'recording_list',
+                    reason: 'owner_credentials_required',
+                });
+                return res.code(403).send({ code: 'forbidden', message: 'Not allowed' });
+            }
+            return res.code(401).send({ error: 'Unauthorized', message: 'User not authenticated, Login required' });
+        }
 
         const { limit, cursor } = req.query as { limit?: string; cursor?: string };
         const parseLimit = limit ? Math.min(parseInt(limit, 10), 100) : 20;
@@ -136,7 +217,17 @@ export default async function recordingRoutes(app: FastifyInstance) {
 
         if (result.code !== 'ok') {
             if (result.code === 'not_found') return res.code(404).send({ code: 'not_found', message: 'Recording not found' });
-            if (result.code === 'forbidden') return res.code(403).send({ code: 'forbidden', message: 'Not allowed' });
+            if (result.code === 'forbidden') {
+                if (principal.kind === 'guest') {
+                    emitGuestAccessBlocked(req, {
+                        recordingId: id,
+                        participantId: principal.participantId,
+                        action: 'session_start',
+                        reason: 'host_control_required',
+                    });
+                }
+                return res.code(403).send({ code: 'forbidden', message: 'Not allowed' });
+            }
             return res.code(409).send({ code: 'invalid_transition', message: result.message });
         }
 
@@ -170,7 +261,17 @@ export default async function recordingRoutes(app: FastifyInstance) {
 
         if (result.code !== 'ok') {
             if (result.code === 'not_found') return res.code(404).send({ code: 'not_found', message: 'Recording not found' });
-            if (result.code === 'forbidden') return res.code(403).send({ code: 'forbidden', message: 'Not allowed' });
+            if (result.code === 'forbidden') {
+                if (principal.kind === 'guest') {
+                    emitGuestAccessBlocked(req, {
+                        recordingId: id,
+                        participantId: principal.participantId,
+                        action: 'session_stop',
+                        reason: 'host_control_required',
+                    });
+                }
+                return res.code(403).send({ code: 'forbidden', message: 'Not allowed' });
+            }
             return res.code(409).send({ code: 'invalid_transition', message: result.message });
         }
 
@@ -309,8 +410,8 @@ export default async function recordingRoutes(app: FastifyInstance) {
         const body = req.body;
         if (body.protocol !== LIVE_RECORDING_TRANSPORT) {
             return res.code(410).send({
-                code: 'live_transport_tus_only',
-                message: 'Live recording chunk transport is TUS-only. Use /v1/uploads/* for manual/import multipart workflows.',
+                code: 'live_transport_protocol_mismatch',
+                message: 'Live recording chunk transport requires presigned_url protocol. Use /v1/uploads/* for manual/import multipart workflows.',
             });
         }
         const result = await initiateTrackChunkService({ recordingId: id, principal, body });
@@ -322,15 +423,6 @@ export default async function recordingRoutes(app: FastifyInstance) {
         }
         if (result.code === 'invalid_protocol') {
             return res.code(422).send({ code: 'invalid_protocol', message: 'Unsupported chunk protocol' });
-        }
-        if (result.code === 'tus_not_uploaded_yet') {
-            return res.code(409).send({ code: result.code, message: result.message, details: result.details });
-        }
-        if (result.code === 'tus_upload_orphaned') {
-            return res.code(409).send({ code: result.code, message: result.message, details: result.details });
-        }
-        if (result.code === 'tus_storage_misconfigured') {
-            return res.code(500).send({ code: result.code, message: result.message, details: result.details });
         }
         if (result.code === 'invalid_seq' || result.code === 'seq_integrity_error') {
             return res.code(409).send({ code: result.code, message: result.message, details: result.details });
@@ -352,8 +444,8 @@ export default async function recordingRoutes(app: FastifyInstance) {
         const body = req.body;
         if (body.protocol !== LIVE_RECORDING_TRANSPORT) {
             return res.code(410).send({
-                code: 'live_transport_tus_only',
-                message: 'Live recording chunk transport is TUS-only. Use /v1/uploads/* for manual/import multipart workflows.',
+                code: 'live_transport_protocol_mismatch',
+                message: 'Live recording chunk transport requires presigned_url protocol. Use /v1/uploads/* for manual/import multipart workflows.',
             });
         }
         const result = await completeTrackChunkService({
@@ -370,15 +462,6 @@ export default async function recordingRoutes(app: FastifyInstance) {
         }
         if (result.code === 'invalid_protocol') {
             return res.code(422).send({ code: 'invalid_protocol', message: 'Unsupported chunk protocol' });
-        }
-        if (result.code === 'tus_not_uploaded_yet') {
-            return res.code(409).send({ code: result.code, message: result.message, details: result.details });
-        }
-        if (result.code === 'tus_upload_orphaned') {
-            return res.code(409).send({ code: result.code, message: result.message, details: result.details });
-        }
-        if (result.code === 'tus_storage_misconfigured') {
-            return res.code(500).send({ code: result.code, message: result.message, details: result.details });
         }
         if (result.code === 'invalid_seq' || result.code === 'seq_integrity_error') {
             return res.code(409).send({ code: result.code, message: result.message, details: result.details });

@@ -96,6 +96,7 @@ export async function registerTrackIdentityService(args: {
       kind: args.body.kind,
       codec: args.body.codec ?? null,
       state: track_state.recording,
+      lifecycle_state: 'recording',
     },
     select: {
       id: true,

@@ -1,24 +1,23 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import type { ConsumerRecordingState } from '@/lib/api';
+import { toConsumerStateLabel } from '@/lib/recording-journey';
 
 type UploadParticipant = {
   participantId: string;
+  role: 'host' | 'guest' | string;
   displayName?: string;
-  trackCount: number;
-  uploadedCount: number;
-  pendingCount: number;
+  state: ConsumerRecordingState;
+  progressPct: number;
+  blockedReason?: string;
 };
-
-type UploadLifecyclePhase = 'stopping' | 'uploading' | 'upload_complete' | 'processing_handoff';
 
 type RecordingUploadSummary = {
   participantsTotal: number;
-  participantsCompleted: number;
-  tracksTotal: number;
-  tracksUploaded: number;
-  chunksTotal: number;
-  chunksUploaded: number;
+  participantsComplete: number;
+  participantsUploading: number;
+  actionRequiredParticipants: number;
 };
 
 type UploadStatusModalProps = {
@@ -27,7 +26,7 @@ type UploadStatusModalProps = {
   canOpenProject: boolean;
   onClose: () => void;
   onGoToProject: () => void;
-  phase?: UploadLifecyclePhase;
+  state: ConsumerRecordingState;
   summary?: RecordingUploadSummary;
   keepPageOpenHint?: boolean;
   canDismiss?: boolean;
@@ -41,56 +40,51 @@ type UploadStatusModalProps = {
 
 export default function UploadStatusModal(props: UploadStatusModalProps) {
   const isOpen = props.open;
-  const phase = props.phase ?? (props.canOpenProject ? 'upload_complete' : 'uploading');
   const canDismiss = props.canDismiss ?? true;
   const variant = props.variant ?? 'modal';
-  const participantRows = props.participants.map((participant) => {
-    const pct =
-      participant.trackCount === 0
-        ? 0
-        : Math.round((participant.uploadedCount / participant.trackCount) * 100);
-    return { ...participant, pct };
-  });
+  const participantRows = props.participants;
   const primaryParticipant = participantRows[0];
-  const [isHoveringDetailsZone, setIsHoveringDetailsZone] = useState(false);
-  const [suppressHoverOpen, setSuppressHoverOpen] = useState(false);
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
 
   const title =
-    phase === 'stopping'
-      ? 'Stopping recording'
-      : phase === 'uploading'
+    props.state === 'recording'
+      ? 'Recording in progress'
+      : props.state === 'uploading'
         ? 'Uploading recording'
-        : phase === 'processing_handoff'
-          ? 'Uploads complete'
-          : 'Uploads complete';
+        : props.state === 'processing'
+          ? 'Upload complete'
+          : props.state === 'action required'
+            ? 'Action required'
+            : 'Upload complete';
 
   const description =
-    phase === 'stopping'
-      ? 'Finalizing tracks and preparing uploads.'
-      : phase === 'uploading'
-        ? 'Uploading participant media. Keep this tab open until upload completes.'
-        : phase === 'processing_handoff'
-          ? 'Participant uploads are complete. Project assets are processing. Open the project to monitor readiness.'
-          : 'Participant uploads are complete. Open the project to continue while processing updates appear.';
+    props.state === 'recording'
+      ? 'Recording is still active.'
+      : props.state === 'uploading'
+        ? 'Participant uploads are still running. Keep this tab open until everyone is finished.'
+        : props.state === 'processing'
+          ? 'Uploads are complete. Open the project to keep following processing.'
+          : props.state === 'action required'
+            ? 'One or more participant uploads need attention before this recording is complete.'
+            : 'Participant uploads are complete. Open the project when you are ready.';
 
   const buttonLabel =
     props.canOpenProject
       ? 'Go to project'
-      : phase === 'stopping'
-        ? 'Stopping...'
+      : props.state === 'action required'
+        ? 'Resolve upload issue'
         : 'Waiting for uploads...';
 
   useEffect(() => {
     if (variant !== 'floating') return;
-    setIsHoveringDetailsZone(false);
-    setSuppressHoverOpen(false);
-  }, [phase, props.open, variant]);
+    setIsDetailsOpen(false);
+  }, [props.open, props.state, variant]);
 
-  const showFloatingDetails = isHoveringDetailsZone && !suppressHoverOpen;
+  const showFloatingDetails = isDetailsOpen;
 
   const handleCloseDetails = () => {
     if (variant === 'floating') {
-      setSuppressHoverOpen(true);
+      setIsDetailsOpen(false);
       return;
     }
     props.onClose();
@@ -125,20 +119,15 @@ export default function UploadStatusModal(props: UploadStatusModalProps) {
           <p className="text-xs text-slate-400">
             Participants:{' '}
             <span className="text-slate-200">
-              {props.summary.participantsCompleted}/{props.summary.participantsTotal}
+              {props.summary.participantsComplete}/{props.summary.participantsTotal}
             </span>
           </p>
           <p className="text-xs text-slate-400">
-            Tracks:{' '}
-            <span className="text-slate-200">
-              {props.summary.tracksUploaded}/{props.summary.tracksTotal}
-            </span>
+            Uploading: <span className="text-slate-200">{props.summary.participantsUploading}</span>
           </p>
           <p className="text-xs text-slate-400">
-            Chunks:{' '}
-            <span className="text-slate-200">
-              {props.summary.chunksUploaded}/{props.summary.chunksTotal}
-            </span>
+            Action required:{' '}
+            <span className="text-slate-200">{props.summary.actionRequiredParticipants}</span>
           </p>
         </div>
       )}
@@ -150,14 +139,19 @@ export default function UploadStatusModal(props: UploadStatusModalProps) {
                 {participant.displayName || participant.participantId.slice(0, 8)}
               </p>
               <span className="text-xs text-slate-400">
-                {participant.pendingCount > 0 ? `${participant.pct}%` : 'Uploaded'}
+                {toConsumerStateLabel(participant.state)}
               </span>
             </div>
+            <p className="mt-1 text-[11px] uppercase tracking-wide text-slate-500">{participant.role}</p>
             <div className="mt-2 h-1.5 rounded-full bg-slate-800">
               <div
                 className="h-full rounded-full bg-violet-400"
-                style={{ width: `${Math.max(participant.pct, 4)}%` }}
+                style={{ width: `${Math.max(participant.progressPct, 4)}%` }}
               />
+            </div>
+            <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400">
+              <span>{participant.progressPct}%</span>
+              {participant.blockedReason && <span>{participant.blockedReason}</span>}
             </div>
           </div>
         ))}
@@ -198,16 +192,18 @@ export default function UploadStatusModal(props: UploadStatusModalProps) {
     };
 
     return (
+      <>
+        {showFloatingDetails && (
+          <div
+            className="fixed inset-0 z-30"
+            onClick={() => setIsDetailsOpen(false)}
+          />
+        )}
       <div className="fixed z-40 pointer-events-none" style={floatingFrameStyle}>
         <div className="pointer-events-auto relative w-full">
           {showFloatingDetails && (
             <div
               className="absolute left-1/2 top-0 z-20 w-full max-w-md -translate-x-1/2 -translate-y-[calc(100%+34px)]"
-              onMouseEnter={() => setIsHoveringDetailsZone(true)}
-              onMouseLeave={() => {
-                setIsHoveringDetailsZone(false);
-                setSuppressHoverOpen(false);
-              }}
             >
               {detailsCard}
             </div>
@@ -217,11 +213,7 @@ export default function UploadStatusModal(props: UploadStatusModalProps) {
 
             <button
               type="button"
-              onMouseEnter={() => setIsHoveringDetailsZone(true)}
-              onMouseLeave={() => {
-                setIsHoveringDetailsZone(false);
-                setSuppressHoverOpen(false);
-              }}
+              onClick={() => setIsDetailsOpen((prev) => !prev)}
               className="absolute left-1/2 top-1/2 flex h-11 min-w-[88px] -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-xl border border-[#45506d] bg-[#20293a] px-2 hover:border-[#64749b]"
             >
               <div className="relative h-8 w-12 overflow-hidden rounded-md border border-[#5b6380] bg-gradient-to-br from-[#2a3347] to-[#111726]">
@@ -231,6 +223,7 @@ export default function UploadStatusModal(props: UploadStatusModalProps) {
           </div>
         </div>
       </div>
+      </>
     );
   }
 

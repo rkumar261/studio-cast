@@ -30,3 +30,4 @@ AGENTS.md
 # Local recording/upload artifacts
 media/recordings/
 uploads/tmp/
+.gstack/

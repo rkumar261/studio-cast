@@ -17,7 +17,12 @@ type GuestParticipantLookup = {
     role: string;
     display_name: string | null;
     email: string | null;
+    invite_expires_at: Date | null;
+    invite_revoked_at: Date | null;
+    invite_claimed_at: Date | null;
 };
+
+type GuestInviteRejectReason = 'invalid_token' | 'expired_invite' | 'revoked_invite';
 
 export type GuestBootstrapAudit = {
     participantId: string;
@@ -26,6 +31,15 @@ export type GuestBootstrapAudit = {
     displayName: string;
     emailProvided: boolean;
 };
+
+const GUEST_INVITE_TTL_HOURS = Number.parseInt(process.env.GUEST_INVITE_TTL_HOURS ?? '168', 10);
+
+function createGuestInviteExpiry(now = new Date()): Date {
+    const ttlHours = Number.isFinite(GUEST_INVITE_TTL_HOURS) && GUEST_INVITE_TTL_HOURS > 0
+        ? GUEST_INVITE_TTL_HOURS
+        : 168;
+    return new Date(now.getTime() + ttlHours * 60 * 60 * 1000);
+}
 
 function toGuestParticipantResponse(participant: GuestParticipantLookup): ClaimGuestParticipantResponse {
     return {
@@ -42,6 +56,7 @@ function toGuestParticipantResponse(participant: GuestParticipantLookup): ClaimG
 async function findGuestParticipantByInviteToken(token: string): Promise<{
     participant: GuestParticipantLookup | null;
     tokenHash: string;
+    rejectReason?: GuestInviteRejectReason;
 }> {
     const tokenHash = createHash('sha256').update(token).digest('hex');
     const participant = await prisma.participant.findFirst({
@@ -55,8 +70,22 @@ async function findGuestParticipantByInviteToken(token: string): Promise<{
             role: true,
             display_name: true,
             email: true,
+            invite_expires_at: true,
+            invite_revoked_at: true,
+            invite_claimed_at: true,
         },
     });
+
+    if (!participant) {
+        return { participant: null, tokenHash, rejectReason: 'invalid_token' };
+    }
+    if (participant.invite_revoked_at) {
+        return { participant: null, tokenHash, rejectReason: 'revoked_invite' };
+    }
+    if (participant.invite_expires_at && participant.invite_expires_at.getTime() <= Date.now()) {
+        return { participant: null, tokenHash, rejectReason: 'expired_invite' };
+    }
+
     return { participant, tokenHash };
 }
 
@@ -117,6 +146,7 @@ export async function createParticipantService(
         displayName: body.displayName,
         email: body.email,
         magicLinkHash: magicHash,
+        inviteExpiresAt: body.role === 'guest' ? createGuestInviteExpiry() : null,
         userId: body.role === 'host' ? requesterId : null,
     });
 
@@ -162,24 +192,41 @@ export async function claimGuestParticipantService(
     body: ClaimGuestParticipantBody
 ): Promise<
     | { code: 'ok'; data: ClaimGuestParticipantResponse; guestAccessToken: string }
-    | { code: 'invalid_token' }
+    | { code: 'invalid_token'; reason: GuestInviteRejectReason }
 > {
     const token = body.token?.trim();
-    if (!token) return { code: 'invalid_token' };
+    if (!token) return { code: 'invalid_token', reason: 'invalid_token' };
 
-    const { participant } = await findGuestParticipantByInviteToken(token);
+    const { participant, rejectReason } = await findGuestParticipantByInviteToken(token);
 
-    if (!participant) return { code: 'invalid_token' };
+    if (!participant) return { code: 'invalid_token', reason: rejectReason ?? 'invalid_token' };
+
+    const updated = await prisma.participant.update({
+        where: { id: participant.id },
+        data: {
+            invite_claimed_at: participant.invite_claimed_at ?? new Date(),
+        },
+        select: {
+            id: true,
+            recording_id: true,
+            role: true,
+            display_name: true,
+            email: true,
+            invite_expires_at: true,
+            invite_revoked_at: true,
+            invite_claimed_at: true,
+        },
+    });
 
     const guestAccessToken = await signGuestAccessJwt({
-        participantId: participant.id,
-        recordingId: participant.recording_id,
+        participantId: updated.id,
+        recordingId: updated.recording_id,
     });
 
     return {
         code: 'ok',
         guestAccessToken,
-        data: toGuestParticipantResponse(participant),
+        data: toGuestParticipantResponse(updated),
     };
 }
 
@@ -190,11 +237,11 @@ export async function bootstrapGuestParticipantService(body: ClaimGuestParticipa
         guestAccessToken: string;
         audit: GuestBootstrapAudit;
     }
-    | { code: 'invalid_token' }
+    | { code: 'invalid_token'; reason: GuestInviteRejectReason }
     | { code: 'invalid_display_name'; message: string }
 > {
     const token = body.token?.trim();
-    if (!token) return { code: 'invalid_token' };
+    if (!token) return { code: 'invalid_token', reason: 'invalid_token' };
 
     const displayName = body.displayName?.trim();
     if (!displayName) {
@@ -202,12 +249,13 @@ export async function bootstrapGuestParticipantService(body: ClaimGuestParticipa
     }
 
     const normalizedEmail = body.email?.trim();
-    const { participant, tokenHash } = await findGuestParticipantByInviteToken(token);
-    if (!participant) return { code: 'invalid_token' };
+    const { participant, tokenHash, rejectReason } = await findGuestParticipantByInviteToken(token);
+    if (!participant) return { code: 'invalid_token', reason: rejectReason ?? 'invalid_token' };
 
     const updated = await prisma.participant.update({
         where: { id: participant.id },
         data: {
+            invite_claimed_at: participant.invite_claimed_at ?? new Date(),
             display_name: displayName,
             ...(normalizedEmail !== undefined ? { email: normalizedEmail || null } : {}),
         },
@@ -217,6 +265,9 @@ export async function bootstrapGuestParticipantService(body: ClaimGuestParticipa
             role: true,
             display_name: true,
             email: true,
+            invite_expires_at: true,
+            invite_revoked_at: true,
+            invite_claimed_at: true,
         },
     });
 

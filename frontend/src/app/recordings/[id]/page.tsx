@@ -1,43 +1,24 @@
 'use client';
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
   API_BASE,
   ExportsAPI,
-  ParticipantsAPI,
   RecordingsAPI,
-  TracksAPI,
-  type GetParticipantsResponse,
   type GetProjectAssetsGraphResponse,
   type GetRecordingResponse,
   type ProjectAssetActionDto,
   type ProjectAssetState,
   type RecordingProgressResponse,
 } from '@/lib/api';
-import ParticipantsList from '@/components/ParticipantsList';
-import AddParticipantForm from '@/components/AddParticipantForm';
-import UploadInitiateCard from '@/components/UploadInitiateCard';
 import TranscriptPanel from '@/components/recordings/TranscriptPanel';
 import { triggerDownloadFromUrl } from '@/lib/download';
-
-type ParticipantItem = GetParticipantsResponse['participants'][number];
-
-function toStateLabel(state: ProjectAssetState) {
-  if (state === 'ready') return 'Ready';
-  if (state === 'processing') return 'Processing';
-  if (state === 'failed') return 'Failed';
-  if (state === 'pending') return 'Pending';
-  return 'Missing';
-}
-
-function stateBadgeClass(state: ProjectAssetState) {
-  if (state === 'ready') return 'border-emerald-600/50 bg-emerald-500/10 text-emerald-200';
-  if (state === 'processing') return 'border-cyan-600/50 bg-cyan-500/10 text-cyan-200';
-  if (state === 'failed') return 'border-red-600/50 bg-red-500/10 text-red-200';
-  if (state === 'pending') return 'border-amber-600/50 bg-amber-500/10 text-amber-200';
-  return 'border-slate-700 bg-slate-900 text-slate-300';
-}
+import {
+  consumerStateBadgeClass,
+  toConsumerStateLabel,
+} from '@/lib/recording-journey';
 
 function formatDuration(durationMs?: number) {
   if (typeof durationMs !== 'number' || durationMs <= 0) return null;
@@ -48,36 +29,33 @@ function formatDuration(durationMs?: number) {
 }
 
 function formatBlockedReason(reason?: string) {
-  if (!reason) return null;
-  return reason
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (char) => char.toUpperCase());
+  return reason?.trim() || null;
+}
+
+function stateSummaryCopy(state: ProjectAssetState) {
+  if (state === 'ready') return 'Your recording outputs are ready.';
+  if (state === 'processing') return 'Processing is still running on your recording.';
+  if (state === 'uploading') return 'Uploads are still being finalized before processing can continue.';
+  if (state === 'action required') return 'This recording needs attention before it is fully ready.';
+  return 'Recording is still in progress.';
 }
 
 export default function RecordingDetailPage() {
   const { id } = useParams<{ id: string }>();
 
   const [data, setData] = useState<GetRecordingResponse | null>(null);
-  const [participants, setParticipants] = useState<GetParticipantsResponse['participants']>([]);
   const [progress, setProgress] = useState<RecordingProgressResponse | null>(null);
   const [projectAssets, setProjectAssets] = useState<GetProjectAssetsGraphResponse | null>(null);
   const [projectAssetsError, setProjectAssetsError] = useState<string | null>(null);
   const [assetActionBusyId, setAssetActionBusyId] = useState<string | null>(null);
   const [assetActionError, setAssetActionError] = useState<string | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const combinedPreviewRef = useRef<HTMLVideoElement | null>(null);
 
-  function refreshParticipants(recId: string) {
-    ParticipantsAPI.list(recId)
-      .then((res) => setParticipants(res.participants ?? []))
-      .catch(() => setParticipants([]));
-  }
-
-  function refreshProgress(recId: string) {
+  const refreshProgress = useCallback((recId: string) => {
     RecordingsAPI.getProgress(recId)
       .then(setProgress)
       .catch(() => setProgress(null));
-  }
+  }, []);
 
   const refreshProjectAssets = useCallback(async (recId: string) => {
     try {
@@ -92,73 +70,33 @@ export default function RecordingDetailPage() {
 
   const loadAll = useCallback(
     async (recId: string) => {
-      const [rec, parts] = await Promise.all([
-        RecordingsAPI.getById(recId),
-        ParticipantsAPI.list(recId).catch(() => ({ participants: [] })),
-      ]);
+      const rec = await RecordingsAPI.getById(recId);
       setData(rec);
-      setParticipants(parts.participants ?? []);
-
       refreshProgress(recId);
       await refreshProjectAssets(recId);
     },
-    [refreshProjectAssets]
+    [refreshProgress, refreshProjectAssets]
   );
 
   useEffect(() => {
-    if (typeof id === 'string') {
-      loadAll(id);
-    }
-
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
+    if (typeof id !== 'string') return;
+    void loadAll(id);
   }, [id, loadAll]);
 
   useEffect(() => {
     if (typeof id !== 'string') return;
-
     const timer = setInterval(() => {
       refreshProgress(id);
-      refreshProjectAssets(id);
+      void refreshProjectAssets(id);
     }, 5000);
-
     return () => clearInterval(timer);
-  }, [id, refreshProjectAssets]);
-
-  const participantById = useMemo(() => {
-    const map = new Map<string, ParticipantItem>();
-    for (const p of participants) map.set(p.id, p);
-    return map;
-  }, [participants]);
+  }, [id, refreshProgress, refreshProjectAssets]);
 
   if (!data) return <p>Loading…</p>;
 
-  const r = data.recording;
-  const exportSummary = projectAssets?.exports;
-  const allRequiredExportsSucceeded = !!exportSummary && exportSummary.requiredTotal > 0 && exportSummary.ready === exportSummary.requiredTotal;
-  const anyRequiredExportFailed = !!exportSummary && exportSummary.failed > 0;
-
-  const flowStage =
-    r.status === 'error' || anyRequiredExportFailed
-      ? 'error'
-      : allRequiredExportsSucceeded || r.status === 'ready'
-      ? 'exports_ready'
-      : progress?.phase === 'processing' || r.status === 'processing'
-      ? 'processing'
-      : progress?.phase === 'uploading' || r.status === 'uploading'
-      ? 'uploading'
-      : progress?.phase === 'recording'
-      ? 'recording'
-      : 'uploading';
-
-  async function handleTrackDownload(trackId: string) {
-    const { url } = await TracksAPI.finalUrl(trackId);
-    triggerDownloadFromUrl(url);
-  }
+  const recording = data.recording;
+  const projectState = projectAssets?.project.state ?? progress?.projectState ?? 'uploading';
+  const processingSummary = projectAssets?.processingSummary;
 
   async function handleAssetAction(action: ProjectAssetActionDto) {
     setAssetActionBusyId(action.id);
@@ -192,25 +130,6 @@ export default function RecordingDetailPage() {
     }
   }
 
-  function startTrackPolling(recId: string) {
-    if (pollRef.current) return;
-
-    pollRef.current = setInterval(async () => {
-      try {
-        const rec = await RecordingsAPI.getById(recId);
-        setData(rec);
-        const anyPending = rec.tracks.some((t) => t.state === 'uploaded');
-
-        if (!anyPending && pollRef.current) {
-          clearInterval(pollRef.current);
-          pollRef.current = null;
-        }
-      } catch {
-        // ignore transient polling errors
-      }
-    }, 5000);
-  }
-
   function seekPrimaryMediaTo(ms: number) {
     const video = combinedPreviewRef.current;
     if (!video) return;
@@ -220,75 +139,97 @@ export default function RecordingDetailPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl font-semibold">{r.title || '(untitled)'}</h1>
-      <div className="text-sm text-gray-300">
-        Status: <b>{r.status}</b> · Created: {new Date(r.createdAt).toLocaleString()}
-      </div>
-
-      <section className="space-y-3">
-        <h2 className="font-semibold">Recording flow</h2>
-        <div className="grid gap-2 text-sm md:grid-cols-5">
-          {[
-            { key: 'recording', label: 'Recording' },
-            { key: 'uploading', label: 'Uploading' },
-            { key: 'processing', label: 'Processing' },
-            { key: 'exports_ready', label: 'Exports ready' },
-            { key: 'error', label: 'Error' },
-          ].map((step) => {
-            const active = flowStage === step.key;
-            const done =
-              flowStage === 'exports_ready'
-                ? ['recording', 'uploading', 'processing', 'exports_ready'].includes(step.key)
-                : flowStage === 'processing'
-                ? ['recording', 'uploading', 'processing'].includes(step.key)
-                : flowStage === 'uploading'
-                ? ['recording', 'uploading'].includes(step.key)
-                : flowStage === 'recording'
-                ? ['recording'].includes(step.key)
-                : step.key === 'error';
-
-            return (
-              <div
-                key={step.key}
-                className={`rounded border px-3 py-2 ${
-                  active
-                    ? 'border-indigo-400 bg-indigo-950/50'
-                    : done
-                    ? 'border-emerald-700 bg-emerald-950/30'
-                    : 'border-gray-700 bg-gray-900/40'
-                }`}
-              >
-                <div className="font-medium">{step.label}</div>
-                <div className="text-xs text-gray-400">{active ? 'active' : done ? 'done' : 'pending'}</div>
-              </div>
-            );
-          })}
+      <header className="rounded-2xl border border-slate-800 bg-slate-950/60 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <Link href="/recordings" className="text-xs text-slate-400 hover:text-slate-100">
+              ← Back to recordings
+            </Link>
+            <h1 className="mt-2 text-2xl font-semibold text-slate-100">{recording.title || 'Untitled project'}</h1>
+            <p className="mt-2 text-sm text-slate-400">
+              Created {new Date(recording.createdAt).toLocaleString()}
+            </p>
+          </div>
+          <span className={`rounded-full border px-3 py-1 text-xs font-medium ${consumerStateBadgeClass(projectState)}`}>
+            {toConsumerStateLabel(projectState)}
+          </span>
         </div>
 
+        <p className="mt-4 max-w-2xl text-sm text-slate-300">{stateSummaryCopy(projectState)}</p>
+
+        {processingSummary && (
+          <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/60 p-4 text-sm text-slate-300">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={`rounded-full border px-2 py-1 text-[11px] ${processingSummary.minimumReady ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-200' : 'border-slate-700 text-slate-300'}`}>
+                {processingSummary.minimumReady ? 'Minimum ready' : 'Minimum ready pending'}
+              </span>
+              <span className={`rounded-full border px-2 py-1 text-[11px] ${processingSummary.fullyProcessed ? 'border-cyan-400/40 bg-cyan-500/10 text-cyan-200' : 'border-slate-700 text-slate-300'}`}>
+                {processingSummary.fullyProcessed ? 'Fully processed' : 'Processing continues'}
+              </span>
+            </div>
+            <p className="mt-3">
+              {processingSummary.minimumReady
+                ? 'The project is usable now. Remaining derivatives can finish in the background.'
+                : 'The project is still assembling its first playable assets.'}
+            </p>
+            <p className="mt-2 text-xs text-slate-400">
+              Combined ready: {processingSummary.readyPrimaryAsset ? 'yes' : 'no'} · Participant assets ready: {processingSummary.readyParticipantCount}/{processingSummary.participantCount}
+            </p>
+            {(processingSummary.pendingWork.length > 0 || processingSummary.failedWork.length > 0) && (
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-400">Pending work</p>
+                  {processingSummary.pendingWork.length > 0 ? (
+                    <ul className="mt-2 space-y-1 text-xs text-slate-300">
+                      {processingSummary.pendingWork.map((item, idx) => (
+                        <li key={`pending-${idx}`}>{item.label}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-2 text-xs text-slate-500">No pending work.</p>
+                  )}
+                </div>
+                <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+                  <p className="text-xs uppercase tracking-wide text-slate-400">Failed work</p>
+                  {processingSummary.failedWork.length > 0 ? (
+                    <ul className="mt-2 space-y-1 text-xs text-slate-300">
+                      {processingSummary.failedWork.map((item, idx) => (
+                        <li key={`failed-${idx}`}>{item.label}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-2 text-xs text-slate-500">No failed work.</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {progress && (
-          <div className="grid gap-2 text-xs text-gray-300 md:grid-cols-3">
-            <div className="rounded border border-gray-700 px-3 py-2">
-              Participants: {progress.summary.participantsCompleted}/{progress.summary.participantsTotal}
+          <div className="mt-4 grid gap-2 text-sm text-slate-300 md:grid-cols-3">
+            <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-3">
+              Participants complete: {progress.summary.participantsComplete}/{progress.summary.participantsTotal}
             </div>
-            <div className="rounded border border-gray-700 px-3 py-2">
-              Chunks uploaded: {progress.summary.chunksUploaded}/{progress.summary.chunksTotal} (pending {progress.summary.chunksPending})
+            <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-3">
+              Uploading now: {progress.summary.participantsUploading}
             </div>
-            <div className="rounded border border-gray-700 px-3 py-2">
-              Required exports: {projectAssets?.exports.ready ?? 0}/{projectAssets?.exports.requiredTotal ?? 0} (failed {projectAssets?.exports.failed ?? 0})
+            <div className="rounded-xl border border-slate-800 bg-slate-900/60 px-3 py-3">
+              Action required: {progress.summary.actionRequiredParticipants}
             </div>
           </div>
         )}
-      </section>
+      </header>
 
-      <section className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+      <section className="space-y-3 rounded-2xl border border-slate-800 bg-slate-950/50 p-5">
         <div className="flex items-center justify-between">
-          <h2 className="font-semibold">Project assets</h2>
+          <h2 className="text-lg font-semibold text-slate-100">Project assets</h2>
           <button
             type="button"
             className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300"
-            onClick={() => refreshProjectAssets(r.id)}
+            onClick={() => refreshProjectAssets(recording.id)}
           >
-            Refresh assets
+            Refresh
           </button>
         </div>
 
@@ -321,16 +262,16 @@ export default function RecordingDetailPage() {
                     </p>
                   </div>
                   <span
-                    className={`rounded-full border px-2 py-1 text-[11px] font-medium ${stateBadgeClass(projectAssets.combinedAsset.state)}`}
+                    className={`rounded-full border px-2 py-1 text-[11px] font-medium ${consumerStateBadgeClass(projectAssets.combinedAsset.state)}`}
                   >
-                    {toStateLabel(projectAssets.combinedAsset.state)}
+                    {toConsumerStateLabel(projectAssets.combinedAsset.state)}
                   </span>
                 </div>
 
                 <div className="mt-3 rounded-lg border border-slate-800 bg-slate-900/70 p-3 text-sm text-slate-300">
                   {projectAssets.combinedAsset.state === 'ready' && projectAssets.combinedAsset.previewUrl
                     ? 'Preview is available.'
-                    : 'Preview will appear after processing is ready.'}
+                    : stateSummaryCopy(projectAssets.combinedAsset.state)}
                 </div>
 
                 {projectAssets.combinedAsset.blockedReason && projectAssets.combinedAsset.state !== 'ready' && (
@@ -351,16 +292,16 @@ export default function RecordingDetailPage() {
 
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   {(projectAssets.combinedAsset.state === 'ready' ? projectAssets.combinedAsset.actions : []).map((action) => (
-                      <button
-                        key={action.id}
-                        type="button"
-                        disabled={assetActionBusyId === action.id}
-                        onClick={() => handleAssetAction(action)}
-                        className="rounded border border-slate-600 px-3 py-1.5 text-xs text-slate-100 hover:border-cyan-400 disabled:opacity-60"
-                      >
-                        {assetActionBusyId === action.id ? 'Working...' : action.label}
-                      </button>
-                    ))}
+                    <button
+                      key={action.id}
+                      type="button"
+                      disabled={assetActionBusyId === action.id}
+                      onClick={() => handleAssetAction(action)}
+                      className="rounded border border-slate-600 px-3 py-1.5 text-xs text-slate-100 hover:border-cyan-400 disabled:opacity-60"
+                    >
+                      {assetActionBusyId === action.id ? 'Working...' : action.label}
+                    </button>
+                  ))}
                 </div>
               </article>
             </div>
@@ -369,7 +310,7 @@ export default function RecordingDetailPage() {
               <p className="text-xs uppercase tracking-wide text-slate-400">Participant outputs</p>
               {projectAssets.participantAssets.length === 0 ? (
                 <div className="rounded border border-dashed border-slate-700 px-3 py-4 text-sm text-slate-400">
-                  No participant assets yet.
+                  Participant outputs will appear here after processing starts.
                 </div>
               ) : (
                 <div className="grid gap-3 md:grid-cols-2">
@@ -384,8 +325,8 @@ export default function RecordingDetailPage() {
                             {(asset.participant?.role || 'participant').toUpperCase()} · {formatDuration(asset.durationMs) ?? 'Duration pending'}
                           </p>
                         </div>
-                        <span className={`rounded-full border px-2 py-1 text-[11px] ${stateBadgeClass(asset.state)}`}>
-                          {toStateLabel(asset.state)}
+                        <span className={`rounded-full border px-2 py-1 text-[11px] ${consumerStateBadgeClass(asset.state)}`}>
+                          {toConsumerStateLabel(asset.state)}
                         </span>
                       </div>
 
@@ -398,7 +339,7 @@ export default function RecordingDetailPage() {
                         />
                       ) : (
                         <div className="mt-3 rounded-lg border border-slate-800 bg-slate-900/70 p-3 text-xs text-slate-400">
-                          Preview unavailable until this participant asset is ready.
+                          {stateSummaryCopy(asset.state)}
                         </div>
                       )}
 
@@ -410,16 +351,16 @@ export default function RecordingDetailPage() {
 
                       <div className="mt-3 flex flex-wrap gap-2">
                         {(asset.state === 'ready' ? asset.actions : []).map((action) => (
-                            <button
-                              key={action.id}
-                              type="button"
-                              disabled={assetActionBusyId === action.id}
-                              onClick={() => handleAssetAction(action)}
-                              className="rounded border border-slate-600 px-2.5 py-1 text-xs text-slate-100 hover:border-cyan-400 disabled:opacity-60"
-                            >
-                              {assetActionBusyId === action.id ? 'Working...' : action.label}
-                            </button>
-                          ))}
+                          <button
+                            key={action.id}
+                            type="button"
+                            disabled={assetActionBusyId === action.id}
+                            onClick={() => handleAssetAction(action)}
+                            className="rounded border border-slate-600 px-2.5 py-1 text-xs text-slate-100 hover:border-cyan-400 disabled:opacity-60"
+                          >
+                            {assetActionBusyId === action.id ? 'Working...' : action.label}
+                          </button>
+                        ))}
                       </div>
                     </article>
                   ))}
@@ -434,12 +375,12 @@ export default function RecordingDetailPage() {
                   <article key={asset.label} className="rounded-xl border border-slate-700 bg-slate-950/50 p-3">
                     <div className="flex items-center justify-between gap-2">
                       <p className="font-medium text-slate-100">{asset.label}</p>
-                      <span className={`rounded-full border px-2 py-1 text-[11px] ${stateBadgeClass(asset.state)}`}>
-                        {toStateLabel(asset.state)}
+                      <span className={`rounded-full border px-2 py-1 text-[11px] ${consumerStateBadgeClass(asset.state)}`}>
+                        {toConsumerStateLabel(asset.state)}
                       </span>
                     </div>
                     <div className="mt-2 text-xs text-slate-400">
-                      {asset.state === 'ready' ? 'Ready for preview or download.' : 'Still processing or not generated yet.'}
+                      {asset.state === 'ready' ? 'Ready for preview or download.' : stateSummaryCopy(asset.state)}
                     </div>
                     {asset.blockedReason && asset.state !== 'ready' && (
                       <p className="mt-3 text-xs text-slate-400">
@@ -448,16 +389,16 @@ export default function RecordingDetailPage() {
                     )}
                     <div className="mt-3 flex flex-wrap gap-2">
                       {(asset.state === 'ready' ? asset.actions : []).map((action) => (
-                          <button
-                            key={action.id}
-                            type="button"
-                            disabled={assetActionBusyId === action.id}
-                            onClick={() => handleAssetAction(action)}
-                            className="rounded border border-slate-600 px-2.5 py-1 text-xs text-slate-100 hover:border-cyan-400 disabled:opacity-60"
-                          >
-                            {assetActionBusyId === action.id ? 'Working...' : action.label}
-                          </button>
-                        ))}
+                        <button
+                          key={action.id}
+                          type="button"
+                          disabled={assetActionBusyId === action.id}
+                          onClick={() => handleAssetAction(action)}
+                          className="rounded border border-slate-600 px-2.5 py-1 text-xs text-slate-100 hover:border-cyan-400 disabled:opacity-60"
+                        >
+                          {assetActionBusyId === action.id ? 'Working...' : action.label}
+                        </button>
+                      ))}
                     </div>
                   </article>
                 ))}
@@ -466,12 +407,12 @@ export default function RecordingDetailPage() {
                   <article key={exp.type} className="rounded-xl border border-slate-700 bg-slate-950/50 p-3">
                     <div className="flex items-center justify-between gap-2">
                       <p className="font-medium text-slate-100">{exp.label}</p>
-                      <span className={`rounded-full border px-2 py-1 text-[11px] ${stateBadgeClass(exp.state)}`}>
-                        {toStateLabel(exp.state)}
+                      <span className={`rounded-full border px-2 py-1 text-[11px] ${consumerStateBadgeClass(exp.state)}`}>
+                        {toConsumerStateLabel(exp.state)}
                       </span>
                     </div>
                     <div className="mt-2 text-xs text-slate-400">
-                      {exp.state === 'ready' ? 'Download is available.' : 'Download appears only when ready.'}
+                      {exp.state === 'ready' ? 'Download is available.' : stateSummaryCopy(exp.state)}
                     </div>
                     {exp.blockedReason && exp.state !== 'ready' && (
                       <p className="mt-3 text-xs text-slate-400">
@@ -480,16 +421,16 @@ export default function RecordingDetailPage() {
                     )}
                     <div className="mt-3 flex flex-wrap gap-2">
                       {(exp.state === 'ready' ? exp.actions : []).map((action) => (
-                          <button
-                            key={action.id}
-                            type="button"
-                            disabled={assetActionBusyId === action.id}
-                            onClick={() => handleAssetAction(action)}
-                            className="rounded border border-slate-600 px-2.5 py-1 text-xs text-slate-100 hover:border-cyan-400 disabled:opacity-60"
-                          >
-                            {assetActionBusyId === action.id ? 'Working...' : action.label}
-                          </button>
-                        ))}
+                        <button
+                          key={action.id}
+                          type="button"
+                          disabled={assetActionBusyId === action.id}
+                          onClick={() => handleAssetAction(action)}
+                          className="rounded border border-slate-600 px-2.5 py-1 text-xs text-slate-100 hover:border-cyan-400 disabled:opacity-60"
+                        >
+                          {assetActionBusyId === action.id ? 'Working...' : action.label}
+                        </button>
+                      ))}
                     </div>
                   </article>
                 ))}
@@ -500,121 +441,10 @@ export default function RecordingDetailPage() {
       </section>
 
       <TranscriptPanel
-        recordingId={r.id}
+        recordingId={recording.id}
         onSeekToMs={seekPrimaryMediaTo}
-        onSavedRevision={() => refreshProjectAssets(r.id)}
+        onSavedRevision={() => refreshProjectAssets(recording.id)}
       />
-
-      <section className="space-y-3">
-        <h2 className="font-semibold">Session mode</h2>
-        <div className="grid gap-3 md:grid-cols-2">
-          <Link
-            href={`/studio/${r.id}?mode=meet`}
-            className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 hover:border-slate-500"
-          >
-            <p className="text-sm font-semibold text-slate-100">Meet</p>
-            <p className="mt-1 text-xs text-slate-400">
-              Fast call flow for collaboration and interviews.
-            </p>
-          </Link>
-
-          <Link
-            href={`/studio/${r.id}?mode=studio`}
-            className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-3 hover:border-slate-500"
-          >
-            <p className="text-sm font-semibold text-slate-100">Recording Studio</p>
-            <p className="mt-1 text-xs text-slate-400">
-              Creator-focused layout for high-quality recording sessions.
-            </p>
-          </Link>
-        </div>
-      </section>
-
-      <section id="participants" className="space-y-3">
-        <h2 className="font-semibold">Participants</h2>
-        <div className="grid gap-4 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-          <div className="rounded border bg-white p-4 text-sm text-gray-900">
-            <AddParticipantForm recordingId={r.id} onCreated={() => refreshParticipants(r.id)} />
-          </div>
-          <div className="rounded border bg-white p-4 text-sm text-gray-900">
-            <ParticipantsList recordingId={r.id} />
-          </div>
-        </div>
-      </section>
-
-      <section id="uploads" className="space-y-3">
-        <h2 className="font-semibold">Uploads</h2>
-        <div className="grid gap-4 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
-          <div className="rounded border bg-white p-4 text-sm text-gray-900">
-            <UploadInitiateCard
-              recordingId={r.id}
-              participants={participants}
-              onUploaded={() => {
-                loadAll(r.id);
-                startTrackPolling(r.id);
-              }}
-            />
-          </div>
-
-          <div className="rounded border bg-white p-4 text-sm text-gray-900">
-            <section className="space-y-3">
-              <h2 className="flex items-center gap-2 font-semibold">
-                Tracks
-                <button
-                  type="button"
-                  className="ml-auto rounded border px-2 py-1 text-xs"
-                  onClick={() => loadAll(r.id)}
-                >
-                  Refresh
-                </button>
-              </h2>
-
-              <div className="rounded border bg-white p-4 text-sm text-gray-900">
-                {data.tracks.length === 0 ? (
-                  'No tracks yet (initiate upload from client when ready).'
-                ) : (
-                  <div className="divide-y">
-                    {data.tracks.map((t, idx) => {
-                      const canDownload = t.state === 'processed';
-                      const p = participantById.get(t.participantId);
-                      const label = p
-                        ? `${p.role === 'host' ? 'Host' : 'Guest'} · ${p.displayName || p.email || p.id}`
-                        : t.participantId;
-
-                      return (
-                        <div key={t.id} className="flex items-center gap-3 py-2">
-                          <span className="w-10 text-xs text-gray-500">#{idx + 1}</span>
-                          <span className="min-w-20 capitalize">{t.kind}</span>
-                          <span className="text-sm text-gray-600">{t.state}</span>
-                          <span className="text-xs text-gray-500">{label}</span>
-                          <span className="text-xs text-gray-500">
-                            {t.codec ? `codec: ${t.codec} ` : ''}
-                            {typeof t.durationMs === 'number' ? `· ${t.durationMs}ms` : ''}
-                          </span>
-                          {canDownload && (
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                handleTrackDownload(t.id);
-                              }}
-                              className="ml-auto rounded bg-indigo-600 px-3 py-1.5 text-white"
-                              title="Download the processed file"
-                            >
-                              Download
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </section>
-          </div>
-        </div>
-      </section>
     </div>
   );
 }

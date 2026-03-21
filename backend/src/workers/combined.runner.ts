@@ -10,6 +10,8 @@ export type CombinedCompositionMode = 'concat_all' | 'primary_only';
 export type CombinedCompositionSource = {
   id: string;
   storageKey: string;
+  /** Optional separate audio-only track to merge into the video source. */
+  audioStorageKey?: string;
 };
 
 export type CombinedCompositionOutcome = {
@@ -52,6 +54,35 @@ async function runFfmpegConcat(concatListPath: string, outputPath: string) {
   });
 }
 
+async function runFfmpegMergeAudio(videoPath: string, audioPath: string, outputPath: string) {
+  const args = [
+    '-y',
+    '-i', videoPath,
+    '-i', audioPath,
+    '-map', '0:v:0',
+    '-map', '1:a:0',
+    '-c:v', 'copy',
+    '-c:a', 'aac',
+    '-b:a', '128k',
+    '-shortest',
+    '-movflags', '+faststart',
+    outputPath,
+  ];
+
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) return resolve();
+      reject(new Error(`ffmpeg audio merge failed: ${stderr}`));
+    });
+  });
+}
+
 export async function runCombinedComposition(args: {
   recordingId: string;
   mode: CombinedCompositionMode;
@@ -73,6 +104,8 @@ export async function runCombinedComposition(args: {
     `studio-cast-combined-concat-${args.recordingId}-${Date.now()}.txt`
   );
   const localSources: Array<{ localPath: string; cleanup: () => Promise<void> }> = [];
+  const audioLocalSources: Array<{ localPath: string; cleanup: () => Promise<void> }> = [];
+  const mergedTmpPaths: string[] = [];
 
   try {
     for (const source of selectedSources) {
@@ -80,12 +113,37 @@ export async function runCombinedComposition(args: {
       localSources.push(resolved);
     }
 
-    if (localSources.length === 1) {
-      await fs.copyFile(localSources[0]!.localPath, composedTmpPath);
-    } else {
+    const needsAudioMerge = selectedSources.some((s) => s.audioStorageKey);
+    const needsConcat = localSources.length > 1;
+    if (needsAudioMerge || needsConcat) {
       await assertFfmpegAvailable();
-      const concatList = localSources
-        .map((source) => `file '${source.localPath.replace(/'/g, `'\\''`)}'`)
+    }
+
+    // Build per-source processed paths, merging in audio where provided.
+    const processedPaths: string[] = [];
+    for (let i = 0; i < localSources.length; i++) {
+      const src = localSources[i]!;
+      const audioKey = selectedSources[i]!.audioStorageKey;
+      if (audioKey) {
+        const audioResolved = await resolveStorageKeyToLocal(audioKey);
+        audioLocalSources.push(audioResolved);
+        const mergedTmp = path.join(
+          os.tmpdir(),
+          `studio-cast-merge-${args.recordingId}-${i}-${Date.now()}.mp4`
+        );
+        mergedTmpPaths.push(mergedTmp);
+        await runFfmpegMergeAudio(src.localPath, audioResolved.localPath, mergedTmp);
+        processedPaths.push(mergedTmp);
+      } else {
+        processedPaths.push(src.localPath);
+      }
+    }
+
+    if (processedPaths.length === 1) {
+      await fs.copyFile(processedPaths[0]!, composedTmpPath);
+    } else {
+      const concatList = processedPaths
+        .map((p) => `file '${p.replace(/'/g, `'\\''`)}'`)
         .join('\n');
       await fs.writeFile(concatListPath, `${concatList}\n`, 'utf8');
       await runFfmpegConcat(concatListPath, composedTmpPath);
@@ -122,23 +180,15 @@ export async function runCombinedComposition(args: {
     };
   } finally {
     for (const localSource of localSources) {
-      try {
-        await localSource.cleanup();
-      } catch {
-        // ignore cleanup failures for local source temp paths
-      }
+      try { await localSource.cleanup(); } catch { /* ignore */ }
     }
-
-    try {
-      await fs.unlink(composedTmpPath);
-    } catch {
-      // ignore composed temp cleanup failures
+    for (const audioSrc of audioLocalSources) {
+      try { await audioSrc.cleanup(); } catch { /* ignore */ }
     }
-
-    try {
-      await fs.unlink(concatListPath);
-    } catch {
-      // ignore concat-list temp cleanup failures
+    for (const tmpPath of mergedTmpPaths) {
+      try { await fs.unlink(tmpPath); } catch { /* ignore */ }
     }
+    try { await fs.unlink(composedTmpPath); } catch { /* ignore */ }
+    try { await fs.unlink(concatListPath); } catch { /* ignore */ }
   }
 }

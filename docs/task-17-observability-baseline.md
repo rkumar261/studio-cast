@@ -1,5 +1,10 @@
 # Task 17 Observability Baseline
 
+BRD/TRD 09 references:
+- [BRD/TRD 09 Telemetry Taxonomy and Metrics Map](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-09-telemetry-taxonomy.md)
+- [BRD/TRD 09 Dashboards and Alert Specification](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-09-dashboards-alerts.md)
+- [BRD/TRD 09 Diagnostics and Runbook Pack](/Users/rakeshkumar/dev/projects/studio-cast/docs/brd-trd-09-diagnostics-runbooks.md)
+
 This document defines the lightweight telemetry baseline for local debugging of recording upload and media processing flows.
 
 ## Structured Event Contract
@@ -23,26 +28,40 @@ All new telemetry events emit structured JSON fields with this minimum shape:
 Event list is implemented in `backend/src/lib/telemetry.ts`:
 
 - `guest.bootstrap.accepted`
+- `guest.bootstrap.rejected`
 - `guest.claim.accepted`
+- `guest.claim.rejected`
+- `guest.access.blocked`
 - `guest.joined.session`
+- `session.join.requested`
+- `session.joined`
+- `session.left`
 - `recording.session.started`
 - `recording.session.stopped`
 - `track.finalized`
+- `track.ready_for_stitch`
 - `upload.recovery.snapshot`
 - `upload.chunk.completed`
 - `upload.chunk.failed`
 - `upload.participant.completed`
+- `stitch.job.queued`
 - `stitch.started`
 - `stitch.finished`
 - `stitch.failed`
+- `recording.processing.entered`
 - `asset.participant.ready`
 - `asset.participant.failed`
+- `asset.combined.processing`
+- `asset.combined.blocked`
 - `asset.combined.ready`
 - `asset.combined.failed`
 - `transcript.ready`
 - `transcript.failed`
 - `export.ready`
 - `export.failed`
+- `project.minimum_ready`
+- `project.fully_ready`
+- `project.blocked`
 
 Worker operational lifecycle emits additional helper events:
 

@@ -1,0 +1,32 @@
+{
+  "name": "studio-cast",
+  "version": "1.0.0",
+  "description": "Studio Cast is a Riverside-style remote recording platform.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:guest": "playwright test tests/e2e/guest-join.spec.ts",
+    "test:e2e:leave": "playwright test tests/e2e/guest-leave.spec.ts",
+    "test:e2e:project": "playwright test tests/e2e/project-page.spec.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rkumar261/studio-cast.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/rkumar261/studio-cast/issues"
+  },
+  "homepage": "https://github.com/rkumar261/studio-cast#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.58.2"
+  }
+}

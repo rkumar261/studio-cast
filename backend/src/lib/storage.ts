@@ -8,13 +8,9 @@ import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3
 // If you already have these utilities, import them instead:
 import { R2_BUCKET, getR2Client } from '../lib/r2.js';
 
-function requireEnv(name: string): string {
-    const v = process.env[name];
-    if (!v) throw new Error(`Missing env ${name}`);
-    return v;
-}
-
-const MEDIA_ROOT = requireEnv('MEDIA_ROOT'); // used by TUS-completed path
+// MEDIA_ROOT is optional after TUS removal — used only as a local fallback
+// for legacy paths during migration. Workers boot fine without it.
+const MEDIA_ROOT = process.env.MEDIA_ROOT?.trim() ?? '';
 
 export type TrackLike = {
     id: string | number;

@@ -7,6 +7,7 @@ export type TrackChunkRecoveryResponse = {
   recovery: {
     highestExistingSeq: number;
     highestContiguousUploadedSeq: number;
+    nextExpectedSeq: number;
     nextSeq: number;
     incompleteChunks: Array<{
       id: string;

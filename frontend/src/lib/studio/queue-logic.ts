@@ -11,11 +11,7 @@ export type QueueSchedulerItem = {
 };
 
 export type QueueRecoveryItem = QueueSchedulerItem & {
-  protocol: 'tus' | 'multipart';
-  resumableTusId?: string;
-  resumableTusUrl?: string;
-  resumableTusChunkId?: string;
-  resumableTusUploadState?: string;
+  protocol: 'presigned_url';
   updatedAt: number;
 };
 
@@ -25,13 +21,9 @@ type QueueRecoveryItemCore = {
   trackId: string;
   seq: number;
   status: QueueStatus;
-  protocol: 'tus' | 'multipart';
+  protocol: 'presigned_url';
   nextAttemptAt: number;
   updatedAt: number;
-  resumableTusId?: string;
-  resumableTusUrl?: string;
-  resumableTusChunkId?: string;
-  resumableTusUploadState?: string;
 };
 
 export type RecoverySnapshot = {
@@ -39,13 +31,6 @@ export type RecoverySnapshot = {
   trackId: string;
   highestExistingSeq: number;
   highestContiguousUploadedSeq: number;
-  resumableTus?: {
-    chunkId: string;
-    seq: number;
-    tusId: string;
-    tusUrl?: string;
-    tusUploadState?: string;
-  };
 };
 
 export function trackExecutionKey(item: { recordingId: string; trackId: string }): string {
@@ -135,50 +120,8 @@ export function reconcileTrackRecoveryItems<T extends QueueRecoveryItemCore>(arg
     }
   }
 
-  const resumable = args.snapshot.resumableTus;
-  if (resumable?.tusUrl || resumable?.tusId) {
-    const resumeTarget = targetItems.find(
-      (item) =>
-        item.protocol === 'tus' &&
-        item.seq === resumable.seq &&
-        !args.inFlightItemIds.has(item.id)
-    );
-
-    if (resumeTarget) {
-      const existing = upsertById.get(resumeTarget.id) ?? resumeTarget;
-      upsertById.set(resumeTarget.id, {
-        ...existing,
-        resumableTusId: resumable.tusId,
-        resumableTusUrl: resumable.tusUrl,
-        resumableTusChunkId: resumable.chunkId,
-        resumableTusUploadState: resumable.tusUploadState,
-        status: existing.status === 'failed' ? 'queued' : existing.status,
-        nextAttemptAt: existing.status === 'failed' ? args.now : existing.nextAttemptAt,
-        updatedAt: args.now,
-      });
-    }
-  }
-
   return {
     deleteIds,
     upserts: Array.from(upsertById.values()),
   };
-}
-
-export function selectTusResumeCandidate(args: {
-  itemTusUrl?: string;
-  itemTusId?: string;
-  resumePlanTusUrl?: string;
-  resumePlanTusResourceUrl?: string;
-  resumePlanTusId?: string;
-  endpoint: string;
-  buildTusUrlFromId: (tusId: string, endpoint: string) => string;
-}): string | undefined {
-  if (args.itemTusUrl) return args.itemTusUrl;
-  if (args.resumePlanTusResourceUrl) return args.resumePlanTusResourceUrl;
-  if (args.resumePlanTusUrl) return args.resumePlanTusUrl;
-
-  const id = args.itemTusId ?? args.resumePlanTusId;
-  if (!id) return undefined;
-  return args.buildTusUrlFromId(id, args.endpoint);
 }

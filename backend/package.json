@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "test": "node --test --import tsx src/**/*.test.ts",
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest --config ./jest.config.cjs --runInBand",
+    "test:coverage": "NODE_OPTIONS=--experimental-vm-modules jest --config ./jest.config.cjs --coverage --runInBand",
     "dev:all": "bash scripts/dev-all.sh",
     "dev:api": "tsx src/index.ts",
     "dev:worker:stitch": "tsx src/workers/stitch.worker.ts",
@@ -14,6 +15,7 @@
     "dev:worker:export": "tsx src/workers/export.worker.ts",
     "dev:worker:maintenance": "tsx src/workers/maintenance.worker.ts",
     "acceptance:recording": "tsx src/tools/recording-acceptance.ts",
+    "support:recording": "tsx src/tools/recording-support-snapshot.ts",
     "prebuild": "npm run prisma:gen",
     "build": "tsc",
     "start": "node dist/index.js",
@@ -27,15 +29,18 @@
   "license": "ISC",
   "description": "",
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/node": "^24.6.1",
+    "jest": "^30.3.0",
     "openapi-typescript": "^7.9.1",
     "prisma": "^6.16.3",
+    "ts-jest": "^29.4.6",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.922.0",
-    "@aws-sdk/s3-request-presigner": "^3.922.0",
+    "@aws-sdk/s3-request-presigner": "^3.1013.0",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.1.0",
     "@fastify/http-proxy": "^11.3.0",

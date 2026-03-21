@@ -9,14 +9,22 @@ import {
   ParticipantsAPI,
   RecordingsAPI,
   setApiAuthMode,
+  type ConsumerRecordingState,
   type RecordingProgressResponse,
   type RecordingSessionResponse,
 } from '@/lib/api';
+import {
+  deriveGuestUploadState,
+  deriveHostStudioPhase,
+  toConsumerStateLabel,
+} from '@/lib/recording-journey';
+import { StudioRecordingAPI } from '@/lib/studio/internal-api';
 import {
   useRollingChunkRecorder,
   type RollingRecorderChunk,
   type RollingRecorderSource,
 } from '@/lib/studio/useRollingChunkRecorder';
+import { deriveStudioUiAccess } from '@/lib/studio/access';
 import { useChunkUploadQueue, type ChunkUploadProtocol } from '@/lib/studio/useChunkUploadQueue';
 import { useSession } from '@/lib/useSession';
 import {
@@ -70,13 +78,6 @@ type StudioControlIconKind =
   | 'share'
   | 'leave';
 type StudioSidebarIconKind = 'people' | 'chat' | 'brand' | 'text' | 'media';
-
-type HostStudioLifecyclePhase =
-  | 'recording'
-  | 'stopping'
-  | 'uploading'
-  | 'upload_complete'
-  | 'processing_handoff';
 
 const spaceGrotesk = Space_Grotesk({
   subsets: ['latin'],
@@ -673,7 +674,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     sessionMode === 'studio' &&
     (chunkUploadQueue.stats.pending > 0 || chunkUploadQueue.stats.processing > 0);
   const hasBackendPendingFromProgress = (recordingProgress?.participants ?? []).some(
-    (participant) => participant.pendingCount > 0
+    (participant) => participant.state === 'uploading' || participant.state === 'action required'
   );
   const shouldPollDuringHostHandoff =
     sessionMode === 'studio' && canControlRecording && !!recordingSession?.stoppedAt;
@@ -1252,7 +1253,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       if (registeringKindsRef.current.has(kind)) return;
 
       registeringKindsRef.current.add(kind);
-      void RecordingsAPI.registerTrack(recordingId, {
+      void StudioRecordingAPI.registerTrack(recordingId, {
         participantId: recorderParticipantId,
         kind,
       })
@@ -1305,7 +1306,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       recoveringTrackIdsRef.current.add(trackId);
 
       try {
-        const response = await RecordingsAPI.getTrackChunkRecovery(recordingId, trackId);
+        const response = await StudioRecordingAPI.getTrackChunkRecovery(recordingId, trackId);
         const highestExistingSeq = Math.max(0, Math.floor(response.recovery.highestExistingSeq));
         const highestContiguousUploadedSeq = Math.max(
           0,
@@ -1415,7 +1416,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
             ? Math.max(0, Math.floor(recoveredNextSeq) - 1)
             : 0;
         const finalSeq = Math.max(observedFinalSeq, recoveredFinalSeq);
-        await RecordingsAPI.finalizeTrack(recordingId, trackId, {
+        await StudioRecordingAPI.finalizeTrack(recordingId, trackId, {
           finalSeq,
           captureClosedAt,
         });
@@ -1623,9 +1624,6 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         const canFallbackToMesh = sessionMode === 'meet' || allowStudioMeshFallback;
         if (!canFallbackToMesh) {
           setFallbackNotice('LiveKit connection failed. Retry to rejoin. Mesh fallback is disabled in studio mode.');
-          if (sessionMode === 'meet') {
-            startPreJoinPreview();
-          }
           return false;
         }
 
@@ -1873,32 +1871,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   }, [isRecording, sessionMode]);
 
   const progressParticipants = useMemo(
-    () => {
-      const participants = recordingProgress?.participants ?? [];
-      const sessionStartedAtMs = recordingSession?.startedAt
-        ? new Date(recordingSession.startedAt).getTime()
-        : null;
-
-      return participants.filter((participant) => {
-        if (participant.participantId === recorderParticipantId) return true;
-        if (effectiveRequestedParticipantId && participant.participantId === effectiveRequestedParticipantId) return true;
-        if (participant.pendingCount > 0) return true;
-        if (participant.trackCount <= 0 && participant.uploadedCount <= 0) return false;
-        if (!sessionStartedAtMs) return true;
-
-        return participant.tracks.some((track) => {
-          if (!track.updatedAt) return true;
-          const updatedMs = new Date(track.updatedAt).getTime();
-          return Number.isFinite(updatedMs) && updatedMs >= sessionStartedAtMs;
-        });
-      });
-    },
-    [
-      recorderParticipantId,
-      recordingProgress?.participants,
-      recordingSession?.startedAt,
-      effectiveRequestedParticipantId,
-    ]
+    () => recordingProgress?.participants ?? [],
+    [recordingProgress?.participants]
   );
 
   useEffect(() => {
@@ -1907,10 +1881,12 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     if (!recordingSession?.stoppedAt) return;
     const hasLocalPendingUploads =
       chunkUploadQueue.stats.pending > 0 || chunkUploadQueue.stats.processing > 0;
-    const hasBackendPendingUploads = progressParticipants.some((participant) => participant.pendingCount > 0);
-    if (!hasLocalPendingUploads && !hasBackendPendingUploads) return;
+    const hasBackendPendingUploads = progressParticipants.some((participant) => participant.state === 'uploading');
+    const hasFailedUploads = chunkUploadQueue.stats.failed > 0;
+    if (!hasLocalPendingUploads && !hasBackendPendingUploads && !hasFailedUploads) return;
     setShowUploadStatusModal(true);
   }, [
+    chunkUploadQueue.stats.failed,
     chunkUploadQueue.stats.pending,
     chunkUploadQueue.stats.processing,
     progressParticipants,
@@ -1948,6 +1924,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   const localStudioRole: 'host' | 'guest' = canControlRecording ? 'host' : 'guest';
   const localStudioRoleLabel = localStudioRole === 'host' ? 'Host' : 'Guest';
+  const studioUiAccess = deriveStudioUiAccess(localStudioRole);
   const localParticipantProgress = progressParticipants.find((participant) =>
     recorderParticipantId
       ? participant.participantId === recorderParticipantId
@@ -1955,120 +1932,95 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         ? participant.participantId === effectiveRequestedParticipantId
         : participant.role === 'host'
   );
+  const localQueueState = deriveGuestUploadState({
+    pendingUploads: chunkUploadQueue.stats.pending + chunkUploadQueue.stats.processing,
+    failedUploads: chunkUploadQueue.stats.failed,
+  });
   const localUploadComplete = localParticipantProgress
-    ? localParticipantProgress.pendingCount === 0
-    : chunkUploadQueue.stats.pending + chunkUploadQueue.stats.processing === 0;
+    ? localParticipantProgress.state === 'upload complete'
+    : localQueueState === 'upload complete';
   const uploadCompletion = useMemo(() => {
-    const participantsWithUploads = progressParticipants.filter(
-      (participant) =>
-        participant.trackCount > 0 || participant.uploadedCount > 0 || participant.pendingCount > 0
-    );
-    const participantsTotal = participantsWithUploads.length;
-    const participantsCompleted = participantsWithUploads.filter(
-      (participant) => participant.trackCount > 0 && participant.pendingCount === 0
-    ).length;
-    const tracksTotal = participantsWithUploads.reduce(
-      (sum, participant) => sum + participant.trackCount,
-      0
-    );
-    const tracksUploaded = participantsWithUploads.reduce(
-      (sum, participant) => sum + participant.uploadedCount,
-      0
-    );
-
-    const fallbackChunkTotal = participantsWithUploads.reduce(
-      (sum, participant) =>
-        sum + participant.tracks.reduce((trackSum, track) => trackSum + track.chunkTotal, 0),
-      0
-    );
-    const fallbackChunkUploaded = participantsWithUploads.reduce(
-      (sum, participant) =>
-        sum + participant.tracks.reduce((trackSum, track) => trackSum + track.chunkUploaded, 0),
-      0
-    );
-    const chunksTotal =
-      recordingProgress?.summary.chunksTotal && recordingProgress.summary.chunksTotal > 0
-        ? recordingProgress.summary.chunksTotal
-        : fallbackChunkTotal;
-    const chunksUploaded =
-      recordingProgress?.summary.chunksUploaded && recordingProgress.summary.chunksUploaded > 0
-        ? recordingProgress.summary.chunksUploaded
-        : fallbackChunkUploaded;
-
+    const participantsWithUploads = progressParticipants;
     const hasBackendPendingUploads = participantsWithUploads.some(
-      (participant) => participant.pendingCount > 0
+      (participant) => participant.state === 'uploading'
     );
     const hasLocalPendingUploads =
       chunkUploadQueue.stats.pending > 0 || chunkUploadQueue.stats.processing > 0;
-    const hasPendingUploads = hasLocalPendingUploads || hasBackendPendingUploads;
-    const hasTrackEvidence =
-      tracksTotal > 0 ||
-      tracksUploaded > 0 ||
-      chunksUploaded > 0 ||
-      chunkUploadQueue.stats.completed > 0 ||
-      chunkUploadQueue.stats.bytesUploaded > 0;
-    const allParticipantTracksUploaded =
-      tracksTotal > 0 && tracksUploaded >= tracksTotal && participantsTotal > 0;
+    const participantsTotal =
+      recordingProgress?.summary.participantsTotal ?? participantsWithUploads.length;
+    const participantsComplete =
+      recordingProgress?.summary.participantsComplete ??
+      participantsWithUploads.filter((participant) => participant.state === 'upload complete').length;
+    const participantsUploading =
+      recordingProgress?.summary.participantsUploading ??
+      participantsWithUploads.filter((participant) => participant.state === 'uploading').length;
+    const actionRequiredParticipants =
+      recordingProgress?.summary.actionRequiredParticipants ??
+      participantsWithUploads.filter((participant) => participant.state === 'action required').length;
     const uploadsComplete =
-      !!recordingSession?.stoppedAt &&
-      hasTrackEvidence &&
-      allParticipantTracksUploaded &&
-      !hasPendingUploads;
+      recordingProgress?.studio.canOpenProject ??
+      (!!recordingSession?.stoppedAt && participantsTotal > 0 && participantsComplete >= participantsTotal);
 
     return {
       participantsTotal,
-      participantsCompleted,
-      tracksTotal,
-      tracksUploaded,
-      chunksTotal,
-      chunksUploaded,
-      hasPendingUploads,
-      hasTrackEvidence,
+      participantsComplete,
+      participantsUploading,
+      actionRequiredParticipants,
+      keepPageOpen: recordingProgress?.studio.keepPageOpen ?? (hasLocalPendingUploads || hasBackendPendingUploads),
       uploadsComplete,
     };
   }, [
-    chunkUploadQueue.stats.bytesUploaded,
-    chunkUploadQueue.stats.completed,
     chunkUploadQueue.stats.pending,
     chunkUploadQueue.stats.processing,
     progressParticipants,
-    recordingProgress?.summary.chunksTotal,
-    recordingProgress?.summary.chunksUploaded,
+    recordingProgress?.studio.canOpenProject,
+    recordingProgress?.studio.keepPageOpen,
+    recordingProgress?.summary.actionRequiredParticipants,
+    recordingProgress?.summary.participantsComplete,
+    recordingProgress?.summary.participantsTotal,
+    recordingProgress?.summary.participantsUploading,
     recordingSession?.stoppedAt,
   ]);
-  const hasPendingUploads = uploadCompletion.hasPendingUploads;
-  const canOpenProject = uploadCompletion.uploadsComplete;
-  const hostStudioLifecyclePhase = useMemo<HostStudioLifecyclePhase | null>(() => {
-    if (sessionMode !== 'studio' || showPreJoin || localStudioRole !== 'host') return null;
-    if (isRecording) {
-      return sessionBusy ? 'stopping' : 'recording';
-    }
-    if (!recordingSession?.stoppedAt) {
-      return sessionBusy ? 'stopping' : 'recording';
-    }
-    if (hasPendingUploads || !uploadCompletion.hasTrackEvidence || !uploadCompletion.uploadsComplete) {
-      return 'uploading';
-    }
-    if (recordingProgress?.phase === 'processing' || recordingProgress?.phase === 'ready') {
-      return 'processing_handoff';
-    }
-    return 'upload_complete';
-  }, [
-    hasPendingUploads,
-    isRecording,
-    localStudioRole,
-    uploadCompletion.hasTrackEvidence,
-    uploadCompletion.uploadsComplete,
-    recordingProgress?.phase,
-    recordingSession?.stoppedAt,
-    sessionBusy,
-    sessionMode,
-    showPreJoin,
-  ]);
+  const hasPendingUploads = uploadCompletion.keepPageOpen;
+  const canOpenProject = recordingProgress?.studio.canOpenProject ?? uploadCompletion.uploadsComplete;
+  const studioState: ConsumerRecordingState =
+    recordingProgress?.studioState ??
+    (isRecording ? 'recording' : canOpenProject ? 'upload complete' : 'uploading');
+  const projectState: ConsumerRecordingState =
+    recordingProgress?.projectState ??
+    (canOpenProject ? 'processing' : studioState);
+  const hostStudioLifecyclePhase = useMemo(
+    () =>
+      deriveHostStudioPhase({
+        canControlRecording: localStudioRole === 'host',
+        showPreJoin,
+        isRecording,
+        sessionBusy,
+        sessionStopped: !!recordingSession?.stoppedAt,
+        studioState,
+        projectState,
+      }),
+    [
+      isRecording,
+      localStudioRole,
+      projectState,
+      recordingSession?.stoppedAt,
+      sessionBusy,
+      showPreJoin,
+      studioState,
+    ]
+  );
   const hostUploadOverlayOpen =
     localStudioRole === 'host' &&
     hostStudioLifecyclePhase !== null &&
-    hostStudioLifecyclePhase !== 'recording';
+    hostStudioLifecyclePhase !== 'host_prepared' &&
+    hostStudioLifecyclePhase !== 'recording_active';
+  const uploadStatusState: ConsumerRecordingState =
+    localStudioRole === 'host'
+      ? hostStudioLifecyclePhase === 'project_processing' || hostStudioLifecyclePhase === 'project_ready'
+        ? projectState
+        : studioState
+      : localParticipantProgress?.state ?? localQueueState;
   const uploadOverlayOpen =
     localStudioRole === 'host'
       ? hostUploadOverlayOpen
@@ -2078,7 +2030,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     if (sessionMode !== 'studio') return;
     if (!showUploadStatusModal) return;
     if (!recordingSession?.stoppedAt) return;
-    if (!localUploadComplete) return;
+    if (!localUploadComplete && chunkUploadQueue.stats.failed === 0) return;
 
     if (localStudioRole === 'guest') {
       router.replace(`/studio/${recordingId}/thanks`);
@@ -2087,6 +2039,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   }, [
     localStudioRole,
     localUploadComplete,
+    chunkUploadQueue.stats.failed,
     recordingId,
     recordingSession?.stoppedAt,
     router,
@@ -2098,8 +2051,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     if (sessionMode !== 'studio') return;
     const hasWork =
       chunkUploadQueue.stats.pending + chunkUploadQueue.stats.processing > 0 ||
-      hostStudioLifecyclePhase === 'stopping' ||
-      hostStudioLifecyclePhase === 'uploading';
+      hostStudioLifecyclePhase === 'stop_requested' ||
+      hostStudioLifecyclePhase === 'uploading_after_stop';
     if (!hasWork) return;
     const handler = (event: BeforeUnloadEvent) => {
       event.preventDefault();
@@ -2134,7 +2087,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
     const result = await ParticipantsAPI.create(recordingId, {
       role,
-      displayName: `${role === 'host' ? 'Host' : 'Guest'} ${Date.now()}`,
+      displayName: `Guest ${Date.now()}`,
     });
     const participantId = result.participant.id;
     const guestToken = tokenFromMagicLink(result.magicLink);
@@ -2460,34 +2413,9 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   if (!showPreJoin && sessionMode === 'studio') {
     const progressPeople =
       progressParticipants.map((participant) => {
-        const participantChunkTotal = participant.tracks.reduce(
-          (sum, track) => sum + track.chunkTotal,
-          0
-        );
-        const participantChunkUploaded = participant.tracks.reduce(
-          (sum, track) => sum + track.chunkUploaded,
-          0
-        );
-        const pct =
-          participantChunkTotal > 0
-            ? Math.round((participantChunkUploaded / participantChunkTotal) * 100)
-            : participant.trackCount === 0
-              ? 0
-              : Math.round((participant.uploadedCount / participant.trackCount) * 100);
-        const hasUploadEvidence =
-          participantChunkTotal > 0 ||
-          participantChunkUploaded > 0 ||
-          participant.trackCount > 0 ||
-          participant.uploadedCount > 0 ||
-          participant.pendingCount > 0;
-        const showProgressBar = !isRecording || hasUploadEvidence;
-        const note = isRecording
-          ? hasUploadEvidence
-            ? `${Math.max(0, 100 - pct)}% remaining`
-            : 'Recording...'
-          : participant.pendingCount > 0
-            ? `${Math.max(0, 100 - pct)}% remaining`
-            : 'Upload complete';
+        const pct = participant.progressPct;
+        const showProgressBar = participant.state !== 'recording' || pct > 0;
+        const note = participant.blockedReason ?? toConsumerStateLabel(participant.state);
         return {
           id: participant.participantId,
           label: participant.displayName || participant.participantId.slice(0, 8),
@@ -2541,27 +2469,12 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 queueTotalBytes
             )
           );
-    const fallbackProgressChunkTotal = progressParticipants.reduce(
-      (sum, participant) =>
-        sum + participant.tracks.reduce((trackSum, track) => trackSum + track.chunkTotal, 0),
-      0
-    );
-    const fallbackProgressChunkUploaded = progressParticipants.reduce(
-      (sum, participant) =>
-        sum + participant.tracks.reduce((trackSum, track) => trackSum + track.chunkUploaded, 0),
-      0
-    );
-    const progressChunkTotal =
-      recordingProgress?.summary.chunksTotal && recordingProgress.summary.chunksTotal > 0
-        ? recordingProgress.summary.chunksTotal
-        : fallbackProgressChunkTotal;
-    const progressChunkUploaded =
-      recordingProgress?.summary.chunksUploaded && recordingProgress.summary.chunksUploaded > 0
-        ? recordingProgress.summary.chunksUploaded
-        : fallbackProgressChunkUploaded;
     const progressUploadedPercent =
-      progressChunkTotal > 0
-        ? Math.min(100, Math.round((progressChunkUploaded * 100) / progressChunkTotal))
+      progressParticipants.length > 0
+        ? Math.round(
+            progressParticipants.reduce((sum, participant) => sum + participant.progressPct, 0) /
+              progressParticipants.length
+          )
         : null;
     const uploadedPercent = Math.max(progressUploadedPercent ?? 0, queueUploadedPercent);
     const hasLiveUploadActivity =
@@ -2578,36 +2491,22 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         id: 'local-live',
         label: displayName || 'You',
         role: localStudioRoleLabel,
-        percent: uploadedPercent,
-        note: hasLiveUploadActivity ? `${uploadedPercent}% uploaded` : 'Recording...',
-        showProgressBar: hasLiveUploadActivity,
+        percent: isRecording ? 0 : uploadedPercent,
+        note: isRecording ? 'Recording...' : hasLiveUploadActivity ? `${uploadedPercent}% uploaded` : 'Waiting...',
+        showProgressBar: !isRecording && hasLiveUploadActivity,
       },
       // Use backend participant data (role + upload progress) when available;
       // fall back to live-presence peers (no role/progress info) before first poll.
       ...(remoteProgressParticipants.length > 0
         ? remoteProgressParticipants.map((p) => {
-            const chunkTotal = p.tracks.reduce((sum, t) => sum + t.chunkTotal, 0);
-            const chunkUploaded = p.tracks.reduce((sum, t) => sum + t.chunkUploaded, 0);
-            const pct =
-              chunkTotal > 0
-                ? Math.round((chunkUploaded / chunkTotal) * 100)
-                : p.trackCount === 0
-                  ? 0
-                  : Math.round((p.uploadedCount / p.trackCount) * 100);
-            const hasEvidence = chunkTotal > 0 || p.trackCount > 0 || p.uploadedCount > 0;
+            const isParticipantRecording = p.state === 'recording';
             return {
               id: p.participantId,
               label: p.displayName || p.participantId.slice(0, 8),
               role: p.role === 'host' ? 'Host' : 'Guest',
-              percent: pct,
-              note: isRecording
-                ? hasEvidence
-                  ? `${Math.max(0, 100 - pct)}% remaining`
-                  : 'Recording...'
-                : p.pendingCount > 0
-                  ? `${Math.max(0, 100 - pct)}% remaining`
-                  : 'Upload complete',
-              showProgressBar: !isRecording || hasEvidence,
+              percent: isParticipantRecording ? 0 : p.progressPct,
+              note: isParticipantRecording ? 'Recording...' : (p.blockedReason ?? toConsumerStateLabel(p.state)),
+              showProgressBar: !isParticipantRecording && p.progressPct > 0,
             };
           })
         : active.peers.map((peer) => ({
@@ -2636,7 +2535,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           );
     const hostShouldShowUploadChip =
       (isRecording && hasLiveUploadActivity) ||
-      (hostStudioLifecyclePhase !== null && hostStudioLifecyclePhase !== 'recording') ||
+      (hostStudioLifecyclePhase !== null && hostStudioLifecyclePhase !== 'recording_active') ||
       (!!recordingSession?.stoppedAt && !canOpenProject);
     const showUploadChip =
       localStudioRole === 'host'
@@ -2646,18 +2545,22 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       localStudioRole === 'host'
         ? isRecording && hasLiveUploadActivity
           ? `↑ ${uploadedPercent}% Uploading...`
-          : hostStudioLifecyclePhase === 'stopping'
+          : hostStudioLifecyclePhase === 'stop_requested'
           ? 'Stopping...'
-          : hostStudioLifecyclePhase === 'uploading'
+          : hostStudioLifecyclePhase === 'uploading_after_stop'
             ? `↑ ${uploadedPercent}% Uploading...`
-            : hostStudioLifecyclePhase === 'upload_complete'
+            : hostStudioLifecyclePhase === 'studio_upload_complete'
               ? '✓ Upload complete'
-              : hostStudioLifecyclePhase === 'processing_handoff'
-                ? '→ Processing handoff'
+              : hostStudioLifecyclePhase === 'project_processing'
+                ? '→ Processing'
+                : hostStudioLifecyclePhase === 'project_ready'
+                  ? '✓ Ready'
                 : !!recordingSession?.stoppedAt && !canOpenProject
                   ? `↑ ${uploadedPercent}% Uploading...`
                   : null
-        : `↑ ${uploadedPercent}% Uploading...`;
+        : localQueueState === 'action required'
+          ? 'Action required'
+          : `↑ ${uploadedPercent}% Uploading...`;
     const recordingSeconds = recordingSession?.startedAt
       ? Math.max(0, Math.floor((Date.now() - new Date(recordingSession.startedAt).getTime()) / 1000))
       : 0;
@@ -2698,13 +2601,15 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   {uploadChipLabel}
                 </span>
               )}
-              <button
-                type="button"
-                className="flex items-center rounded-2xl border border-[#2a2f3b] bg-[#1c212e] px-4 py-2 text-sm font-medium hover:border-slate-500"
-              >
-                <span className="mr-1.5 text-lg">+</span>
-                Live stream
-              </button>
+              {studioUiAccess.canUseBroadcastControls && (
+                <button
+                  type="button"
+                  className="flex items-center rounded-2xl border border-[#2a2f3b] bg-[#1c212e] px-4 py-2 text-sm font-medium hover:border-slate-500"
+                >
+                  <span className="mr-1.5 text-lg">+</span>
+                  Live stream
+                </button>
+              )}
               <button
                 type="button"
                 className="flex h-10 w-10 items-center justify-center rounded-2xl border border-[#2a2f3b] bg-[#1c212e] text-sm"
@@ -2717,18 +2622,20 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               >
                 ⚙
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsInviteModalOpen(true);
-                  setShowAddParticipantPanel(false);
-                  setInviteNotice(null);
-                  setCopyState('idle');
-                }}
-                className="rounded-2xl border border-[#2a2f3b] bg-[#1c212e] px-4 py-2 text-sm font-medium hover:border-slate-500"
-              >
-                Invite
-              </button>
+              {studioUiAccess.canSendInvites && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsInviteModalOpen(true);
+                    setShowAddParticipantPanel(false);
+                    setInviteNotice(null);
+                    setCopyState('idle');
+                  }}
+                  className="rounded-2xl border border-[#2a2f3b] bg-[#1c212e] px-4 py-2 text-sm font-medium hover:border-slate-500"
+                >
+                  Invite
+                </button>
+              )}
             </div>
           </header>
 
@@ -2765,7 +2672,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           <div className="mt-3 flex min-h-0 flex-1 gap-4">
             <section className="flex min-h-0 flex-1 flex-col rounded-3xl bg-[#090b10] p-3">
               <div className={`flex min-h-0 flex-1 gap-3 ${shouldReserveUploadBarSpace ? 'mb-20' : ''}`}>
-                {showStudioInvitePanel && (
+                {studioUiAccess.canSendInvites && showStudioInvitePanel && (
                   <aside className="hidden w-[400px] shrink-0 rounded-3xl border border-[#2b303d] bg-[#1e222b] p-6 xl:flex xl:flex-col">
                     <div className="mb-8 flex items-start justify-between">
                       <h2 className="max-w-[260px] text-[44px] font-semibold leading-[0.98] text-slate-100">
@@ -2820,7 +2727,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 <div className="flex min-h-0 flex-1 rounded-3xl bg-[#05070c] p-2">
                   <div
                     className={`grid h-full w-full gap-3 ${
-                      showStudioInvitePanel ? 'mx-auto max-w-[980px]' : ''
+                      studioUiAccess.canSendInvites && showStudioInvitePanel ? 'mx-auto max-w-[980px]' : ''
                     } ${stageGridClass}`}
                   >
                     {visibleTiles.map((tile) => {
@@ -3033,7 +2940,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     ))}
                   </div>
 
-                  {showAddParticipantPanel && (
+                  {studioUiAccess.canManageParticipants && showAddParticipantPanel && (
                     <div className="mt-4 rounded-xl border border-[#2f3544] bg-[#242a36] p-3">
                       <button
                         type="button"
@@ -3064,13 +2971,15 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     </div>
                   )}
 
-                  <button
-                    type="button"
-                    onClick={() => setShowAddParticipantPanel((prev) => !prev)}
-                    className="mt-4 w-full rounded-xl border border-[#3a4051] bg-[#252b37] px-3 py-2.5 text-lg text-slate-100 hover:border-slate-500"
-                  >
-                    + Add participant
-                  </button>
+                  {studioUiAccess.canManageParticipants && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAddParticipantPanel((prev) => !prev)}
+                      className="mt-4 w-full rounded-xl border border-[#3a4051] bg-[#252b37] px-3 py-2.5 text-lg text-slate-100 hover:border-slate-500"
+                    >
+                      + Add participant
+                    </button>
+                  )}
                 </aside>
               )}
 
@@ -3134,30 +3043,29 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           open={uploadOverlayOpen}
           participants={progressParticipants}
           canOpenProject={canOpenProject}
-          phase={localStudioRole === 'host' ? hostStudioLifecyclePhase ?? undefined : undefined}
+          state={uploadStatusState}
           variant={localStudioRole === 'host' ? 'floating' : 'modal'}
           floatingLayout={localStudioRole === 'host' ? floatingUploadLayout : undefined}
           summary={
-            uploadCompletion.hasTrackEvidence || uploadCompletion.participantsTotal > 0
+            uploadCompletion.participantsTotal > 0
               ? {
                   participantsTotal: uploadCompletion.participantsTotal,
-                  participantsCompleted: uploadCompletion.participantsCompleted,
-                  tracksTotal: uploadCompletion.tracksTotal,
-                  tracksUploaded: uploadCompletion.tracksUploaded,
-                  chunksTotal: uploadCompletion.chunksTotal,
-                  chunksUploaded: uploadCompletion.chunksUploaded,
+                  participantsComplete: uploadCompletion.participantsComplete,
+                  participantsUploading: uploadCompletion.participantsUploading,
+                  actionRequiredParticipants: uploadCompletion.actionRequiredParticipants,
                 }
               : undefined
           }
           keepPageOpenHint={
             localStudioRole === 'host'
-              ? hostStudioLifecyclePhase === 'stopping' || hostStudioLifecyclePhase === 'uploading'
+              ? uploadCompletion.keepPageOpen
               : showUploadStatusModal
           }
           canDismiss={
             localStudioRole === 'host'
-              ? hostStudioLifecyclePhase === 'upload_complete' ||
-                hostStudioLifecyclePhase === 'processing_handoff'
+              ? hostStudioLifecyclePhase === 'studio_upload_complete' ||
+                hostStudioLifecyclePhase === 'project_processing' ||
+                hostStudioLifecyclePhase === 'project_ready'
               : true
           }
           onClose={() => {
@@ -3174,7 +3082,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           }}
         />
 
-        {isInviteModalOpen && (
+        {studioUiAccess.canSendInvites && isInviteModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
             <div className="w-full max-w-[760px] rounded-3xl border border-[#373d4a] bg-[#20242d] p-6 shadow-2xl">
               <div className="mb-4 flex items-center justify-between">

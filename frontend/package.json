@@ -6,7 +6,8 @@
     "dev": "next dev --turbopack",
     "build": "next build --turbopack",
     "start": "next start",
-    "test": "../backend/node_modules/.bin/tsx --test src/**/*.test.ts",
+    "test": "jest --config ./jest.config.cjs --runInBand",
+    "test:coverage": "jest --config ./jest.config.cjs --coverage --runInBand",
     "lint": "eslint",
     "typecheck": "tsc --noEmit"
   },
@@ -15,17 +16,19 @@
     "next": "15.5.6",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "tus-js-client": "^4.3.1",
     "zustand": "^5.0.8"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
+    "@types/jest": "^30.0.0",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "15.5.6",
+    "jest": "^30.3.0",
+    "jest-environment-jsdom": "^30.3.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

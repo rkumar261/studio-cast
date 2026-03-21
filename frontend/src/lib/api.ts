@@ -6,16 +6,6 @@ export function setApiAuthMode(mode: ApiAuthMode) {
   apiAuthMode = mode;
 }
 
-export type TrackDto = {
-  id: string;
-  recordingId: string;
-  participantId: string;
-  kind: 'audio' | 'video' | 'screen';
-  codec?: string;
-  durationMs?: number;
-  state: 'recording' | 'uploaded' | 'processed' | string;
-};
-
 async function tryRefreshSession(): Promise<boolean> {
   const res = await fetch(`${API_BASE}/auth/refresh`, {
     method: 'POST',
@@ -118,11 +108,18 @@ export type ListRecordingsResponse = {
 };
 
 export type GetRecordingResponse = {
-  recording: { id: string; title?: string; status: string; createdAt: string };
-  tracks: TrackDto[];
+  recording: { id: string; title?: string; createdAt: string };
 };
 
-export type ProjectAssetState = 'missing' | 'pending' | 'processing' | 'ready' | 'failed';
+export type ConsumerRecordingState =
+  | 'recording'
+  | 'uploading'
+  | 'upload complete'
+  | 'processing'
+  | 'ready'
+  | 'action required';
+
+export type ProjectAssetState = ConsumerRecordingState;
 
 export type ProjectAssetActionDto = {
   id: string;
@@ -132,15 +129,36 @@ export type ProjectAssetActionDto = {
   method: 'GET';
 };
 
+export type ProjectAssetWorkItemDto = {
+  label: string;
+  state: 'uploading' | 'processing' | 'action required';
+  reason?: string;
+  participantId?: string;
+};
+
 export type ProjectMediaAssetDto = {
   id: string;
   kind: 'combined' | 'participant';
+  type: 'combined_playback' | 'participant_playback';
   label: string;
   state: ProjectAssetState;
   badges: string[];
   durationMs?: number;
+  width?: number;
+  height?: number;
   previewUrl?: string;
+  playbackUrl?: string;
+  downloadUrl?: string;
+  thumbnailUrl?: string;
   blockedReason?: string;
+  availableDerivatives: string[];
+  minimumReady: boolean;
+  fullyProcessed: boolean;
+  pendingWork: ProjectAssetWorkItemDto[];
+  failedWork: ProjectAssetWorkItemDto[];
+  participantId?: string;
+  displayName?: string;
+  role?: string;
   actions: ProjectAssetActionDto[];
   participant?: {
     id: string;
@@ -150,20 +168,33 @@ export type ProjectMediaAssetDto = {
 };
 
 export type ProjectTranscriptAssetDto = {
+  id?: string;
+  type: 'transcript_artifact' | 'caption_derivative';
   label: string;
   state: ProjectAssetState;
   badges: string[];
   previewUrl?: string;
+  downloadUrl?: string;
   blockedReason?: string;
+  minimumReady: boolean;
+  fullyProcessed: boolean;
+  pendingWork: ProjectAssetWorkItemDto[];
+  failedWork: ProjectAssetWorkItemDto[];
   actions: ProjectAssetActionDto[];
 };
 
 export type ProjectExportAssetDto = {
+  id?: string;
   type: 'wav' | 'mp4' | 'mp4_captions';
   label: string;
   state: ProjectAssetState;
   badges: string[];
   blockedReason?: string;
+  downloadUrl?: string;
+  minimumReady: boolean;
+  fullyProcessed: boolean;
+  pendingWork: ProjectAssetWorkItemDto[];
+  failedWork: ProjectAssetWorkItemDto[];
   actions: ProjectAssetActionDto[];
 };
 
@@ -171,19 +202,29 @@ export type GetProjectAssetsGraphResponse = {
   project: {
     recordingId: string;
     title?: string;
-    status: string;
+    state: ConsumerRecordingState;
     label: string;
+    minimumReady: boolean;
+    fullyProcessed: boolean;
   };
   combinedAsset: ProjectMediaAssetDto;
   participantAssets: ProjectMediaAssetDto[];
+  processingSummary: {
+    minimumReady: boolean;
+    fullyProcessed: boolean;
+    readyPrimaryAsset: boolean;
+    readyParticipantCount: number;
+    participantCount: number;
+    pendingWork: ProjectAssetWorkItemDto[];
+    failedWork: ProjectAssetWorkItemDto[];
+  };
   transcript: ProjectTranscriptAssetDto;
   captions: ProjectTranscriptAssetDto;
   exports: {
     requiredTotal: number;
     ready: number;
     processing: number;
-    failed: number;
-    missing: number;
+    actionRequired: number;
     items: ProjectExportAssetDto[];
   };
 };
@@ -202,261 +243,36 @@ export type RecordingSessionResponse = {
   canControl: boolean;
 };
 
-export type RecordingProgressPhase = 'recording' | 'uploading' | 'processing' | 'ready' | 'error';
-
-export type RecordingTrackBlockedReason =
-  | 'track_not_finalized'
-  | 'invalid_final_seq'
-  | 'missing_chunks'
-  | 'chunks_pending_upload'
-  | 'already_stitched';
-
-export type RecordingBlockedReason =
-  | 'recording_active'
-  | 'tracks_not_finalized'
-  | 'invalid_final_seq'
-  | 'missing_chunks'
-  | 'chunks_pending_upload'
-  | 'ready_for_stitch'
-  | 'stitching_in_progress'
-  | 'participant_assets_pending'
-  | 'participant_assets_failed'
-  | 'combined_asset_pending'
-  | 'combined_asset_failed'
-  | 'exports_pending'
-  | 'exports_failed';
-
-export type RecordingTrackProgressDto = {
-  trackId: string;
-  kind: 'audio' | 'video' | 'screen';
-  state: string;
-  uploadState: string;
-  blockedReason?: RecordingTrackBlockedReason;
-  protocol?: 'tus' | 'multipart';
-  isFinalized: boolean;
-  finalSeq?: number;
-  readyForStitch: boolean;
-  bytesReceived: number;
-  chunkTotal: number;
-  chunkUploaded: number;
-  chunkPending: number;
-  expectedTotal?: number;
-  highestSeq: number;
-  highestContiguousSeq: number;
-  missingSeqs: number[];
-  updatedAt?: string;
-};
-
 export type RecordingParticipantProgressDto = {
   participantId: string;
   role: 'host' | 'guest' | string;
   displayName?: string;
-  trackCount: number;
-  uploadedCount: number;
-  processedCount: number;
-  pendingCount: number;
-  tracks: RecordingTrackProgressDto[];
+  state: ConsumerRecordingState;
+  progressPct: number;
+  blockedReason?: string;
 };
 
 export type RecordingProgressResponse = {
   recordingId: string;
-  status: 'draft' | 'uploading' | 'processing' | 'ready' | 'error';
-  phase: RecordingProgressPhase;
-  readiness: {
-    readyForStitch: boolean;
-    blockedReasons: RecordingBlockedReason[];
-  };
+  studioState: ConsumerRecordingState;
+  projectState: ConsumerRecordingState;
   session: {
     startedAt?: string;
     stoppedAt?: string;
     hostParticipantId?: string;
     controlVersion: number;
   };
+  studio: {
+    canOpenProject: boolean;
+    keepPageOpen: boolean;
+  };
   summary: {
     participantsTotal: number;
-    participantsCompleted: number;
-    tracksTotal: number;
-    tracksUploaded: number;
-    tracksProcessed: number;
-    uploadsInProgress: number;
-    uploadsCompleted: number;
-    bytesReceived: number;
-    chunksTotal: number;
-    chunksUploaded: number;
-    chunksPending: number;
-  };
-  exports: {
-    requiredTotal: number;
-    requiredSucceeded: number;
-    requiredPending: number;
-    requiredFailed: number;
-    required: Array<{
-      type: 'wav' | 'mp4' | 'mp4_captions';
-      state: 'missing' | 'queued' | 'running' | 'succeeded' | 'failed';
-      exportId?: string;
-      updatedAt?: string;
-      lastError?: string;
-    }>;
+    participantsComplete: number;
+    participantsUploading: number;
+    actionRequiredParticipants: number;
   };
   participants: RecordingParticipantProgressDto[];
-};
-
-export type RegisterTrackRequest = {
-  participantId: string;
-  kind: 'audio' | 'video' | 'screen';
-  codec?: string;
-};
-
-export type RegisterTrackResponse = {
-  track: {
-    id: string;
-    recordingId: string;
-    participantId: string;
-    kind: 'audio' | 'video' | 'screen';
-    codec?: string;
-    state: string;
-    createdAt: string;
-  };
-  existed: boolean;
-};
-
-export type FinalizeTrackRequest = {
-  finalSeq: number;
-  captureClosedAt?: string;
-};
-
-export type FinalizeTrackResponse = {
-  track: {
-    id: string;
-    recordingId: string;
-    finalSeq: number;
-    captureClosedAt?: string;
-    finalizeRequestedAt: string;
-  };
-};
-
-export type InitiateTrackChunkRequest = {
-  trackId: string;
-  seq: number;
-  // Live recording transport is TUS-only.
-  protocol: 'tus';
-  bytesExpected?: number;
-};
-
-export type InitiateTrackChunkResponse = {
-  status?: 'existing' | 'accepted' | 'seq_mismatch';
-  nextExpectedSeq?: number;
-  highestContiguousUploadedSeq?: number;
-  chunk?: {
-    id: string;
-    trackId: string;
-    seq: number;
-    protocol?: string;
-    state: string;
-    bytesExpected?: number;
-    bytesReceived?: number;
-    tusUploadId?: string;
-    tusResourceUrl?: string;
-    tusUploadState?: string;
-    failureReason?: string;
-    lastErrorAt?: string;
-    materializedAt?: string;
-    createdAt: string;
-    updatedAt: string;
-  };
-  existed?: boolean;
-  already?: boolean;
-  uploadPlan?: {
-    protocol: 'tus';
-    tusEndpoint: string;
-    metadata: {
-      chunkId: string;
-      recordingId: string;
-      trackId: string;
-      seq: string;
-    };
-  };
-  resumeUploadPlan?: {
-    protocol: 'tus';
-    tusEndpoint: string;
-    chunkId: string;
-    tusId?: string;
-    tusUrl?: string;
-    tusResourceUrl?: string;
-    tusUploadState?: string;
-  };
-  reconciliation?: {
-    requestedSeq: number;
-    reason: 'stale' | 'ahead';
-  };
-};
-
-export type CompleteTrackChunkRequest = {
-  // Live recording transport is TUS-only.
-  protocol: 'tus';
-  bytesReceived?: number;
-  storageKeyRaw?: string;
-  etag?: string;
-  checksumSha256?: string;
-  tusUrl?: string;
-};
-
-export type CompleteTrackChunkResponse = {
-  chunk: {
-    id: string;
-    trackId: string;
-    seq: number;
-    protocol?: string;
-    state: string;
-    bytesReceived: number;
-    bytesExpected?: number;
-    storageKeyRaw?: string;
-    tusUploadId?: string;
-    tusResourceUrl?: string;
-    tusUploadState?: string;
-    failureReason?: string;
-    lastErrorAt?: string;
-    materializedAt?: string;
-    etag?: string;
-    checksumSha256?: string;
-    createdAt: string;
-    updatedAt: string;
-  };
-  already?: boolean;
-};
-
-export type TrackChunkRecoveryResponse = {
-  track: {
-    id: string;
-    recordingId: string;
-    finalized: boolean;
-  };
-  recovery: {
-    highestExistingSeq: number;
-    highestContiguousUploadedSeq: number;
-    nextSeq: number;
-    incompleteChunks: Array<{
-      id: string;
-      seq: number;
-      protocol?: string;
-      state: string;
-      bytesExpected?: number;
-      bytesReceived: number;
-      tusId?: string;
-      tusUrl?: string;
-      tusUploadState?: string;
-      failureReason?: string;
-      lastErrorAt?: string;
-      updatedAt: string;
-    }>;
-    resumableTus?: {
-      chunkId: string;
-      seq: number;
-      tusId: string;
-      tusUrl?: string;
-      tusUploadState?: string;
-    };
-  };
 };
 
 export const RecordingsAPI = {
@@ -482,28 +298,6 @@ export const RecordingsAPI = {
     }),
   getProgress: (id: string) =>
     api<RecordingProgressResponse>(`/v1/recordings/${id}/progress`),
-  registerTrack: (id: string, body: RegisterTrackRequest) =>
-    api<RegisterTrackResponse>(`/v1/recordings/${id}/tracks/register`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
-  finalizeTrack: (id: string, trackId: string, body: FinalizeTrackRequest) =>
-    api<FinalizeTrackResponse>(`/v1/recordings/${id}/tracks/${trackId}/finalize`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
-  getTrackChunkRecovery: (id: string, trackId: string) =>
-    api<TrackChunkRecoveryResponse>(`/v1/recordings/${id}/tracks/${trackId}/chunks/recovery`),
-  initiateChunk: (id: string, body: InitiateTrackChunkRequest) =>
-    api<InitiateTrackChunkResponse>(`/v1/recordings/${id}/chunks/initiate`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
-  completeChunk: (id: string, chunkId: string, body: CompleteTrackChunkRequest) =>
-    api<CompleteTrackChunkResponse>(`/v1/recordings/${id}/chunks/${chunkId}/complete`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
 };
 
 // ---- Participants ----
@@ -544,102 +338,6 @@ export const ParticipantsAPI = {
     }),
   list: (recordingId: string) =>
     api<GetParticipantsResponse>(`/v1/recordings/${recordingId}/participants`),
-};
-
-// --- Upload  ---
-export type UploadProtocol = 'tus' | 'multipart';
-export type TrackKind = 'audio' | 'video' | 'screen';
-
-// Discriminated union for initiate
-export type InitiateUploadRequest =
-  | {
-    recordingId: string;
-    participantId: string;
-    kind: TrackKind;
-    protocol: 'tus';
-  }
-  | {
-    recordingId: string;
-    participantId: string;
-    kind: TrackKind;
-    protocol: 'multipart';
-    filename: string;          // file.name
-    size: number;              // file.size
-    contentType?: string;      // file.type
-    partSize?: number;         // optional client hint
-  };
-
-export type InitiateUploadResponse = {
-  upload: {
-    id: string;
-    trackId: string;
-    protocol: UploadProtocol;
-    state: 'in_progress';
-  };
-  // TUS plan
-  tusEndpoint?: string;
-  // Multipart plan
-  presignedUrls?: string[];
-  partSize?: number;
-};
-
-// Complete: union request that covers both protocols
-export type CompleteUploadRequest =
-  | { protocol?: 'tus'; bytes?: number; tusUrl?: string }
-  | { protocol: 'multipart'; parts: { partNumber: number; etag: string }[]; totalBytes?: number };
-
-export type CompleteUploadResponse = {
-  bytes: number;
-  storageKeyRaw: string;
-  already?: boolean;
-};
-
-export const UploadsAPI = {
-  initiate: async (body: InitiateUploadRequest): Promise<InitiateUploadResponse> => {
-    const r = await fetch(`${API_BASE}/v1/uploads/initiate`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!r.ok) throw new Error(await r.text());
-    return r.json();
-  },
-
-  complete: async (uploadId: string, body: CompleteUploadRequest): Promise<CompleteUploadResponse> => {
-    const r = await fetch(`${API_BASE}/v1/uploads/${uploadId}/complete`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!r.ok) throw new Error(await r.text());
-    return r.json();
-  },
-};
-
-export const TracksAPI = {
-  // Unwraps `{ finalUrl: { url, key } }` into `{ url, key }`
-  // and also works if backend is changed to return `{ url, key }` directly.
-  finalUrl: async (trackId: string): Promise<{ url: string; key: string }> => {
-    const r = await fetch(`${API_BASE}/v1/tracks/${trackId}/final-url`, {
-      method: 'GET',
-      credentials: 'include',
-      headers: { 'content-type': 'application/json' },
-    });
-
-    if (!r.ok) throw new Error(await r.text());
-
-    const data = (await r.json()) as
-      | { finalUrl: { url: string; key: string } }
-      | { url: string; key: string };
-
-    // Support both possible shapes from the backend
-    if ('finalUrl' in data) {
-      return data.finalUrl;
-    }
-    return data;
-  },
 };
 
 // --- Transcript types & API ---

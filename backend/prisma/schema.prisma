@@ -75,23 +75,32 @@ enum track_chunk_state {
  */
 enum recording_lifecycle_state {
   created
+  prejoin
+  idle
   preparing
   recording
+  post_stop_uploading
+  upload_complete
   stopping
   uploading
   processing
   ready
+  blocked
   failed
 }
 
 enum track_lifecycle_state {
   registered
   recording
+  capture_closed
   finalized
+  ready_for_stitch
   ingest_ready
   stitched
+  processed
   transcoded
   ready
+  blocked
   failed
 }
 
@@ -208,6 +217,9 @@ model participant {
   display_name    String? @db.Text
   email           String? @db.Text
   magic_link_hash String? @db.Text // for guest invite/claim
+  invite_expires_at DateTime? @db.Timestamptz(6)
+  invite_revoked_at DateTime? @db.Timestamptz(6)
+  invite_claimed_at DateTime? @db.Timestamptz(6)
 
   // OPTIONAL link to a registered user (if they signed in)
   userId String? @db.Uuid
