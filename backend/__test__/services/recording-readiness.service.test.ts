@@ -61,7 +61,8 @@ function makeReadyCombinedAsset() {
     failure_reason: null,
     export_set_json: ['mp4', 'wav'],
     metadata_json: {
-      sourceFingerprint: 'concat_all:asset-part-1:2026-03-14T10:00:00.000Z',
+      // BRD-11: default mode changed to side_by_side; trailing ':' = empty audioStorageKey
+      sourceFingerprint: 'side_by_side:asset-part-1:2026-03-14T10:00:00.000Z:',
     },
   };
 }
@@ -121,6 +122,8 @@ function stubReadyCombined(restores: Array<() => void>) {
       }),
     ])
   );
+  // BRD-11: track.findMany for audio is called before the fingerprint early-return check.
+  restores.push(stubMethod(prisma.track, 'findMany', async () => []));
   restores.push(
     stubMethod(prisma.combined_asset, 'findUnique', async () => makeReadyCombinedAsset())
   );
@@ -394,7 +397,9 @@ test('reconcileRecordingReadiness creates missing export artifacts and enqueues 
 
     assert.ok(createdArtifactTypes.includes('wav'), 'wav artifact must be created');
     assert.ok(createdArtifactTypes.includes('mp4'), 'mp4 artifact must be created');
-    assert.ok(createdArtifactTypes.includes('mp4_captions'), 'mp4_captions artifact must be created');
+    // mp4_captions is intentionally NOT in REQUIRED_EXPORT_TYPES — it is a no-op
+    // pending real ASR integration. The service should NOT create it automatically.
+    assert.ok(!createdArtifactTypes.includes('mp4_captions'), 'mp4_captions must NOT be auto-created (no-op until ASR is real)');
     assert.ok(enqueuedJobTypes.includes('export'), 'export jobs must be enqueued');
   } finally {
     for (const restore of restores.reverse()) restore();

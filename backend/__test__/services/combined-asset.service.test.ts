@@ -91,12 +91,17 @@ test('combined reconcile is idempotent when ready fingerprint matches', async ()
           failed_at: null,
           failure_reason: null,
           metadata_json: {
-            sourceFingerprint: 'concat_all:asset-part-1:2026-03-09T10:00:00.000Z',
+            // fingerprint format: "${mode}:${id}:${updatedAtIso}:${audioStorageKey??''}"
+            // mode default changed to side_by_side in BRD-11; trailing ':' = empty audioStorageKey
+            sourceFingerprint: 'side_by_side:asset-part-1:2026-03-09T10:00:00.000Z:',
           },
           export_set_json: ['mp4', 'wav', 'mp4_captions'],
         })
       )
     );
+    // track.findMany is called before the fingerprint early-return check (code order).
+    // Return [] — no separate audio tracks, matches the empty audioStorageKey in the fingerprint.
+    restores.push(stubMethod(prisma.track, 'findMany', async () => []));
     restores.push(
       stubMethod(prisma.combined_asset, 'upsert', async () => {
         upsertCalled = true;
@@ -148,6 +153,9 @@ test('combined reconcile composes and marks ready', async () => {
       )
     );
     restores.push(stubMethod(prisma.combined_asset, 'findUnique', async () => null));
+    // Audio tracks query added in BRD-11 for mixing separate audio into combined video.
+    restores.push(stubMethod(prisma.track, 'findMany', async () => []));
+    restores.push(stubMethod(prisma.combined_asset, 'create', async () => ({ id: 'combined-1' }) as any));
     restores.push(
       stubMethod(prisma.combined_asset, 'upsert', async (args: any) => {
         upsertArgs = args;
@@ -191,7 +199,7 @@ test('combined reconcile composes and marks ready', async () => {
     assert.equal(result.code, 'ok');
     assert.equal(result.composed, true);
     assert.equal(result.asset.state, 'ready');
-    assert.equal(upsertArgs.update.state, 'processing');
+    // The claim path uses create (existing=null) not upsert; verify final state via update args.
     assert.equal(updateArgs.data.state, 'ready');
     assert.equal(updateArgs.data.storage_key, 'recordings/rec-1/combined/all-participants.mp4');
   } finally {
@@ -219,6 +227,9 @@ test('combined reconcile marks failed and leaves participant assets untouched on
       )
     );
     restores.push(stubMethod(prisma.combined_asset, 'findUnique', async () => null));
+    // Audio tracks query added in BRD-11; no audio tracks in test setup.
+    restores.push(stubMethod(prisma.track, 'findMany', async () => []));
+    restores.push(stubMethod(prisma.combined_asset, 'create', async () => ({ id: 'combined-1' }) as any));
     restores.push(stubMethod(prisma.combined_asset, 'upsert', async () => ({} as any)));
     restores.push(
       stubMethod(prisma.combined_asset, 'update', async (args: any) => {
@@ -312,6 +323,111 @@ test('combined reconcile fails fast when a participant master fails', async () =
     assert.equal(result.code, 'failed');
     assert.equal(result.message, 'participant_master_failed');
     assert.equal(combinedUpsertArgs.update.state, 'failed');
+  } finally {
+    for (const restore of restores.reverse()) restore();
+  }
+});
+
+// Regression: BRD-11 — combined asset stuck in 'ready' with stale concat_all fingerprint
+// must be recomposed when mode changes to side_by_side. The claim WHERE clause must
+// include 'ready' state, not just 'pending'/'failed'.
+test('combined reconcile recomposes when existing is ready but mode changed (stale fingerprint)', async () => {
+  const restores: Array<() => void> = [];
+  let composeCalled = false;
+  let claimArgs: any = null;
+
+  try {
+    restores.push(
+      stubMethod(
+        prisma.participant,
+        'findMany',
+        async () => [
+          makeParticipantRow({
+            participantId: 'part-1',
+            assetState: 'ready',
+            storageKey: 'recordings/rec-1/participants/part-1/master.mp4',
+            readyAt: new Date('2026-03-09T10:00:00.000Z'),
+          }),
+          makeParticipantRow({
+            participantId: 'part-2',
+            assetState: 'ready',
+            storageKey: 'recordings/rec-1/participants/part-2/master.mp4',
+            readyAt: new Date('2026-03-09T10:00:01.000Z'),
+          }),
+        ]
+      )
+    );
+    restores.push(
+      stubMethod(
+        prisma.combined_asset,
+        'findUnique',
+        async () => ({
+          id: 'combined-1',
+          recording_id: 'rec-1',
+          state: 'ready',
+          storage_key: 'recordings/rec-1/combined/all-participants.mp4',
+          preview_key: 'recordings/rec-1/combined/all-participants.mp4',
+          duration_ms: 5000,
+          resolution: '1280x720',
+          processing_started_at: new Date('2026-03-09T10:00:00.000Z'),
+          ready_at: new Date('2026-03-09T10:00:10.000Z'),
+          failed_at: null,
+          failure_reason: null,
+          // Stale fingerprint from old concat_all mode — current mode is side_by_side
+          metadata_json: { sourceFingerprint: 'concat_all:asset-part-1:2026-03-09T10:00:00.000Z:|asset-part-2:2026-03-09T10:00:01.000Z:' },
+          export_set_json: ['mp4', 'wav'],
+        })
+      )
+    );
+    restores.push(stubMethod(prisma.track, 'findMany', async () => []));
+    restores.push(
+      stubMethod(prisma.combined_asset, 'updateMany', async (args: any) => {
+        claimArgs = args;
+        return { count: 1 };
+      })
+    );
+    restores.push(
+      stubMethod(prisma.combined_asset, 'update', async (args: any) => ({
+        id: 'combined-1',
+        recording_id: 'rec-1',
+        state: args.data.state,
+        storage_key: args.data.storage_key ?? null,
+        preview_key: args.data.preview_key ?? null,
+        duration_ms: args.data.duration_ms ?? null,
+        resolution: args.data.resolution ?? null,
+        processing_started_at: new Date('2026-03-09T10:00:02.000Z'),
+        ready_at: new Date('2026-03-09T10:00:03.000Z'),
+        failed_at: null,
+        failure_reason: null,
+        metadata_json: args.data.metadata_json ?? null,
+        export_set_json: args.data.export_set_json ?? [],
+      }) as any)
+    );
+
+    const result = await reconcileCombinedAssetForRecording({
+      recordingId: 'rec-1',
+      composeRunner: async () => {
+        composeCalled = true;
+        return {
+          storageKey: 'recordings/rec-1/combined/all-participants.mp4',
+          previewKey: 'recordings/rec-1/combined/all-participants.mp4',
+          durationMs: 5000,
+          resolution: '1920x540',
+          exportSet: ['mp4', 'wav', 'mp4_captions'],
+          mode: 'side_by_side',
+          sourceAssetIds: ['asset-part-1', 'asset-part-2'],
+        };
+      },
+    });
+
+    assert.equal(result.code, 'ok');
+    assert.equal(result.composed, true);
+    assert.equal(composeCalled, true, 'compose runner must run when fingerprint is stale');
+    // Claim must include 'ready' state so stale-ready rows can be reclaimed
+    assert.ok(
+      claimArgs?.where?.state?.in?.includes('ready'),
+      'claim WHERE clause must include ready state for mode-change recomposition'
+    );
   } finally {
     for (const restore of restores.reverse()) restore();
   }
