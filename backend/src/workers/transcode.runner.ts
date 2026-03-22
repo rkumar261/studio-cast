@@ -79,6 +79,13 @@ export async function runTranscodeForTrack(
             });
         }
 
+        // Probe the OUTPUT (not the raw input) — WebM from MediaRecorder has broken
+        // container duration metadata (reflects only the first chunk, not the full recording).
+        // The transcoded file always has correct duration because ffmpeg processes all frames.
+        const outputProbe = await ffprobeJson(tmpFinal).catch(() => probe);
+        const outputVStream = (outputProbe.streams || []).find((s) => s.codec_type === 'video');
+        const outputDurationSec = toSec(outputProbe.format?.duration) ?? toSec(outputVStream?.duration) ?? durationSec;
+
         // Upload final to R2
         await uploadFinalToR2(tmpFinal, finalKey, contentType);
 
@@ -88,9 +95,9 @@ export async function runTranscodeForTrack(
             finalKey,
             contentType,
             probe,
-            durationSec,
-            width,
-            height,
+            durationSec: outputDurationSec,
+            width: outputVStream?.width ?? width,
+            height: outputVStream?.height ?? height,
         };
     } finally {
         // cleanup temp files
