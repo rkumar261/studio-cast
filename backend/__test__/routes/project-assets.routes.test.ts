@@ -88,6 +88,11 @@ test('GET /v1/recordings/:id/project-assets returns user-facing project asset gr
             last_error: 'captions_failed',
           },
         ],
+        // BRD-11: participant.track.storage_key_raw added for rawPreviewUrl support
+        participant: [
+          { id: 'participant-host', track: [] },
+          { id: 'participant-guest', track: [] },
+        ],
       }))
     );
     restores.push(

@@ -29,3 +29,23 @@
 **Context:** R2 CORS is documented in .env.example and CLAUDE.md as of BRD-10. The frontend wraps fetch TypeError with a console.error hint. This TODO upgrades from "hint" to "hard startup gate".
 
 **Depends on:** BRD-10 presigned URL flow must be live.
+
+---
+
+## Deferred from BRD-11 (feat/fix-tracks-merging-issues)
+
+### Real ASR / speech-to-text integration
+**What:** Replace the dummy `runAsrForTrack` in `asr.service.ts` with a real speech-to-text provider (Whisper, Deepgram, AssemblyAI, etc.).
+
+**Why:** The current dummy ASR generates placeholder text ("Transcript segment N from participant recording..."). The transcript feature is non-functional. The `mp4_captions` export always fails because the dummy produces 0 publishable segments. Both block product value.
+
+**Pros:** Unlocks real transcript, search, captions. Enables `mp4_captions` export. Differentiating feature for a recording platform.
+
+**Cons:** External API dependency + cost. Requires audio extraction from track before sending. Privacy/retention policy for audio sent to third party. Need to handle long recordings in chunks (Whisper max ~25MB per request).
+
+**Context:** ASR worker infra is complete — job queue, transcript revision lifecycle, `publishTranscriptRevision` all work. Only `runAsrForTrack` is a stub. Drop-in: implement the function, keep the same return type `{ segments: AsrSegment[] }`. Whisper via OpenAI API is the simplest path. Deepgram has better streaming/real-time options for future. See `backend/src/services/asr.service.ts`.
+
+**Depends on:** Nothing blocked. Can implement independently.
+
+---
+

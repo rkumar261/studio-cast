@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ConsumerRecordingState } from '@/lib/api';
 import { toConsumerStateLabel } from '@/lib/recording-journey';
 
@@ -45,6 +45,23 @@ export default function UploadStatusModal(props: UploadStatusModalProps) {
   const participantRows = props.participants;
   const primaryParticipant = participantRows[0];
   const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+
+  // Keep modal visible for 2s after uploads complete so user can read/click.
+  const wasOpenRef = useRef(false);
+  const [showDwell, setShowDwell] = useState(false);
+  useEffect(() => {
+    if (isOpen) {
+      wasOpenRef.current = true;
+      setShowDwell(false);
+      return;
+    }
+    if (wasOpenRef.current) {
+      wasOpenRef.current = false;
+      setShowDwell(true);
+      const t = setTimeout(() => setShowDwell(false), 2000);
+      return () => clearTimeout(t);
+    }
+  }, [isOpen]);
 
   const title =
     props.state === 'recording'
@@ -180,7 +197,7 @@ export default function UploadStatusModal(props: UploadStatusModalProps) {
       .join('');
   }, [primaryParticipant?.displayName]);
 
-  if (!isOpen) {
+  if (!isOpen && !showDwell) {
     return null;
   }
 

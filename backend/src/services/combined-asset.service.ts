@@ -76,7 +76,8 @@ function toCombinedPayload(row: {
 function resolveCompositionMode(): CombinedCompositionMode {
   const raw = (process.env.COMBINED_COMPOSITION_MODE ?? '').trim().toLowerCase();
   if (raw === 'primary_only') return 'primary_only';
-  return 'concat_all';
+  if (raw === 'concat_all') return 'concat_all';
+  return 'side_by_side'; // default: all participants visible simultaneously
 }
 
 function buildSourceFingerprint(mode: CombinedCompositionMode, sources: CompositionSource[]) {
@@ -262,23 +263,42 @@ export async function reconcileCombinedAssetForRecording(args: {
     sourceAssetCount: selectedSources.length,
   };
 
-  const processing = await prisma.combined_asset.upsert({
-    where: { recording_id: args.recordingId },
-    create: {
-      recording_id: args.recordingId,
-      state: 'processing',
-      processing_started_at: now,
-      metadata_json: processingMetadata as Prisma.InputJsonValue,
-      export_set_json: [],
-    },
-    update: {
-      state: 'processing',
-      processing_started_at: now,
-      failed_at: null,
-      failure_reason: null,
-      metadata_json: processingMetadata as Prisma.InputJsonValue,
-    },
-  });
+  // Atomically claim the combined asset for processing — only one worker wins.
+  // If existing row is already processing, the loser returns skipped.
+  // Include 'ready' here: we only reach this code when fingerprint doesn't match
+  // (the early-return above handles fingerprint-match). A 'ready' row with a
+  // stale fingerprint (e.g. mode changed from concat_all → side_by_side) must
+  // be recomposed — otherwise the old output is served forever.
+  let processing: { id: string };
+  if (existing) {
+    const claimed = await prisma.combined_asset.updateMany({
+      where: {
+        recording_id: args.recordingId,
+        state: { in: ['pending', 'failed', 'ready'] },
+      },
+      data: {
+        state: 'processing',
+        processing_started_at: now,
+        failed_at: null,
+        failure_reason: null,
+        metadata_json: processingMetadata as Prisma.InputJsonValue,
+      },
+    });
+    if (claimed.count === 0) {
+      return { code: 'skipped', reason: 'participant_assets_not_ready' };
+    }
+    processing = existing;
+  } else {
+    processing = await prisma.combined_asset.create({
+      data: {
+        recording_id: args.recordingId,
+        state: 'processing',
+        processing_started_at: now,
+        metadata_json: processingMetadata as Prisma.InputJsonValue,
+        export_set_json: [],
+      },
+    });
+  }
   emitTelemetry({
     event: 'asset.combined.processing',
     message: 'Combined asset composition started',

@@ -75,6 +75,35 @@ async function cleanupStaleUploads(cutoff: Date) {
   return result.count;
 }
 
+/**
+ * Find recordings that have a pending combined_asset but no active jobs running.
+ * This handles cases where recordings get stuck — e.g. after a combined_asset is
+ * reset to 'pending' (manual SQL or fingerprint invalidation) but no transcode/ASR
+ * job completion fires to retrigger reconcileRecordingReadiness.
+ */
+export async function sweepPendingCombinedAssets(): Promise<string[]> {
+  const pendingCombined = await prisma.combined_asset.findMany({
+    where: { state: 'pending' },
+    select: { recording_id: true },
+  });
+
+  if (pendingCombined.length === 0) return [];
+
+  const recordingIds = Array.from(new Set(pendingCombined.map((r) => r.recording_id)));
+
+  // Filter out recordings that already have active jobs — they will reconcile on completion.
+  const activeJobs = await prisma.job.findMany({
+    where: {
+      recording_id: { in: recordingIds },
+      state: { in: [job_state.queued, job_state.running] },
+    },
+    select: { recording_id: true },
+  });
+
+  const activeRecordingIds = new Set(activeJobs.map((j) => j.recording_id));
+  return recordingIds.filter((id) => !activeRecordingIds.has(id));
+}
+
 async function cleanupStaleRunningJobs(cutoff: Date) {
   const staleRunning = await prisma.job.findMany({
     where: {
@@ -149,12 +178,21 @@ async function runMaintenanceCycle() {
     await reconcileRecordingReadiness(recordingId);
   }
 
+  // Sweep: retrigger readiness for recordings with a pending combined_asset but no
+  // active jobs. This unblocks recordings that were reset manually or whose combined
+  // asset fingerprint became stale with no new job to kick off reconciliation.
+  const pendingCombinedIds = await sweepPendingCombinedAssets();
+  for (const recordingId of pendingCombinedIds) {
+    await reconcileRecordingReadiness(recordingId);
+  }
+
   const jobCounts = await collectJobCounts();
   console.info(`[${WORKER_NAME}] cycle`, {
     staleChunksMarkedFailed,
     staleUploadsMarkedFailed,
     staleRunningJobsMarkedFailed: staleRunningResult.staleJobCount,
     staleExportsMarkedFailed: staleRunningResult.staleExportCount,
+    pendingCombinedRequeued: pendingCombinedIds.length,
     jobCounts,
   });
 }

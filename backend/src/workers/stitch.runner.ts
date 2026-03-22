@@ -1,10 +1,34 @@
 import fs from 'node:fs/promises';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
 
 import { resolveStorageKeyToLocal, uploadFinalToR2 } from '../lib/storage.js';
-import { assertFfmpegAvailable } from '../lib/ffmpeg.js';
+
+/**
+ * Binary-concatenate WebM streaming chunks into a single file.
+ *
+ * MediaRecorder writes the EBML/WebM header (tracks, codec info, etc.) ONLY in
+ * the first chunk. All subsequent chunks are raw Cluster continuation blocks with
+ * no header — they are NOT valid standalone WebM files. ffmpeg's concat demuxer
+ * treats each input as an independent file, fails to parse chunks 2+ (no EBML),
+ * and silently drops them, producing output that is only as long as the first chunk.
+ *
+ * Byte-appending the chunks reconstructs the original streaming WebM that
+ * MediaRecorder intended to produce. The cluster timestamps in chunks 2+ are
+ * cumulative from recording start (4s, 8s, …), so the concatenated file has
+ * monotonically increasing timestamps and ffmpeg can transcode it correctly.
+ */
+async function binaryConcatChunks(chunkPaths: string[], outputPath: string): Promise<void> {
+  const writeStream = createWriteStream(outputPath);
+  for (const chunkPath of chunkPaths) {
+    await pipeline(createReadStream(chunkPath), writeStream, { end: false });
+  }
+  await new Promise<void>((resolve, reject) => {
+    writeStream.end((err?: Error | null) => (err ? reject(err) : resolve()));
+  });
+}
 
 type StitchChunk = {
   seq: number;
@@ -37,7 +61,6 @@ export async function runStitchForTrack(args: {
   const chunkLocals: Array<{ localPath: string; cleanup: () => Promise<void> }> = [];
   const ext = pickExtensionFromKey(chunks[0]?.storageKeyRaw ?? '');
   const stitchedTmpPath = path.join(os.tmpdir(), `studio-cast-stitched-${trackId}-${Date.now()}${ext}`);
-  const concatListPath = path.join(os.tmpdir(), `studio-cast-concat-${trackId}-${Date.now()}.txt`);
 
   try {
     for (const chunk of chunks) {
@@ -45,17 +68,10 @@ export async function runStitchForTrack(args: {
       chunkLocals.push(resolved);
     }
 
-    if (chunkLocals.length === 1) {
-      await fs.copyFile(chunkLocals[0].localPath, stitchedTmpPath);
-    } else {
-      await assertFfmpegAvailable();
-      const concatList = chunkLocals
-        .map((chunkLocal) => `file '${chunkLocal.localPath.replace(/'/g, `'\\''`)}'`)
-        .join('\n');
-
-      await fs.writeFile(concatListPath, `${concatList}\n`, 'utf8');
-      await runFfmpegConcat(concatListPath, stitchedTmpPath);
-    }
+    await binaryConcatChunks(
+      chunkLocals.map((c) => c.localPath),
+      stitchedTmpPath,
+    );
 
     const stat = await fs.stat(stitchedTmpPath);
     if (!stat.size) {
@@ -85,36 +101,5 @@ export async function runStitchForTrack(args: {
     } catch {
       // Ignore stitched temp cleanup failures.
     }
-
-    try {
-      await fs.unlink(concatListPath);
-    } catch {
-      // Ignore concat-list temp cleanup failures.
-    }
   }
-}
-
-async function runFfmpegConcat(concatListPath: string, outputPath: string) {
-  const args = [
-    '-y',
-    '-f', 'concat',
-    '-safe', '0',
-    '-i', concatListPath,
-    '-c', 'copy',
-    outputPath,
-  ];
-
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
-    let stderr = '';
-
-    child.stderr.on('data', (chunk) => {
-      stderr += String(chunk);
-    });
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code === 0) return resolve();
-      reject(new Error(`ffmpeg stitch concat failed: ${stderr}`));
-    });
-  });
 }

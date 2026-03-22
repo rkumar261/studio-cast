@@ -112,6 +112,7 @@ export type GetRecordingResponse = {
 };
 
 export type ConsumerRecordingState =
+  | 'invited'
   | 'recording'
   | 'uploading'
   | 'upload complete'
@@ -148,6 +149,7 @@ export type ProjectMediaAssetDto = {
   height?: number;
   previewUrl?: string;
   playbackUrl?: string;
+  rawPreviewUrl?: string;
   downloadUrl?: string;
   thumbnailUrl?: string;
   blockedReason?: string;

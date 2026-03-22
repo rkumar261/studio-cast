@@ -218,6 +218,17 @@ export async function getProjectAssetsGraphService(args: {
           last_error: true,
         },
       },
+      participant: {
+        select: {
+          id: true,
+          track: {
+            where: { kind: 'video', storage_key_raw: { not: null } },
+            orderBy: { created_at: 'asc' },
+            take: 1,
+            select: { storage_key_raw: true },
+          },
+        },
+      },
     },
   });
 
@@ -225,6 +236,15 @@ export async function getProjectAssetsGraphService(args: {
   if (recording.userId && recording.userId !== args.requesterId) return { code: 'forbidden' };
 
   const participantMasterStates = await listParticipantMasterStatesForRecording(args.recordingId);
+
+  // Map participantId → raw video preview URL (available after stitch, before transcode).
+  const rawPreviewByParticipant = new Map<string, string>();
+  for (const p of recording.participant) {
+    const rawKey = p.track[0]?.storage_key_raw;
+    const rawUrl = toPublicAssetUrl(rawKey);
+    if (rawUrl) rawPreviewByParticipant.set(p.id, rawUrl);
+  }
+
   const combinedAssetRow = recording.combined_asset[0];
   const applicableParticipants = participantMasterStates.filter((participant) => participant.isApplicable);
   const anyParticipantMasterFailed = applicableParticipants.some((participant) => participant.state === 'failed');
@@ -256,6 +276,10 @@ export async function getProjectAssetsGraphService(args: {
   );
   const combinedDownloadUrl = toPublicAssetUrl(combinedAssetRow?.storage_key);
   const combinedResolution = parseResolution(combinedAssetRow?.resolution);
+  // Raw preview: show the first available participant raw track while combined is processing.
+  const combinedRawPreviewUrl = combinedState !== 'ready'
+    ? [...rawPreviewByParticipant.values()][0]
+    : undefined;
 
   const participantAssets = applicableParticipants.map((participant) => {
     const state = mapAssetState(participant.asset?.state ?? participant.state);
@@ -278,6 +302,7 @@ export async function getProjectAssetsGraphService(args: {
     const failedWork = state === 'action required'
       ? [toWorkItem({ label: participantLabel, state, reason: blockedReason, participantId: participant.participantId })!]
       : [];
+    const rawParticipantPreviewUrl = rawPreviewByParticipant.get(participant.participantId) || undefined;
     return {
       id: participant.asset?.id ?? `participant:${participant.participantId}`,
       kind: 'participant' as const,
@@ -290,6 +315,7 @@ export async function getProjectAssetsGraphService(args: {
       height: resolution.height,
       previewUrl,
       playbackUrl: previewUrl,
+      rawPreviewUrl: state !== 'ready' ? rawParticipantPreviewUrl : undefined,
       downloadUrl,
       blockedReason,
       availableDerivatives: participant.asset?.exportSet ?? [],
@@ -414,6 +440,7 @@ export async function getProjectAssetsGraphService(args: {
       height: combinedResolution.height,
       previewUrl: combinedPreviewUrl,
       playbackUrl: combinedPreviewUrl,
+      rawPreviewUrl: combinedRawPreviewUrl,
       downloadUrl: combinedDownloadUrl,
       blockedReason:
         combinedState === 'action required'

@@ -208,9 +208,13 @@ export async function getRecordingProgressService(args: {
           ? toParticipantBlockedReason('chunks_not_uploaded')
           : undefined;
 
+    const hasActiveTracks = trackCount > 0;
+
     let state: ConsumerRecordingState;
-    if (isStillRecording) {
+    if (isStillRecording && hasActiveTracks) {
       state = 'recording';
+    } else if (isStillRecording && !hasActiveTracks) {
+      state = 'invited';
     } else if (hasFinalizeIssue) {
       state = 'action required';
     } else if (trackCount > 0 && uploadedCount < trackCount) {

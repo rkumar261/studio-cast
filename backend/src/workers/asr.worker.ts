@@ -24,7 +24,7 @@ type JobRow = {
 
 const WORKER_NAME = 'asr-worker';
 const MAX_ATTEMPTS = 3;
-const POLL_MS = 1500;
+const POLL_MS = 300;
 
 let stopping = false;
 process.on('SIGINT', () => (stopping = true));

@@ -85,12 +85,14 @@ export default function RecordingDetailPage() {
 
   useEffect(() => {
     if (typeof id !== 'string') return;
+    // Poll faster while processing so the UI reflects pipeline completion sooner.
+    const pollMs = progress?.projectState === 'processing' ? 1000 : 5000;
     const timer = setInterval(() => {
       refreshProgress(id);
       void refreshProjectAssets(id);
-    }, 5000);
+    }, pollMs);
     return () => clearInterval(timer);
-  }, [id, refreshProgress, refreshProjectAssets]);
+  }, [id, refreshProgress, refreshProjectAssets, progress?.projectState]);
 
   if (!data) return <p>Loading…</p>;
 
@@ -271,20 +273,31 @@ export default function RecordingDetailPage() {
                 <div className="mt-3 rounded-lg border border-slate-800 bg-slate-900/70 p-3 text-sm text-slate-300">
                   {projectAssets.combinedAsset.state === 'ready' && projectAssets.combinedAsset.previewUrl
                     ? 'Preview is available.'
-                    : stateSummaryCopy(projectAssets.combinedAsset.state)}
+                    : projectAssets.combinedAsset.rawPreviewUrl
+                      ? 'Preview (processing…) — video only, audio coming soon.'
+                      : stateSummaryCopy(projectAssets.combinedAsset.state)}
                 </div>
 
-                {projectAssets.combinedAsset.blockedReason && projectAssets.combinedAsset.state !== 'ready' && (
+                {projectAssets.combinedAsset.blockedReason && projectAssets.combinedAsset.state !== 'ready' && !projectAssets.combinedAsset.rawPreviewUrl && (
                   <p className="mt-3 text-xs text-slate-400">
                     {formatBlockedReason(projectAssets.combinedAsset.blockedReason)}
                   </p>
                 )}
 
-                {projectAssets.combinedAsset.state === 'ready' && projectAssets.combinedAsset.previewUrl && (
+                {(projectAssets.combinedAsset.state === 'ready' && projectAssets.combinedAsset.previewUrl) && (
                   <video
                     ref={combinedPreviewRef}
                     className="mt-3 w-full rounded-lg border border-slate-800 bg-black"
                     src={projectAssets.combinedAsset.previewUrl}
+                    controls
+                    preload="none"
+                  />
+                )}
+
+                {projectAssets.combinedAsset.state !== 'ready' && projectAssets.combinedAsset.rawPreviewUrl && (
+                  <video
+                    className="mt-3 w-full rounded-lg border border-amber-800/40 bg-black opacity-90"
+                    src={projectAssets.combinedAsset.rawPreviewUrl}
                     controls
                     preload="none"
                   />
