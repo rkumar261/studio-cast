@@ -716,11 +716,13 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     void refreshRecordingProgress();
     if (!shouldPollStudioProgress) return;
 
+    // Poll faster during processing so UI reflects pipeline completion sooner.
+    const progressPollMs = recordingProgress?.projectState === 'processing' ? 1000 : 3000;
     const timer = window.setInterval(() => {
       void refreshRecordingProgress();
-    }, 3000);
+    }, progressPollMs);
     return () => window.clearInterval(timer);
-  }, [refreshRecordingProgress, sessionMode, shouldPollStudioProgress]);
+  }, [refreshRecordingProgress, sessionMode, shouldPollStudioProgress, recordingProgress?.projectState]);
 
   useEffect(() => {
     if (sessionMode === 'studio') {
@@ -2496,9 +2498,13 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         id: 'local-live',
         label: displayName || 'You',
         role: localStudioRoleLabel,
-        percent: isRecording ? 0 : uploadedPercent,
-        note: isRecording ? 'Recording...' : hasLiveUploadActivity ? `${uploadedPercent}% uploaded` : 'Waiting...',
-        showProgressBar: !isRecording && hasLiveUploadActivity,
+        percent: uploadedPercent,
+        note: isRecording && !hasLiveUploadActivity
+          ? 'Recording...'
+          : hasLiveUploadActivity
+            ? `${uploadedPercent}% uploaded${isRecording ? ' (recording)' : ''}`
+            : 'Waiting...',
+        showProgressBar: hasLiveUploadActivity,
       },
       // Use backend participant data (role + upload progress) when available;
       // fall back to live-presence peers (no role/progress info) before first poll.
@@ -2509,9 +2515,13 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               id: p.participantId,
               label: p.displayName || p.participantId.slice(0, 8),
               role: p.role === 'host' ? 'Host' : 'Guest',
-              percent: isParticipantRecording ? 0 : p.progressPct,
-              note: isParticipantRecording ? 'Recording...' : (p.blockedReason ?? toConsumerStateLabel(p.state)),
-              showProgressBar: !isParticipantRecording && p.progressPct > 0,
+              percent: p.progressPct,
+              note: isParticipantRecording && p.progressPct === 0
+                ? 'Recording...'
+                : p.progressPct > 0
+                  ? `${p.progressPct}% uploaded${isParticipantRecording ? ' (recording)' : ''}`
+                  : (p.blockedReason ?? toConsumerStateLabel(p.state)),
+              showProgressBar: p.progressPct > 0,
             };
           })
         : active.peers.map((peer) => ({

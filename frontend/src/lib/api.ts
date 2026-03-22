@@ -149,6 +149,7 @@ export type ProjectMediaAssetDto = {
   height?: number;
   previewUrl?: string;
   playbackUrl?: string;
+  rawPreviewUrl?: string;
   downloadUrl?: string;
   thumbnailUrl?: string;
   blockedReason?: string;
