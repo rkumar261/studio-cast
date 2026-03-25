@@ -1,7 +1,7 @@
 {
   "name": "studio-cast",
   "version": "1.0.0",
-  "description": "Studio Cast is a Riverside-style remote recording platform.",
+  "description": "Studio Cast is an AI Enabled Recording Studio.",
   "main": "index.js",
   "directories": {
     "doc": "docs"

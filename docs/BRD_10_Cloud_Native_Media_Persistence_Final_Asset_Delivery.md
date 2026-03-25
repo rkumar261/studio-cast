@@ -83,7 +83,7 @@ This BRD is successful when:
 ## Out of scope
 - full editing timeline
 - advanced collaborative editing tools
-- Riverside-specific internal implementation cloning
+- third-party internal implementation cloning
 - deep redesign of transcript editing UX
 - changing guest authorization rules unless required for asset viewing policy
 - long-term archival/retention policy beyond canonical final asset persistence

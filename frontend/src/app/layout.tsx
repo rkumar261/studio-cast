@@ -3,8 +3,8 @@ import Navbar from '@/components/Navbar';
 import { SessionProvider } from '@/lib/useSession';
 
 export const metadata = {
-  title: 'riverside-lite',
-  description: 'Lightweight recording app',
+  title: 'Studio Cast',
+  description: 'AI Enabled Recording Studio',
 };
 
 export default function RootLayout({

@@ -7,7 +7,7 @@ import { signAccessJwt, signGuestAccessJwt } from '../../src/lib/jwt.js';
 
 process.env.JWT_PRIVATE_KEY_PATH ??= path.resolve(process.cwd(), 'certs/jwtRS256.key');
 process.env.JWT_PUBLIC_KEY_PATH ??= path.resolve(process.cwd(), 'certs/jwtRS256.key.pub');
-process.env.R2_PUBLIC_BASE_URL ??= 'https://cdn.example.com/riverside-lite';
+process.env.R2_PUBLIC_BASE_URL ??= 'https://cdn.example.com/studio-cast';
 
 type AnyRecord = Record<string, any>;
 

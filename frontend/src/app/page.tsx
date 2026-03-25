@@ -105,8 +105,8 @@ export default function HomePage() {
                 best content yet.
               </h1>
               <p className="max-w-xl text-base text-slate-200/90">
-                Riverside-lite helps you record, collaborate, upload tracks, and export clean
-                results from one browser workflow.
+                Studio Cast is an AI Enabled Recording Studio for recording, collaboration,
+                track uploads, and clean exports from one browser workflow.
               </p>
               <div className="flex flex-wrap gap-2 text-sm">
                 {['Podcasts', 'Interviews', 'Webinars', 'Social clips', 'Transcriptions'].map(

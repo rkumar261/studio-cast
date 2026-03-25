@@ -1,6 +1,6 @@
 # Studio Cast
 
-Studio Cast is a Riverside-style remote recording platform.
+Studio Cast is an AI Enabled Recording Studio.
 
 - Live WebRTC studio (host/guest, later multi-participant)
 - Tech Check page (mic/cam selection, local test recording)

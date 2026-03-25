@@ -2285,7 +2285,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 <Link href="/" className="text-slate-400 hover:text-slate-100">
                   ←
                 </Link>
-                <p className="text-2xl font-semibold tracking-[0.2em]">RIVERSIDE</p>
+                <p className="text-2xl font-semibold tracking-[0.2em]">STUDIO CAST</p>
               </div>
             </header>
 
@@ -2333,7 +2333,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               <Link href="/" className="text-slate-400 hover:text-slate-100">
                 ←
               </Link>
-              <p className="text-2xl font-semibold tracking-[0.2em]">RIVERSIDE</p>
+              <p className="text-2xl font-semibold tracking-[0.2em]">STUDIO CAST</p>
               <span className="text-slate-600">|</span>
               <p className="text-xl text-slate-300">{displayName || 'Host'}&apos;s Studio</p>
             </div>
@@ -2722,7 +2722,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               <Link href="/" className="rounded-full p-1 text-slate-300 hover:bg-[#1b2130] hover:text-white">
                 ←
               </Link>
-              <p className="text-xl font-semibold tracking-[0.2em] text-slate-100">RIVERSIDE</p>
+              <p className="text-xl font-semibold tracking-[0.2em] text-slate-100">STUDIO CAST</p>
               <span className="text-slate-600">|</span>
               <p className="truncate text-base text-slate-400">{displayName || 'Host'} KUMAR&apos;s Studio</p>
               <p className="truncate text-xl font-semibold text-slate-100">Untitled Recording</p>
