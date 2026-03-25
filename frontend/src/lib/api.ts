@@ -167,6 +167,11 @@ export type ProjectMediaAssetDto = {
     role: string;
     name?: string;
   };
+  qualityWarnings?: {
+    audioWarning?: string;
+    videoWarning?: string;
+    durationWarning?: boolean;
+  };
 };
 
 export type ProjectTranscriptAssetDto = {

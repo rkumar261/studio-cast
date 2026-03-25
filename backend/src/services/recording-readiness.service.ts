@@ -90,7 +90,7 @@ async function upsertRequiredExportArtifacts(args: {
   for (const requiredType of REQUIRED_EXPORT_TYPES) {
     const canonical = pickCanonicalRequiredExport(ensured, requiredType);
     const shouldLinkCombined =
-      requiredType === export_type.mp4 || requiredType === export_type.mp4_captions;
+      (requiredType as export_type) === export_type.mp4 || (requiredType as export_type) === export_type.mp4_captions;
 
     if (canonical) {
       if (

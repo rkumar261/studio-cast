@@ -71,6 +71,10 @@ async function runJob(job: JobRow) {
             storage_key_raw: true,
             storage_key_final: true,
             state: true,
+            recording_started_at: true,
+            recording: {
+                select: { stopped_at: true },
+            },
         },
     });
 
@@ -153,6 +157,25 @@ async function runJob(job: JobRow) {
             },
         });
 
+        // P2: flag duration deviation if recording_started_at and stopped_at are known.
+        // P4/P5: quality warnings (audioWarning, videoWarning) are added by runTranscodeForTrack
+        // and passed here as part of qualityWarnings.
+        const qualityWarnings: Record<string, unknown> = {};
+        if (out.qualityWarnings) {
+            Object.assign(qualityWarnings, out.qualityWarnings);
+        }
+        if (
+            track.recording_started_at &&
+            track.recording?.stopped_at &&
+            duration_ms != null
+        ) {
+            const expectedMs =
+                track.recording.stopped_at.getTime() - track.recording_started_at.getTime();
+            if (Math.abs(duration_ms - expectedMs) > 5000) {
+                qualityWarnings.durationWarning = true;
+            }
+        }
+
         await reconcileParticipantMasterAsset({
             recordingId: track.recording_id,
             participantId: track.participant_id,
@@ -167,6 +190,7 @@ async function runJob(job: JobRow) {
                     contentType: out.contentType,
                     width: out.width ?? undefined,
                     height: out.height ?? undefined,
+                    ...(Object.keys(qualityWarnings).length > 0 ? { qualityWarnings } : {}),
                 },
                 exportSet: out.kind === 'video' ? ['mp4'] : ['wav'],
             },

@@ -86,33 +86,64 @@ async function runFfmpegMergeAudio(videoPath: string, audioPath: string, outputP
 
 /**
  * Side-by-side layout using ffmpeg hstack (2 participants) or xstack grid (3-4).
- * Each video is scaled to a consistent height (480px) before being tiled so that
- * participants with different resolutions don't produce a ragged grid.
- * Audio from all participants is mixed with amix (normalize=0 keeps individual
- * levels stable as participant count grows).
- * Inputs without audio streams get synthetic silence via anullsrc so amix always
- * receives N inputs — participant master MP4s are often video-only.
+ * Each video is scaled to a consistent height before being tiled.
+ *
+ * Duration correctness:
+ * - All inputs are probed for their actual duration and whether they have audio.
+ * - Shorter video inputs are extended with a frozen last frame (tpad) so hstack
+ *   does not terminate early when the shortest participant's video ends.
+ * - Audio inputs are padded with silence (apad) to the same length as the longest
+ *   video so amix does not cut the combined audio short. Audio-less inputs get
+ *   finite silence via atrim'd anullsrc instead of infinite anullsrc (which would
+ *   hang amix with duration=longest).
+ * - -shortest on the output encoding ensures the muxer terminates cleanly when
+ *   the video stream ends, even if any padded stream extends slightly beyond.
  * Falls back to concat_all for 5+ participants.
  */
 async function runFfmpegSideBySide(processedPaths: string[], outputPath: string): Promise<void> {
   const n = processedPaths.length;
   if (n === 0) throw new Error('side_by_side_no_sources');
 
+  // Probe every input once — collect both audio presence and duration.
+  const probes = await Promise.all(
+    processedPaths.map(async (p) => {
+      try {
+        const probe = await ffprobeJson(p);
+        const hasAudio = probe.streams?.some((s) => s.codec_type === 'audio') ?? false;
+        const durationSec = toSec(probe.format?.duration) ?? 0;
+        return { hasAudio, durationSec };
+      } catch {
+        return { hasAudio: false, durationSec: 0 };
+      }
+    })
+  );
+  const audioFlags = probes.map((p) => p.hasAudio);
+  const anyAudio = audioFlags.some(Boolean);
+  // maxDurationSec is the reference length for the combined output.
+  const maxDurationSec = Math.max(...probes.map((p) => p.durationSec), 0);
+  // Small buffer so tpad/apad filters always cover the full video.
+  const padTarget = maxDurationSec + 0.5;
+
   const inputs = processedPaths.flatMap((p) => ['-i', p]);
 
-  // Scale each input to a consistent height while preserving aspect ratio.
-  // -2 ensures the computed width is divisible by 2 (required by libx264).
-  // Fixed tile dimensions ensure all participants have identical size before stacking.
-  // Using scale+pad (letterbox) avoids aspect-ratio mismatches that cause hstack/vstack
-  // to fail with "Input link has a different width/height" when sources differ in AR.
   const TILE_W = 640;
   const TILE_H = 360;
-  const scaleFilters = processedPaths
-    .map(
-      (_, i) =>
+
+  // Scale each input to a consistent tile size.
+  // If a participant's video is shorter than the longest, tpad extends it with a
+  // frozen last frame so hstack never terminates early due to EOF from a shorter input.
+  const scaleFilters = probes
+    .map(({ durationSec }, i) => {
+      const shortfall = padTarget - durationSec;
+      const tpadClause =
+        shortfall > 0.05
+          ? `,tpad=stop_mode=clone:stop_duration=${shortfall.toFixed(3)}`
+          : '';
+      return (
         `[${i}:v]scale=${TILE_W}:${TILE_H}:force_original_aspect_ratio=decrease,` +
-        `pad=${TILE_W}:${TILE_H}:(ow-iw)/2:(oh-ih)/2[sv${i}]`
-    )
+        `pad=${TILE_W}:${TILE_H}:(ow-iw)/2:(oh-ih)/2${tpadClause}[sv${i}]`
+      );
+    })
     .join(';');
 
   // Build the tile layout.
@@ -120,9 +151,6 @@ async function runFfmpegSideBySide(processedPaths: string[], outputPath: string)
   if (n === 2) {
     videoFilter = `${scaleFilters};[sv0][sv1]hstack=inputs=2[v]`;
   } else if (n === 3) {
-    // 2 top, 1 bottom-centre — pad bottom to match top row width (TILE_W*2).
-    // Since all tiles are exactly TILE_W×TILE_H after scale+pad above, this arithmetic
-    // is deterministic regardless of each participant's original aspect ratio.
     videoFilter = [
       scaleFilters,
       `[sv0][sv1]hstack=inputs=2[top]`,
@@ -140,42 +168,35 @@ async function runFfmpegSideBySide(processedPaths: string[], outputPath: string)
     throw new Error(`side_by_side_unsupported_count:${n}`);
   }
 
-  // Probe each source to detect which inputs actually have audio streams.
-  // Participant master MP4s may be video-only; hard-coding [i:a:0] causes ffmpeg
-  // to fail with "Stream specifier matches no streams".
-  const audioFlags = await Promise.all(
-    processedPaths.map(async (p) => {
-      try {
-        const probe = await ffprobeJson(p);
-        return probe.streams?.some((s) => s.codec_type === 'audio') ?? false;
-      } catch {
-        return false;
-      }
-    })
-  );
-  const anyAudio = audioFlags.some(Boolean);
-
   // Build filter_complex with optional audio mixing.
   const mapArgs: string[] = ['-map', '[v]'];
   let filterComplex = videoFilter;
 
   if (anyAudio) {
-    // For inputs without audio, inject silence via anullsrc so amix has exactly N inputs.
-    const anullFilters = audioFlags
-      .flatMap((hasAudio, i) =>
-        hasAudio ? [] : [`anullsrc=channel_layout=stereo:sample_rate=44100[anull${i}]`]
-      )
+    // For inputs WITH audio: apad extends to padTarget so amix doesn't terminate
+    // early when one participant's audio is slightly shorter than another's.
+    // For inputs WITHOUT audio: finite silence via atrim'd anullsrc (avoids the
+    // infinite-source hang that occurs with duration=longest + bare anullsrc).
+    const audioPreFilters = probes
+      .map(({ hasAudio, durationSec }, i) => {
+        if (hasAudio) {
+          const shortfall = padTarget - durationSec;
+          return shortfall > 0.05
+            ? `[${i}:a:0]apad=whole_dur=${padTarget.toFixed(3)}[apad${i}]`
+            : `[${i}:a:0]anull[apad${i}]`;
+        }
+        // Audio-less input: generate finite silence matching padTarget.
+        return (
+          `anullsrc=channel_layout=stereo:sample_rate=44100,` +
+          `atrim=duration=${padTarget.toFixed(3)}[apad${i}]`
+        );
+      })
       .join(';');
-    const audioInputs = audioFlags
-      .map((hasAudio, i) => (hasAudio ? `[${i}:a:0]` : `[anull${i}]`))
-      .join('');
-    // duration=shortest: amix terminates when the shortest FINITE audio input ends.
-    // anullsrc is infinite — using duration=longest would cause ffmpeg to hang forever
-    // on any recording where at least one participant has no audio stream.
-    const audioFilter = `${audioInputs}amix=inputs=${n}:duration=shortest:normalize=0[a]`;
-    filterComplex = anullFilters
-      ? `${videoFilter};${anullFilters};${audioFilter}`
-      : `${videoFilter};${audioFilter}`;
+    const audioMixRefs = probes.map((_, i) => `[apad${i}]`).join('');
+    // duration=longest: amix now terminates at padTarget (all inputs are the same
+    // finite length after the padding step above).
+    const audioFilter = `${audioMixRefs}amix=inputs=${n}:duration=longest:normalize=0[a]`;
+    filterComplex = `${videoFilter};${audioPreFilters};${audioFilter}`;
     mapArgs.push('-map', '[a]');
   }
 
@@ -184,6 +205,10 @@ async function runFfmpegSideBySide(processedPaths: string[], outputPath: string)
     ...inputs,
     '-filter_complex', filterComplex,
     ...mapArgs,
+    // -shortest: terminate encoding when the shortest OUTPUT stream ends.
+    // The video stream [v] ends at maxDurationSec (all tiles padded to that length).
+    // Any padded audio that extends beyond maxDurationSec is silently dropped.
+    '-shortest',
     '-c:v', 'libx264',
     '-preset', 'medium',
     '-crf', '23',

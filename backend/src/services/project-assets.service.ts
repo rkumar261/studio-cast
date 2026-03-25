@@ -332,6 +332,15 @@ export async function getProjectAssetsGraphService(args: {
         role: participant.participantRole,
         name: participant.participantName,
       },
+      qualityWarnings: (() => {
+        const qw = participant.asset?.metadata?.qualityWarnings as Record<string, unknown> | undefined;
+        if (!qw) return undefined;
+        return {
+          audioWarning: typeof qw.audioWarning === 'string' ? qw.audioWarning : undefined,
+          videoWarning: typeof qw.videoWarning === 'string' ? qw.videoWarning : undefined,
+          durationWarning: qw.durationWarning === true ? true : undefined,
+        };
+      })(),
     };
   });
 
