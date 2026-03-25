@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 
 import {
     assertFfmpegAvailable,
@@ -18,6 +19,11 @@ import {
     type TrackLike,
 } from '../lib/storage.js';
 
+export type QualityWarnings = {
+    audioWarning?: 'no_audio_stream';
+    videoWarning?: 'black_video' | 'insufficient_frames';
+};
+
 export type TranscodeOutcome = {
     kind: 'audio' | 'video';
     finalKey: string;              // R2 key for the final artifact
@@ -26,6 +32,7 @@ export type TranscodeOutcome = {
     durationSec?: number;
     width?: number;
     height?: number;
+    qualityWarnings?: QualityWarnings;
 };
 
 /**
@@ -89,6 +96,23 @@ export async function runTranscodeForTrack(
         // Upload final to R2
         await uploadFinalToR2(tmpFinal, finalKey, contentType);
 
+        // P4/P5: post-transcode quality probe
+        const qualityWarnings: QualityWarnings = {};
+        if (kind === 'video') {
+            const hasAudio = outputProbe.streams?.some((s) => s.codec_type === 'audio') ?? false;
+            if (!hasAudio) {
+                qualityWarnings.audioWarning = 'no_audio_stream';
+            }
+            if (outputDurationSec != null) {
+                if (outputDurationSec < 1.0) {
+                    qualityWarnings.videoWarning = 'insufficient_frames';
+                } else {
+                    const bv = await checkBlackVideo(tmpFinal, outputDurationSec).catch(() => false);
+                    if (bv) qualityWarnings.videoWarning = 'black_video';
+                }
+            }
+        }
+
         // Return outcome (worker will persist)
         return {
             kind,
@@ -98,10 +122,43 @@ export async function runTranscodeForTrack(
             durationSec: outputDurationSec,
             width: outputVStream?.width ?? width,
             height: outputVStream?.height ?? height,
+            qualityWarnings: Object.keys(qualityWarnings).length > 0 ? qualityWarnings : undefined,
         };
     } finally {
         // cleanup temp files
         try { await fs.unlink(tmpFinal); } catch { }
         try { await cleanupRaw(); } catch { }
     }
+}
+
+/**
+ * P5: Sample 3 frames (start, mid, near-end) via ffmpeg signalstats.
+ * Returns true if ALL 3 frames have average luminance (YAVG) < 8 (< 3% brightness).
+ * Guard: skip if duration < 1s.
+ */
+async function checkBlackVideo(filePath: string, durationSec: number): Promise<boolean> {
+    const half = (durationSec / 2).toFixed(3);
+    const end = (durationSec * 0.99).toFixed(3);
+    const filter = `select='gte(t,0)+gte(t,${half})+gte(t,${end})',signalstats`;
+
+    const args = [
+        '-i', filePath,
+        '-vf', filter,
+        '-frames:v', '3',
+        '-f', 'null',
+        '-',
+    ];
+
+    const stderr = await new Promise<string>((resolve) => {
+        const child = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+        let out = '';
+        child.stderr.on('data', (d) => (out += String(d)));
+        child.on('close', () => resolve(out));
+        child.on('error', () => resolve(''));
+    });
+
+    // Parse YAVG values from signalstats output
+    const yavgMatches = [...stderr.matchAll(/YAVG:([0-9.]+)/g)];
+    if (yavgMatches.length === 0) return false;
+    return yavgMatches.every((m) => Number(m[1]) < 8);
 }

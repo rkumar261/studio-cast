@@ -26,6 +26,7 @@ import {
 } from '@/lib/studio/useRollingChunkRecorder';
 import { deriveStudioUiAccess } from '@/lib/studio/access';
 import { useChunkUploadQueue, type ChunkUploadProtocol } from '@/lib/studio/useChunkUploadQueue';
+import { useStreamQualityProbe } from '@/lib/studio/useStreamQualityProbe';
 import { useSession } from '@/lib/useSession';
 import {
   Room,
@@ -574,6 +575,25 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const recoveringTrackIdsRef = useRef<Set<string>>(new Set());
   const latestChunkSeqByTrackRef = useRef<Map<string, number>>(new Map());
   const prevGuestStoppedAtRef = useRef<string | undefined>(undefined);
+  // U1: stopped_uploading phase — room stays alive after stop until all leave or 10-min timeout
+  const [stoppedUploadingPhase, setStoppedUploadingPhase] = useState(false);
+  const dwellTimerRef = useRef<number | null>(null);
+  // U3: layout mode — switches to screen_share_dominant when screen share is active
+  const [studioLayoutMode, setStudioLayoutMode] = useState<'grid' | 'screen_share_dominant'>('grid');
+  // P2: timestamp when recording started, broadcast by host via LiveKit data channel.
+  // Guests receive it and include it in finalizeTrack so the transcode worker can
+  // compute expected_duration_ms and flag deviations >5s.
+  const [sessionStartedAt, setSessionStartedAt] = useState<string | null>(null);
+
+  // P3/U2: stream quality probe — detects black video / silent audio on join
+  const { probe: probeStreamQuality, result: streamQualityResult } = useStreamQualityProbe();
+  const streamWarning = streamQualityResult
+    ? streamQualityResult.videoWarning === 'black_stream'
+      ? '⚠ Your camera appears unavailable — your video will record as black. Close other apps using your camera, then refresh.'
+      : streamQualityResult.audioWarning === 'no_audio_track'
+        ? '⚠ No microphone detected — your recording will have no audio.'
+        : null
+    : null;
   const [showMeetSelfPreview, setShowMeetSelfPreview] = useState(true);
   const [meetSelfPreviewExpanded, setMeetSelfPreviewExpanded] = useState(false);
   const [meetStageFit, setMeetStageFit] = useState<'contain' | 'cover'>('contain');
@@ -600,7 +620,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const [isCameraEnabled, setIsCameraEnabled] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const isRecording = !!recordingSession?.startedAt && !recordingSession?.stoppedAt;
-  const chunkUploadProtocol: ChunkUploadProtocol = 'tus';
+  const chunkUploadProtocol: ChunkUploadProtocol = 'presigned_url';
   const chunkUploadQueue = useChunkUploadQueue({
     enabled: sessionMode === 'studio',
     recordingId,
@@ -689,6 +709,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     sessionMode === 'studio' &&
     (!recordingSession?.stoppedAt ||
       isRecording ||
+      stoppedUploadingPhase ||      // U5: always poll during stopped_uploading phase
       hasLocalQueueWork ||
       hasBackendPendingFromProgress ||
       showUploadStatusModal ||
@@ -920,11 +941,43 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         roomRef.current = null;
       });
 
+      // P2: receive session_start broadcast from host
+      // U1: receive remove_participant broadcast from host
+      newRoom.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
+        try {
+          const msg = JSON.parse(new TextDecoder().decode(payload)) as Record<string, unknown>;
+          if (msg.type === 'session_start' && typeof msg.startedAt === 'string') {
+            setSessionStartedAt(msg.startedAt);
+          }
+          if (msg.type === 'remove_participant' && typeof msg.participantId === 'string') {
+            // Guest: host removed us — navigate to thanks
+            router.replace(`/studio/${recordingId}/thanks`);
+          }
+        } catch { /* ignore malformed data messages */ }
+      });
+
       const refresh = () => syncParticipants(newRoom);
       newRoom.on(RoomEvent.ParticipantConnected, refresh);
       newRoom.on(RoomEvent.ParticipantDisconnected, refresh);
-      newRoom.on(RoomEvent.TrackPublished, refresh);
-      newRoom.on(RoomEvent.TrackUnpublished, refresh);
+      // U3: detect screen share publish/unpublish to switch layout mode
+      newRoom.on(RoomEvent.TrackPublished, (pub) => {
+        refresh();
+        if (pub.source === Track.Source.ScreenShare) {
+          setStudioLayoutMode('screen_share_dominant');
+        }
+      });
+      newRoom.on(RoomEvent.TrackUnpublished, (pub) => {
+        refresh();
+        if (pub.source === Track.Source.ScreenShare) {
+          const anyRemoteScreen = [...newRoom.remoteParticipants.values()].some(
+            (p) => p.getTrackPublication(Track.Source.ScreenShare)?.track != null
+          );
+          const localScreen = newRoom.localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track != null;
+          if (!anyRemoteScreen && !localScreen) {
+            setStudioLayoutMode('grid');
+          }
+        }
+      });
       newRoom.on(RoomEvent.TrackSubscribed, refresh);
       newRoom.on(RoomEvent.TrackUnsubscribed, refresh);
       newRoom.on(RoomEvent.TrackMuted, refresh);
@@ -938,6 +991,24 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       setIsMicEnabled(true);
       setIsCameraEnabled(true);
       syncParticipants(newRoom);
+
+      // P3/U2: probe stream quality once BOTH local cam and mic tracks are published.
+      // We build a combined MediaStream so the probe can check video + audio together.
+      // We wait until both are available before probing.
+      const probeOnLocalTrack = () => {
+        const camPub = newRoom.localParticipant.getTrackPublication(Track.Source.Camera);
+        const micPub = newRoom.localParticipant.getTrackPublication(Track.Source.Microphone);
+        const camTrack = camPub?.track?.mediaStreamTrack;
+        const micTrack = micPub?.track?.mediaStreamTrack;
+        if (camTrack && micTrack) {
+          newRoom.off(RoomEvent.LocalTrackPublished, probeOnLocalTrack);
+          const combined = new MediaStream([camTrack, micTrack]);
+          void probeStreamQuality(combined);
+        }
+      };
+      newRoom.on(RoomEvent.LocalTrackPublished, probeOnLocalTrack);
+      probeOnLocalTrack();
+
       return true;
     } catch (err: any) {
       cleanupLiveKitRoom(roomRef.current);
@@ -991,8 +1062,17 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     try {
       await r.localParticipant.setScreenShareEnabled(next);
       setIsScreenSharing(next);
-    } catch (err: any) {
-      setLivekitError(err?.message ?? 'Failed to toggle screen share.');
+      // U3: update layout mode based on local screen share state
+      if (next) {
+        setStudioLayoutMode('screen_share_dominant');
+      } else {
+        const anyRemoteScreen = [...r.remoteParticipants.values()].some(
+          (p) => p.getTrackPublication(Track.Source.ScreenShare)?.track != null
+        );
+        if (!anyRemoteScreen) setStudioLayoutMode('grid');
+      }
+    } catch (err) {
+      setLivekitError((err as Error)?.message ?? 'Failed to toggle screen share.');
     }
   }
 
@@ -1113,18 +1193,26 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     [mesh.remotePeers]
   );
 
-  const livekitCameraStream = useMemo(
-    () => livekitTrackToStream(localCameraTrack),
-    [localCameraTrack]
-  );
+  const livekitCameraStream = useMemo(() => {
+    const camMST = (localCameraTrack as any)?.mediaStreamTrack as MediaStreamTrack | undefined;
+    const micMST = (localMicTrack as any)?.mediaStreamTrack as MediaStreamTrack | undefined;
+    if (!camMST || camMST.readyState !== 'live') return null;
+    const tracks: MediaStreamTrack[] = [camMST];
+    if (micMST && micMST.readyState === 'live') tracks.push(micMST);
+    return new MediaStream(tracks);
+  }, [localCameraTrack, localMicTrack]);
   const livekitMicStream = useMemo(
     () => livekitTrackToStream(localMicTrack),
     [localMicTrack]
   );
-  const livekitScreenStream = useMemo(
-    () => livekitTrackToStream(localScreenTrack),
-    [localScreenTrack]
-  );
+  const livekitScreenStream = useMemo(() => {
+    const screenMST = (localScreenTrack as any)?.mediaStreamTrack as MediaStreamTrack | undefined;
+    const micMST = (localMicTrack as any)?.mediaStreamTrack as MediaStreamTrack | undefined;
+    if (!screenMST || screenMST.readyState !== 'live') return null;
+    const tracks: MediaStreamTrack[] = [screenMST];
+    if (micMST && micMST.readyState === 'live') tracks.push(micMST);
+    return new MediaStream(tracks);
+  }, [localScreenTrack, localMicTrack]);
 
   const meshCameraStream = useMemo(
     () => selectTracksAsStream(mesh.localStream, 'video'),
@@ -1326,7 +1414,6 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           trackId,
           highestExistingSeq,
           highestContiguousUploadedSeq,
-          resumableTus: response.recovery.resumableTus,
         });
 
         setRecorderError((prev) => {
@@ -1409,6 +1496,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     if (trackIds.length === 0) return;
 
     const captureClosedAt = new Date().toISOString();
+    // P2: include recording start time so transcode worker can flag duration deviations
+    const startedAt = sessionStartedAt ?? recordingSession?.startedAt ?? undefined;
     await Promise.all(
       trackIds.map(async (trackId) => {
         const observedFinalSeq = latestChunkSeqByTrackRef.current.get(trackId) ?? 0;
@@ -1421,22 +1510,31 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         await StudioRecordingAPI.finalizeTrack(recordingId, trackId, {
           finalSeq,
           captureClosedAt,
+          recordingStartedAt: startedAt,
         });
       })
     );
-  }, [recordingId, recoveredNextSeqByTrack, sessionMode, trackIdByKind]);
+  }, [recordingId, recoveredNextSeqByTrack, recordingSession?.startedAt, sessionMode, sessionStartedAt, trackIdByKind]);
 
   // Auto-finalize guest tracks when the host stops the session.
   // Guests never call handleToggleRecordingSession, so this is the only place
   // finalization is triggered for them.
+  //
+  // Race condition guard: prevGuestStoppedAtRef is only updated AFTER we confirm
+  // trackIdByKind is non-empty. If stoppedAt fires before tracks finish registering
+  // (async API calls), the ref stays unconsumed so the next effect run (triggered
+  // by trackIdByKind becoming populated) can still proceed with finalization.
   useEffect(() => {
     if (sessionMode !== 'studio' || requestedStudioRole !== 'guest') return;
     const stoppedAt = recordingSession?.stoppedAt;
     const prev = prevGuestStoppedAtRef.current;
-    prevGuestStoppedAtRef.current = stoppedAt;
     // Only fire on the transition from no stoppedAt → stoppedAt
     if (!stoppedAt || prev === stoppedAt) return;
+    // Wait until track IDs are available before consuming the transition.
+    // If tracks aren't registered yet, the ref stays unconsumed so this effect
+    // re-fires (via trackIdByKind dep) once registration completes.
     if (Object.keys(trackIdByKind).length === 0) return;
+    prevGuestStoppedAtRef.current = stoppedAt;
     const timer = window.setTimeout(() => {
       void finalizeTrackCaptures().catch(() => {});
     }, 500);
@@ -1778,15 +1876,36 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
       setRecordingSession(response.session);
       setCanControlRecording(response.canControl);
+
+      // P2: host broadcasts startedAt so all participants can include it in finalizeTrack
+      if (!wasRecording && response.session.startedAt && roomRef.current) {
+        const msg = JSON.stringify({ type: 'session_start', startedAt: response.session.startedAt });
+        void roomRef.current.localParticipant.publishData(new TextEncoder().encode(msg), { reliable: true });
+        setSessionStartedAt(response.session.startedAt);
+      }
+
       if (wasRecording) {
         await new Promise((resolve) => window.setTimeout(resolve, 250));
         await finalizeTrackCaptures();
+        // U1: enter stopped_uploading phase — room stays alive, uploads continue
+        setStoppedUploadingPhase(true);
+        if (dwellTimerRef.current) window.clearTimeout(dwellTimerRef.current);
+        dwellTimerRef.current = window.setTimeout(() => {
+          setStoppedUploadingPhase(false);
+        }, 10 * 60 * 1000);
       }
     } catch (err) {
       setSessionError((err as Error)?.message ?? 'Failed to update recording session.');
     } finally {
       setSessionBusy(false);
     }
+  }
+
+  // U1: host removes a participant — broadcasts data message so guest navigates to thanks
+  async function handleRemoveParticipant(participantId: string) {
+    if (!roomRef.current) return;
+    const msg = JSON.stringify({ type: 'remove_participant', participantId });
+    await roomRef.current.localParticipant.publishData(new TextEncoder().encode(msg), { reliable: true });
   }
 
   function togglePin(tileKey: string) {
@@ -2448,6 +2567,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 showProgressBar: false,
               })),
           ];
+    // U3: split tiles into screen share and webcam groups for layout switching
+    const screenTiles = studioCanvasTiles.filter((t) => t.key.includes('screen'));
+    const webcamTiles = studioCanvasTiles.filter((t) => !t.key.includes('screen'));
+    const isScreenShareDominant = studioLayoutMode === 'screen_share_dominant' && screenTiles.length > 0;
     const visibleTiles = studioCanvasTiles;
     const tileCount = visibleTiles.length;
     const stageGridClass =
@@ -2654,6 +2777,20 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
             </div>
           </header>
 
+          {/* P3/U2: persistent stream quality warning banner */}
+          {streamWarning && (
+            <div className="mb-2 rounded-lg border border-amber-500/60 bg-amber-500/15 px-3 py-2 text-xs text-amber-200">
+              {streamWarning}
+            </div>
+          )}
+          {/* U1: stopped_uploading phase banner */}
+          {stoppedUploadingPhase && (
+            <div className="mb-2 rounded-lg border border-violet-500/40 bg-violet-500/10 px-3 py-2 text-xs text-violet-200">
+              {localStudioRole === 'host'
+                ? '● Recording stopped — uploads in progress. Keep this page open. You can remove participants once their uploads are complete.'
+                : '● Recording complete — your uploads are in progress. You may leave when ready.'}
+            </div>
+          )}
           {(fallbackNotice || sessionError || recorderError || chunkUploadQueue.lastError || active.error) && (
             <div className="mt-3 space-y-2">
               {fallbackNotice && (
@@ -2740,35 +2877,75 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 )}
 
                 <div className="flex min-h-0 flex-1 rounded-3xl bg-[#05070c] p-2">
-                  <div
-                    className={`grid h-full w-full gap-3 ${
-                      studioUiAccess.canSendInvites && showStudioInvitePanel ? 'mx-auto max-w-[980px]' : ''
-                    } ${stageGridClass}`}
-                  >
-                    {visibleTiles.map((tile) => {
-                      const isLocalStudioTile =
-                        tile.key === 'studio-local-camera' || tile.key === 'studio-local-screen';
-                      return (
+                  {/* U3: screen_share_dominant layout — one large screen + webcam thumbnail row */}
+                  {isScreenShareDominant ? (
+                    <div className="flex h-full w-full flex-col gap-2">
+                      <div className="min-h-0 flex-1">
                         <ParticipantTile
-                          key={tile.key}
-                          tile={tile}
-                          className={tileClassName}
-                          showPin
-                          isPinned={pinnedTileKey === tile.key}
-                          onPin={() => togglePin(tile.key)}
-                          micPublishEnabled={isLocalStudioTile ? active.isMicEnabled : undefined}
-                          onTogglePublishMic={isLocalStudioTile ? active.toggleMic : undefined}
-                          fill={shouldFillTiles}
+                          key={screenTiles[0]!.key}
+                          tile={screenTiles[0]!}
+                          className="h-full w-full rounded-2xl bg-black"
+                          showPin={false}
+                          isPinned={false}
+                          onPin={() => {}}
+                          fill
                           showBadge={false}
                         />
-                      );
-                    })}
-                    {visibleTiles.length === 0 && (
-                      <div className="flex aspect-[4/3] items-center justify-center rounded-xl border border-dashed border-slate-700 bg-black/40 text-sm text-slate-500">
-                        Waiting for camera feed...
                       </div>
-                    )}
-                  </div>
+                      {webcamTiles.length > 0 && (
+                        <div className="flex shrink-0 gap-2 overflow-x-auto">
+                          {webcamTiles.map((tile) => {
+                            const isLocalStudioTile = tile.key === 'studio-local-camera';
+                            return (
+                              <div key={tile.key} className="h-24 w-32 shrink-0">
+                                <ParticipantTile
+                                  tile={tile}
+                                  className="h-full w-full rounded-xl bg-black"
+                                  showPin={false}
+                                  isPinned={false}
+                                  onPin={() => {}}
+                                  micPublishEnabled={isLocalStudioTile ? active.isMicEnabled : undefined}
+                                  onTogglePublishMic={isLocalStudioTile ? active.toggleMic : undefined}
+                                  fill
+                                  showBadge={false}
+                                />
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div
+                      className={`grid h-full w-full gap-3 ${
+                        studioUiAccess.canSendInvites && showStudioInvitePanel ? 'mx-auto max-w-[980px]' : ''
+                      } ${stageGridClass}`}
+                    >
+                      {visibleTiles.map((tile) => {
+                        const isLocalStudioTile =
+                          tile.key === 'studio-local-camera' || tile.key === 'studio-local-screen';
+                        return (
+                          <ParticipantTile
+                            key={tile.key}
+                            tile={tile}
+                            className={tileClassName}
+                            showPin
+                            isPinned={pinnedTileKey === tile.key}
+                            onPin={() => togglePin(tile.key)}
+                            micPublishEnabled={isLocalStudioTile ? active.isMicEnabled : undefined}
+                            onTogglePublishMic={isLocalStudioTile ? active.toggleMic : undefined}
+                            fill={shouldFillTiles}
+                            showBadge={false}
+                          />
+                        );
+                      })}
+                      {visibleTiles.length === 0 && (
+                        <div className="flex aspect-[4/3] items-center justify-center rounded-xl border border-dashed border-slate-700 bg-black/40 text-sm text-slate-500">
+                          Waiting for camera feed...
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -2950,6 +3127,16 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                           </div>
                         ) : (
                           <div className="mt-3 h-1.5 w-full rounded-full bg-[#2f3748]/65" />
+                        )}
+                        {/* U1: Remove button for host during stopped_uploading phase */}
+                        {stoppedUploadingPhase && studioUiAccess.canManageParticipants && person.id !== 'local-live' && person.role !== 'Host' && (
+                          <button
+                            type="button"
+                            onClick={() => void handleRemoveParticipant(person.id)}
+                            className="mt-2 w-full rounded border border-red-500/40 px-2 py-1 text-[11px] text-red-300 hover:bg-red-500/10"
+                          >
+                            Remove
+                          </button>
                         )}
                       </div>
                     ))}

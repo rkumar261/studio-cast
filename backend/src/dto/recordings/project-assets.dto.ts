@@ -17,6 +17,12 @@ export type ProjectAssetWorkItemDto = {
   participantId?: string;
 };
 
+export type QualityWarningsDto = {
+  audioWarning?: string;
+  videoWarning?: string;
+  durationWarning?: boolean;
+};
+
 export type ProjectMediaAssetDto = {
   id: string;
   kind: 'combined' | 'participant';
@@ -47,6 +53,8 @@ export type ProjectMediaAssetDto = {
     role: string;
     name?: string;
   };
+  /** P4/P5: quality warnings detected post-transcode */
+  qualityWarnings?: QualityWarningsDto;
 };
 
 export type ProjectTranscriptAssetDto = {

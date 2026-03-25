@@ -60,6 +60,14 @@ export async function finalizeTrackCaptureService(args: {
     captureClosedAtFromClient = parsed;
   }
 
+  let recordingStartedAtFromClient: Date | null = null;
+  if (args.body.recordingStartedAt) {
+    const parsed = new Date(args.body.recordingStartedAt);
+    if (!Number.isNaN(parsed.getTime())) {
+      recordingStartedAtFromClient = parsed;
+    }
+  }
+
   const finalizeRequestedAt = new Date();
   const nextFinalSeq = Math.max(track.final_seq ?? 0, args.body.finalSeq);
   const nextCaptureClosedAt = track.capture_closed_at ?? captureClosedAtFromClient ?? finalizeRequestedAt;
@@ -75,6 +83,7 @@ export async function finalizeTrackCaptureService(args: {
       lifecycle_state: 'finalized',
       failed_at: null,
       failure_reason: null,
+      ...(recordingStartedAtFromClient ? { recording_started_at: recordingStartedAtFromClient } : {}),
     },
     select: {
       id: true,

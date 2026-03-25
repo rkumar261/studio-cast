@@ -52,8 +52,8 @@ type ParticipantTrackRow = {
 };
 
 const PARTICIPANT_MASTER_KIND_PRIORITY: Record<ParticipantTrackRow['kind'], number> = {
-  video: 0,
-  screen: 1,
+  screen: 0,
+  video: 1,
   audio: 2,
 };
 

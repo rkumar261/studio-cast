@@ -362,6 +362,31 @@ export default function RecordingDetailPage() {
                         </p>
                       )}
 
+                      {asset.qualityWarnings && (asset.qualityWarnings.audioWarning || asset.qualityWarnings.videoWarning || asset.qualityWarnings.durationWarning) && (
+                        <div className="mt-3 flex flex-wrap gap-1.5">
+                          {asset.qualityWarnings.audioWarning === 'no_audio_stream' && (
+                            <span className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-400">
+                              ⚠ No audio detected
+                            </span>
+                          )}
+                          {asset.qualityWarnings.videoWarning === 'black_video' && (
+                            <span className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-400">
+                              ⚠ Video appears black
+                            </span>
+                          )}
+                          {asset.qualityWarnings.videoWarning === 'insufficient_frames' && (
+                            <span className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-400">
+                              ⚠ Very short video
+                            </span>
+                          )}
+                          {asset.qualityWarnings.durationWarning && (
+                            <span className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-400">
+                              ⚠ Duration mismatch
+                            </span>
+                          )}
+                        </div>
+                      )}
+
                       <div className="mt-3 flex flex-wrap gap-2">
                         {(asset.state === 'ready' ? asset.actions : []).map((action) => (
                           <button

@@ -256,6 +256,7 @@ model track {
   failed_at             DateTime?             @db.Timestamptz(6)
   failure_reason        String?               @db.Text
   finalize_requested_at DateTime?             @db.Timestamptz(6)
+  recording_started_at  DateTime?             @db.Timestamptz(6)
   created_at            DateTime              @default(now()) @db.Timestamptz(6)
   updated_at            DateTime              @updatedAt @db.Timestamptz(6)
 
