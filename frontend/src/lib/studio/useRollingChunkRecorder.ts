@@ -34,6 +34,12 @@ type RecorderState = {
   source: RollingRecorderSource;
 };
 
+const RECORDER_BITRATE_BY_KIND: Record<ChunkKind, number> = {
+  audio: 128_000,      // 128 kbps — consistent opus quality
+  video: 2_500_000,    // 2.5 Mbps — predictable chunk sizes across machines
+  screen: 2_500_000,
+};
+
 function pickMimeType(kind: ChunkKind): string | undefined {
   const candidates =
     kind === 'audio'
@@ -127,9 +133,11 @@ export function useRollingChunkRecorder(args: UseRollingChunkRecorderArgs) {
 
       try {
         const mimeType = pickMimeType(source.kind);
-        const recorder = mimeType
-          ? new MediaRecorder(source.stream, { mimeType })
-          : new MediaRecorder(source.stream);
+        const recorderOpts: MediaRecorderOptions = {
+          bitsPerSecond: RECORDER_BITRATE_BY_KIND[source.kind],
+          ...(mimeType ? { mimeType } : {}),
+        };
+        const recorder = new MediaRecorder(source.stream, recorderOpts);
 
         recorder.ondataavailable = (event) => {
           const blob = event.data;

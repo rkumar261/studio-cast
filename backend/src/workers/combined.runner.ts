@@ -30,13 +30,75 @@ function pickExtensionFromKey(storageKey: string): string {
   return parsed;
 }
 
-async function runFfmpegConcat(concatListPath: string, outputPath: string) {
+/**
+ * Concatenate multiple MP4/video files sequentially using filter_complex concat.
+ * Unlike the concat demuxer with -c copy, this re-encodes each segment, which
+ * resets timestamps at segment boundaries and avoids edit-list / timebase
+ * discontinuities that cause skipping or broken seeking in the combined output.
+ *
+ * Audio-less inputs are padded with finite silence so concat filter doesn't fail.
+ */
+async function runFfmpegConcat(inputPaths: string[], outputPath: string) {
+  const n = inputPaths.length;
+  if (n === 0) throw new Error('concat_no_inputs');
+
+  // Probe all inputs to determine which have audio streams.
+  const probes = await Promise.all(
+    inputPaths.map(async (p) => {
+      try {
+        const probe = await ffprobeJson(p);
+        const hasAudio = probe.streams?.some((s) => s.codec_type === 'audio') ?? false;
+        const durationSec = toSec(probe.format?.duration) ?? 0;
+        return { hasAudio, durationSec };
+      } catch {
+        return { hasAudio: false, durationSec: 0 };
+      }
+    })
+  );
+
+  const anyAudio = probes.some((p) => p.hasAudio);
+  const inputs = inputPaths.flatMap((p) => ['-i', p]);
+
+  // Build filter_complex: for each input, ensure there's both a video and audio label.
+  // Audio-less inputs get finite anullsrc silence matching their duration.
+  const filterParts: string[] = [];
+  const concatVideoLabels: string[] = [];
+  const concatAudioLabels: string[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const { hasAudio, durationSec } = probes[i]!;
+    concatVideoLabels.push(`[v${i}]`);
+
+    if (anyAudio) {
+      if (hasAudio) {
+        filterParts.push(`[${i}:a:0]aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a${i}]`);
+      } else {
+        // Finite silence for audio-less segment
+        const dur = durationSec > 0 ? durationSec.toFixed(3) : '1.000';
+        filterParts.push(`anullsrc=channel_layout=stereo:sample_rate=44100,atrim=duration=${dur},aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo[a${i}]`);
+      }
+      concatAudioLabels.push(`[a${i}]`);
+    }
+    filterParts.push(`[${i}:v:0]setpts=PTS-STARTPTS[v${i}]`);
+  }
+
+  const concatInputs = concatVideoLabels
+    .map((vl, i) => `${vl}${anyAudio ? concatAudioLabels[i] : ''}`)
+    .join('');
+  const audioOut = anyAudio ? ':a=1' : ':a=0';
+  filterParts.push(`${concatInputs}concat=n=${n}:v=1${audioOut}[outv]${anyAudio ? '[outa]' : ''}`);
+
+  const filterComplex = filterParts.join(';');
+  const mapArgs = ['-map', '[outv]', ...(anyAudio ? ['-map', '[outa]'] : [])];
+
   const args = [
     '-y',
-    '-f', 'concat',
-    '-safe', '0',
-    '-i', concatListPath,
-    '-c', 'copy',
+    ...inputs,
+    '-filter_complex', filterComplex,
+    ...mapArgs,
+    '-c:v', 'libx264', '-preset', 'medium', '-crf', '23', '-pix_fmt', 'yuv420p',
+    ...(anyAudio ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']),
+    '-movflags', '+faststart',
     outputPath,
   ];
 
@@ -49,7 +111,7 @@ async function runFfmpegConcat(concatListPath: string, outputPath: string) {
     child.on('error', reject);
     child.on('close', (code) => {
       if (code === 0) return resolve();
-      reject(new Error(`ffmpeg combined concat failed: ${stderr}`));
+      reject(new Error(`ffmpeg combined concat failed: ${stderr.slice(-2000)}`));
     });
   });
 }
@@ -241,16 +303,12 @@ export async function runCombinedComposition(args: {
 
   const selectedSources =
     args.mode === 'primary_only' ? [args.sources[0]!] : args.sources;
-  // side_by_side mode always re-encodes to H.264+AAC = .mp4.
-  // For other modes (copy passthrough), inherit the source extension.
-  const ext = args.mode === 'side_by_side' ? '.mp4' : pickExtensionFromKey(selectedSources[0]!.storageKey);
+  // All composition modes now produce H.264+AAC MP4 output.
+  // side_by_side and concat_all both re-encode; primary_only copies but wraps in mp4.
+  const ext = '.mp4';
   const composedTmpPath = path.join(
     os.tmpdir(),
     `studio-cast-combined-${args.recordingId}-${Date.now()}${ext}`
-  );
-  const concatListPath = path.join(
-    os.tmpdir(),
-    `studio-cast-combined-concat-${args.recordingId}-${Date.now()}.txt`
   );
   const localSources: Array<{ localPath: string; cleanup: () => Promise<void> }> = [];
   const audioLocalSources: Array<{ localPath: string; cleanup: () => Promise<void> }> = [];
@@ -276,13 +334,22 @@ export async function runCombinedComposition(args: {
       if (audioKey) {
         const audioResolved = await resolveStorageKeyToLocal(audioKey);
         audioLocalSources.push(audioResolved);
-        const mergedTmp = path.join(
-          os.tmpdir(),
-          `studio-cast-merge-${args.recordingId}-${i}-${Date.now()}.mp4`
-        );
-        mergedTmpPaths.push(mergedTmp);
-        await runFfmpegMergeAudio(src.localPath, audioResolved.localPath, mergedTmp);
-        processedPaths.push(mergedTmp);
+        // Guard: runFfmpegMergeAudio requires a video stream in the source.
+        // If the participant_asset has no video stream (e.g. audio-only track),
+        // skip the merge and use the source as-is.
+        const videoProbe = await ffprobeJson(src.localPath).catch(() => null);
+        const hasVideo = videoProbe?.streams?.some((s) => s.codec_type === 'video') ?? false;
+        if (!hasVideo) {
+          processedPaths.push(src.localPath);
+        } else {
+          const mergedTmp = path.join(
+            os.tmpdir(),
+            `studio-cast-merge-${args.recordingId}-${i}-${Date.now()}.mp4`
+          );
+          mergedTmpPaths.push(mergedTmp);
+          await runFfmpegMergeAudio(src.localPath, audioResolved.localPath, mergedTmp);
+          processedPaths.push(mergedTmp);
+        }
       } else {
         processedPaths.push(src.localPath);
       }
@@ -296,19 +363,16 @@ export async function runCombinedComposition(args: {
     } else {
       // concat_all (or side_by_side fallback for 5+ participants):
       // place participants sequentially one after another.
-      const concatList = processedPaths
-        .map((p) => `file '${p.replace(/'/g, `'\\''`)}'`)
-        .join('\n');
-      await fs.writeFile(concatListPath, `${concatList}\n`, 'utf8');
-      await runFfmpegConcat(concatListPath, composedTmpPath);
+      // Uses filter_complex concat (re-encodes) to reset timestamps at segment
+      // boundaries — avoids edit-list / timebase discontinuities from -c copy.
+      await runFfmpegConcat(processedPaths, composedTmpPath);
     }
 
     const stat = await fs.stat(composedTmpPath);
     if (!stat.size) throw new Error('combined_empty_output');
 
     const storageKey = `recordings/${args.recordingId}/combined/all-participants${ext}`;
-    const contentType =
-      ext === '.wav' ? 'audio/wav' : ext === '.mp4' ? 'video/mp4' : 'application/octet-stream';
+    const contentType = 'video/mp4';
     await uploadFinalToR2(composedTmpPath, storageKey, contentType);
 
     const probe = await ffprobeJson(composedTmpPath).catch(() => null);
@@ -343,6 +407,5 @@ export async function runCombinedComposition(args: {
       try { await fs.unlink(tmpPath); } catch { /* ignore */ }
     }
     try { await fs.unlink(composedTmpPath); } catch { /* ignore */ }
-    try { await fs.unlink(concatListPath); } catch { /* ignore */ }
   }
 }

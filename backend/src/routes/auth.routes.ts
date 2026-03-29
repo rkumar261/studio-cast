@@ -6,8 +6,9 @@ import { authGuard } from '../middlewares/auth.guard.js';
 import { createPkcePair } from '../lib/pkce.js';
 import { logout } from '../services/auth.service.js';
 
-const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN ?? 'localhost';
+const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || undefined; // undefined = no domain restriction
 const COOKIE_SECURE = String(process.env.COOKIE_SECURE ?? 'false') === 'true';
+const COOKIE_SAME_SITE = (process.env.COOKIE_SAME_SITE ?? 'lax') as 'lax' | 'strict' | 'none';
 
 // short lifetime for oauth cookies (seconds)
 const OAUTH_TMP_MAX_AGE = 60 * 5; // 5 minutes
@@ -27,7 +28,7 @@ const routes: FastifyPluginAsync = async (app) => {
     reply.setCookie('oauth_state', state, {
       path: '/',
       httpOnly: true,
-      sameSite: 'lax',
+      sameSite: COOKIE_SAME_SITE,
       secure: COOKIE_SECURE,
       domain: COOKIE_DOMAIN,
       maxAge: OAUTH_TMP_MAX_AGE,
@@ -35,7 +36,7 @@ const routes: FastifyPluginAsync = async (app) => {
     reply.setCookie('pkce_verifier', verifier, {
       path: '/',
       httpOnly: true,
-      sameSite: 'lax',
+      sameSite: COOKIE_SAME_SITE,
       secure: COOKIE_SECURE,
       domain: COOKIE_DOMAIN,
       maxAge: OAUTH_TMP_MAX_AGE,
@@ -86,14 +87,14 @@ const routes: FastifyPluginAsync = async (app) => {
     reply.setCookie('access_token', access, {
       path: '/',
       httpOnly: true,
-      sameSite: 'lax',
+      sameSite: COOKIE_SAME_SITE,
       secure: COOKIE_SECURE,
       // domain: COOKIE_DOMAIN,
     });
     reply.setCookie('refresh_token', refresh, {
       path: '/',
       httpOnly: true,
-      sameSite: 'lax',
+      sameSite: COOKIE_SAME_SITE,
       secure: COOKIE_SECURE,
       // domain: COOKIE_DOMAIN,
     });
@@ -120,14 +121,14 @@ const routes: FastifyPluginAsync = async (app) => {
       reply.setCookie('access_token', access, {
         path: '/',
         httpOnly: true,
-        sameSite: 'lax',
+        sameSite: COOKIE_SAME_SITE,
         secure: COOKIE_SECURE,
         domain: COOKIE_DOMAIN,
       });
       reply.setCookie('refresh_token', refresh, {
         path: '/',
         httpOnly: true,
-        sameSite: 'lax',
+        sameSite: COOKIE_SAME_SITE,
         secure: COOKIE_SECURE,
         domain: COOKIE_DOMAIN,
       });

@@ -4,6 +4,7 @@ import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import os from 'node:os';
 
+import { ffprobeJson } from '../lib/ffmpeg.js';
 import { resolveStorageKeyToLocal, uploadFinalToR2 } from '../lib/storage.js';
 
 /**
@@ -76,6 +77,12 @@ export async function runStitchForTrack(args: {
     const stat = await fs.stat(stitchedTmpPath);
     if (!stat.size) {
       throw new Error('stitch_empty_output');
+    }
+
+    // Validate the stitched file is a parseable media container before uploading.
+    const stitchProbe = await ffprobeJson(stitchedTmpPath);
+    if (!stitchProbe.streams?.length) {
+      throw new Error('stitch_invalid_output: no streams detected in stitched file');
     }
 
     const rawKey = `recordings/${recordingId}/tracks/${trackId}/raw/stitched${ext}`;

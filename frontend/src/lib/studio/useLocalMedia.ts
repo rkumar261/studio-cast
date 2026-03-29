@@ -77,9 +77,12 @@ export function useLocalMedia() {
 
         const prefs = loadTechCheckPrefs();
 
-        const audioConstraints: MediaTrackConstraints | true = prefs.audioInputId
-            ? { deviceId: { exact: prefs.audioInputId } }
-            : true;
+        const audioConstraints: MediaTrackConstraints = {
+            ...(prefs.audioInputId ? { deviceId: { exact: prefs.audioInputId } } : {}),
+            noiseSuppression: true,
+            echoCancellation: true,
+            autoGainControl: true,
+        };
 
         const videoConstraints: MediaTrackConstraints | true = prefs.videoInputId
             ? {

@@ -88,6 +88,7 @@ async function runJob(job: JobRow) {
         where: { id: track.participant_id },
         select: {
             id: true,
+            role: true,
             track: {
                 orderBy: [{ created_at: 'asc' }, { id: 'asc' }],
                 select: {
@@ -171,7 +172,12 @@ async function runJob(job: JobRow) {
         ) {
             const expectedMs =
                 track.recording.stopped_at.getTime() - track.recording_started_at.getTime();
-            if (Math.abs(duration_ms - expectedMs) > 5000) {
+            // Hosts are expected to record the full session; use a tight 5s tolerance.
+            // Guests may join late (their recording_started_at reflects the session start,
+            // not their actual join time), so use a 30s tolerance to avoid false positives.
+            const isHost = participant?.role === 'host';
+            const toleranceMs = isHost ? 5_000 : 30_000;
+            if (Math.abs(duration_ms - expectedMs) > toleranceMs) {
                 qualityWarnings.durationWarning = true;
             }
         }
