@@ -35,7 +35,7 @@ This scope is about:
 ---
 
 ## Product and delivery intent
-The system must move from a prototype-oriented implementation to a stable, user-complete Riverside-style product **without repeated scope drift**.
+The system must move from a prototype-oriented implementation to a stable, user-complete AI Enabled Recording Studio product **without repeated scope drift**.
 
 Delivery success means:
 - host flow is predictable from studio entry to usable project page

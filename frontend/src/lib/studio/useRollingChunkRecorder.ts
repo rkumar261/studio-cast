@@ -27,11 +27,19 @@ type UseRollingChunkRecorderArgs = {
   initialNextSeqByTrack?: Record<string, number>;
   onChunk: (chunk: RollingRecorderChunk) => void;
   onError?: (message: string) => void;
+  /** Called with an ISO timestamp when the first MediaRecorder actually starts. */
+  onStart?: (startedAt: string) => void;
 };
 
 type RecorderState = {
   recorder: MediaRecorder;
   source: RollingRecorderSource;
+};
+
+const RECORDER_BITRATE_BY_KIND: Record<ChunkKind, number> = {
+  audio: 128_000,      // 128 kbps — consistent opus quality
+  video: 2_500_000,    // 2.5 Mbps — predictable chunk sizes across machines
+  screen: 2_500_000,
 };
 
 function pickMimeType(kind: ChunkKind): string | undefined {
@@ -67,6 +75,7 @@ export function useRollingChunkRecorder(args: UseRollingChunkRecorderArgs) {
   const seqByTrackRef = useRef<Map<string, number>>(new Map());
   const onChunkRef = useRef(args.onChunk);
   const onErrorRef = useRef(args.onError);
+  const onStartRef = useRef(args.onStart);
 
   useEffect(() => {
     onChunkRef.current = args.onChunk;
@@ -75,6 +84,10 @@ export function useRollingChunkRecorder(args: UseRollingChunkRecorderArgs) {
   useEffect(() => {
     onErrorRef.current = args.onError;
   }, [args.onError]);
+
+  useEffect(() => {
+    onStartRef.current = args.onStart;
+  }, [args.onStart]);
 
   const initialNextSeqKey = useMemo(() => {
     const entries = Object.entries(args.initialNextSeqByTrack ?? {}).sort(([a], [b]) => a.localeCompare(b));
@@ -119,6 +132,7 @@ export function useRollingChunkRecorder(args: UseRollingChunkRecorderArgs) {
     teardown();
     setError(null);
 
+    let didFireOnStart = false;
     for (const source of args.sources) {
       const hasTrack = source.stream.getTracks().some((track) => track.readyState === 'live');
       if (!hasTrack) {
@@ -127,9 +141,11 @@ export function useRollingChunkRecorder(args: UseRollingChunkRecorderArgs) {
 
       try {
         const mimeType = pickMimeType(source.kind);
-        const recorder = mimeType
-          ? new MediaRecorder(source.stream, { mimeType })
-          : new MediaRecorder(source.stream);
+        const recorderOpts: MediaRecorderOptions = {
+          bitsPerSecond: RECORDER_BITRATE_BY_KIND[source.kind],
+          ...(mimeType ? { mimeType } : {}),
+        };
+        const recorder = new MediaRecorder(source.stream, recorderOpts);
 
         recorder.ondataavailable = (event) => {
           const blob = event.data;
@@ -157,6 +173,10 @@ export function useRollingChunkRecorder(args: UseRollingChunkRecorderArgs) {
         };
 
         recorder.start(timesliceMs);
+        if (!didFireOnStart) {
+          didFireOnStart = true;
+          onStartRef.current?.(new Date().toISOString());
+        }
         recordersRef.current.set(source.trackId, { recorder, source });
       } catch (err) {
         const message = `Could not start chunk recorder for ${source.kind}: ${(err as Error)?.message ?? 'unknown error'}`;

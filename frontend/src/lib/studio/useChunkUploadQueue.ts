@@ -295,12 +295,13 @@ export function useChunkUploadQueue(args: UseChunkUploadQueueArgs) {
 
       // Step 3: PUT the blob directly to R2 via the presigned URL.
       progressBytesByIdRef.current.set(item.id, 0);
+      const chunkMime = item.kind === 'audio' ? 'audio/webm' : 'video/webm';
       let putRes: Response;
       try {
         putRes = await fetch(uploadPlan.url, {
           method: 'PUT',
           body: item.blob,
-          headers: { 'Content-Type': 'video/webm' },
+          headers: { 'Content-Type': chunkMime },
         });
       } catch (err) {
         if (err instanceof TypeError) {

@@ -51,7 +51,7 @@ export async function buildApp() {
   });
 
   await app.register(cookie, {
-    secret: process.env.COOKIE_SECRET || 'riverside-dev-secret',
+    secret: process.env.COOKIE_SECRET || 'studio-cast-dev-secret',
   });
 
   await app.register(healthRoutes);

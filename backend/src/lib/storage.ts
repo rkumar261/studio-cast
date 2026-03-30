@@ -52,7 +52,7 @@ export async function downloadR2ObjectToTmp(key: string): Promise<{ localPath: s
 
     if (!res.Body) throw new Error(`R2 object has no Body for key ${key}`);
 
-    const tmpDir = path.join(os.tmpdir(), 'riverside-lite');
+    const tmpDir = path.join(os.tmpdir(), 'studio-cast');
     await ensureDir(tmpDir);
 
     const ext = path.extname(key) || '.bin';

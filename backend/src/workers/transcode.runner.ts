@@ -76,7 +76,7 @@ export async function runTranscodeForTrack(
     const tmpFinal = path.join(process.cwd(), `.tmp-final-${track.id}${ext}`);
     try {
         if (kind === 'audio') {
-            await transcodeAudio(rawLocal, tmpFinal);
+            await transcodeAudio(rawLocal, tmpFinal, { denoise: !!process.env.RNNOISE_MODEL_PATH });
         } else {
             await transcodeVideo(rawLocal, tmpFinal, {
                 targetFps: 30,
@@ -132,33 +132,41 @@ export async function runTranscodeForTrack(
 }
 
 /**
- * P5: Sample 3 frames (start, mid, near-end) via ffmpeg signalstats.
- * Returns true if ALL 3 frames have average luminance (YAVG) < 8 (< 3% brightness).
+ * P5: Sample 3 frames (5%, 50%, 95% of duration) via ffmpeg signalstats.
+ * Each frame is seeked independently so we actually hit start, middle, and near-end.
+ * Returns true if ALL sampled frames have average luminance (YAVG) < 8 (< 3% brightness).
  * Guard: skip if duration < 1s.
+ *
+ * NOTE: The select filter approach (`select='gte(t,0)+...'`) does NOT work for
+ * multi-point sampling because gte(t,0) is always true, causing -frames:v 3 to
+ * grab only the first 3 frames. Three separate -ss seeks are required.
  */
 async function checkBlackVideo(filePath: string, durationSec: number): Promise<boolean> {
-    const half = (durationSec / 2).toFixed(3);
-    const end = (durationSec * 0.99).toFixed(3);
-    const filter = `select='gte(t,0)+gte(t,${half})+gte(t,${end})',signalstats`;
-
-    const args = [
-        '-i', filePath,
-        '-vf', filter,
-        '-frames:v', '3',
-        '-f', 'null',
-        '-',
+    const samplePoints = [
+        durationSec * 0.05,
+        durationSec * 0.50,
+        durationSec * 0.95,
     ];
 
-    const stderr = await new Promise<string>((resolve) => {
-        const child = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
-        let out = '';
-        child.stderr.on('data', (d) => (out += String(d)));
-        child.on('close', () => resolve(out));
-        child.on('error', () => resolve(''));
-    });
+    async function sampleYavgAt(seekSec: number): Promise<number | null> {
+        const stderr = await new Promise<string>((resolve) => {
+            const child = spawn('ffmpeg', [
+                '-ss', seekSec.toFixed(3),
+                '-i', filePath,
+                '-vf', 'signalstats',
+                '-frames:v', '1',
+                '-f', 'null', '-',
+            ], { stdio: ['ignore', 'ignore', 'pipe'] });
+            let out = '';
+            child.stderr.on('data', (d) => (out += String(d)));
+            child.on('close', () => resolve(out));
+            child.on('error', () => resolve(''));
+        });
+        const m = stderr.match(/YAVG:([0-9.]+)/);
+        return m ? Number(m[1]) : null;
+    }
 
-    // Parse YAVG values from signalstats output
-    const yavgMatches = [...stderr.matchAll(/YAVG:([0-9.]+)/g)];
-    if (yavgMatches.length === 0) return false;
-    return yavgMatches.every((m) => Number(m[1]) < 8);
+    const yavgs = (await Promise.all(samplePoints.map(sampleYavgAt))).filter((v): v is number => v !== null);
+    if (yavgs.length === 0) return false;
+    return yavgs.every((y) => y < 8);
 }

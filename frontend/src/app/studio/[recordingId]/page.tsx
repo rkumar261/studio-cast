@@ -584,6 +584,9 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   // Guests receive it and include it in finalizeTrack so the transcode worker can
   // compute expected_duration_ms and flag deviations >5s.
   const [sessionStartedAt, setSessionStartedAt] = useState<string | null>(null);
+  // Actual time the local MediaRecorder first started — more accurate than sessionStartedAt
+  // for guests who join slightly after the session begins.
+  const [actualRecorderStartedAt, setActualRecorderStartedAt] = useState<string | null>(null);
 
   // P3/U2: stream quality probe — detects black video / silent audio on join
   const { probe: probeStreamQuality, result: streamQualityResult } = useStreamQualityProbe();
@@ -1496,8 +1499,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     if (trackIds.length === 0) return;
 
     const captureClosedAt = new Date().toISOString();
-    // P2: include recording start time so transcode worker can flag duration deviations
-    const startedAt = sessionStartedAt ?? recordingSession?.startedAt ?? undefined;
+    // P2: use actual MediaRecorder start time when available (more accurate for guests
+    // who join a few seconds after the session begins), falling back to the broadcast
+    // session start time from the host.
+    const startedAt = actualRecorderStartedAt ?? sessionStartedAt ?? recordingSession?.startedAt ?? undefined;
     await Promise.all(
       trackIds.map(async (trackId) => {
         const observedFinalSeq = latestChunkSeqByTrackRef.current.get(trackId) ?? 0;
@@ -1514,7 +1519,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         });
       })
     );
-  }, [recordingId, recoveredNextSeqByTrack, recordingSession?.startedAt, sessionMode, sessionStartedAt, trackIdByKind]);
+  }, [actualRecorderStartedAt, recordingId, recoveredNextSeqByTrack, recordingSession?.startedAt, sessionMode, sessionStartedAt, trackIdByKind]);
 
   // Auto-finalize guest tracks when the host stops the session.
   // Guests never call handleToggleRecordingSession, so this is the only place
@@ -1552,6 +1557,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     initialNextSeqByTrack: recoveredNextSeqByTrack,
     onChunk: onChunkEmitted,
     onError: setRecorderError,
+    onStart: setActualRecorderStartedAt,
   });
 
   const active = engine === 'livekit'
@@ -2285,7 +2291,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 <Link href="/" className="text-slate-400 hover:text-slate-100">
                   ←
                 </Link>
-                <p className="text-2xl font-semibold tracking-[0.2em]">RIVERSIDE</p>
+                <p className="text-2xl font-semibold tracking-[0.2em]">STUDIO CAST</p>
               </div>
             </header>
 
@@ -2333,7 +2339,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               <Link href="/" className="text-slate-400 hover:text-slate-100">
                 ←
               </Link>
-              <p className="text-2xl font-semibold tracking-[0.2em]">RIVERSIDE</p>
+              <p className="text-2xl font-semibold tracking-[0.2em]">STUDIO CAST</p>
               <span className="text-slate-600">|</span>
               <p className="text-xl text-slate-300">{displayName || 'Host'}&apos;s Studio</p>
             </div>
@@ -2722,7 +2728,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               <Link href="/" className="rounded-full p-1 text-slate-300 hover:bg-[#1b2130] hover:text-white">
                 ←
               </Link>
-              <p className="text-xl font-semibold tracking-[0.2em] text-slate-100">RIVERSIDE</p>
+              <p className="text-xl font-semibold tracking-[0.2em] text-slate-100">STUDIO CAST</p>
               <span className="text-slate-600">|</span>
               <p className="truncate text-base text-slate-400">{displayName || 'Host'} KUMAR&apos;s Studio</p>
               <p className="truncate text-xl font-semibold text-slate-100">Untitled Recording</p>

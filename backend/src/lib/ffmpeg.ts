@@ -66,10 +66,23 @@ export async function ffprobeJson(inputPath: string): Promise<ProbeResult> {
 }
 
 /**
- * Transcode audio to WAV, 48 kHz, PCM s16le
+ * Transcode audio to WAV, 48 kHz, PCM s16le.
+ * Optionally applies RNNoise ML denoising via ffmpeg's arnndn filter.
+ * Set RNNOISE_MODEL_PATH env var to the .rnnn model file path to enable.
  * (You can switch to AAC/M4A later; WAV is simplest for ASR.)
  */
-export async function transcodeAudio(inputPath: string, outPath: string): Promise<void> {
+export async function transcodeAudio(inputPath: string, outPath: string, opts?: {
+    denoise?: boolean;
+}): Promise<void> {
+    const audioFilters: string[] = [];
+
+    if (opts?.denoise) {
+        const modelPath = process.env.RNNOISE_MODEL_PATH;
+        if (modelPath) {
+            audioFilters.push(`arnndn=m=${modelPath}`);
+        }
+    }
+
     const args = [
         '-y',
         '-i', inputPath,
@@ -77,6 +90,7 @@ export async function transcodeAudio(inputPath: string, outPath: string): Promis
         '-ac', '1',         // mono (or '2' for stereo)
         '-ar', '48000',     // 48 kHz
         '-sample_fmt', 's16',
+        ...(audioFilters.length ? ['-af', audioFilters.join(',')] : []),
         outPath,
     ];
     const { code, stderr } = await run('ffmpeg', args);

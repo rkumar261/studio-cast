@@ -29,6 +29,7 @@ type CompositionSource = {
   storageKey: string;
   updatedAtIso: string;
   audioStorageKey?: string;
+  startOffsetSec?: number;
 };
 
 function normalizeJsonObject(value: Prisma.JsonValue | null | undefined): Record<string, unknown> | undefined {
@@ -82,7 +83,7 @@ function resolveCompositionMode(): CombinedCompositionMode {
 
 function buildSourceFingerprint(mode: CombinedCompositionMode, sources: CompositionSource[]) {
   const sourceHash = sources
-    .map((source) => `${source.id}:${source.updatedAtIso}:${source.audioStorageKey ?? ''}`)
+    .map((source) => `${source.id}:${source.updatedAtIso}:${source.audioStorageKey ?? ''}:${(source.startOffsetSec ?? 0).toFixed(3)}`)
     .join('|');
   return `${mode}:${sourceHash}`;
 }
@@ -107,7 +108,7 @@ export async function reconcileCombinedAssetForRecording(args: {
   composeRunner?: (args: {
     recordingId: string;
     mode: CombinedCompositionMode;
-    sources: Array<{ id: string; storageKey: string; audioStorageKey?: string }>;
+    sources: Array<{ id: string; storageKey: string; audioStorageKey?: string; startOffsetSec?: number }>;
   }) => Promise<CombinedCompositionOutcome>;
 }): Promise<
   | { code: 'ok'; composed: boolean; asset: CombinedAssetPayload }
@@ -193,21 +194,82 @@ export async function reconcileCombinedAssetForRecording(args: {
 
   const mode = resolveCompositionMode();
 
-  // Gather processed audio tracks per participant to mix into video sources.
   const participantIds = readyParticipants.map((p) => p.participantId);
-  const audioTracks = participantIds.length > 0
-    ? await prisma.track.findMany({
-        where: {
-          recording_id: args.recordingId,
-          participant_id: { in: participantIds },
-          kind: 'audio',
-          state: 'processed',
-          storage_key_final: { not: null },
-        },
-        select: { participant_id: true, storage_key_final: true },
-        orderBy: { created_at: 'asc' },
-      })
-    : [];
+
+  // Fetch session start time and per-participant master track recording_started_at
+  // so we can compute join offsets for timeline alignment in the combined output.
+  const [recording, masterTracks, audioTracks] = await Promise.all([
+    prisma.recording.findUnique({
+      where: { id: args.recordingId },
+      select: { started_at: true },
+    }),
+    participantIds.length > 0
+      ? prisma.track.findMany({
+          where: {
+            recording_id: args.recordingId,
+            participant_id: { in: participantIds },
+            kind: { in: ['video', 'screen'] },
+            state: 'processed',
+            storage_key_final: { not: null },
+          },
+          select: { participant_id: true, kind: true, recording_started_at: true, created_at: true },
+          orderBy: { created_at: 'asc' },
+        })
+      : Promise.resolve([]),
+    // Gather processed audio tracks per participant to mix into video sources.
+    participantIds.length > 0
+      ? prisma.track.findMany({
+          where: {
+            recording_id: args.recordingId,
+            participant_id: { in: participantIds },
+            kind: 'audio',
+            state: 'processed',
+            storage_key_final: { not: null },
+          },
+          select: { participant_id: true, storage_key_final: true },
+          orderBy: { created_at: 'asc' },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  // Build per-participant start offset: seconds after session start when their
+  // recorder actually began. Guests who join late will have a positive offset.
+  const sessionStartMs = recording?.started_at?.getTime() ?? null;
+  const KIND_PRIORITY: Record<string, number> = { screen: 0, video: 1, audio: 2 };
+  // For each participant pick master track (screen > video priority, earliest created_at).
+  const masterByParticipant = new Map<string, Date | null>();
+  for (const t of masterTracks) {
+    const existing = masterByParticipant.get(t.participant_id);
+    if (existing === undefined) {
+      masterByParticipant.set(t.participant_id, t.recording_started_at);
+    } else {
+      // Already have one — keep only if this track has higher priority.
+      // (masterTracks is ordered by created_at asc so within same kind first wins.)
+    }
+  }
+  // Re-run with proper priority sort (screen beats video regardless of created_at).
+  masterByParticipant.clear();
+  const sortedMasterTracks = [...masterTracks].sort((a, b) => {
+    const pd = (KIND_PRIORITY[a.kind] ?? 99) - (KIND_PRIORITY[b.kind] ?? 99);
+    if (pd !== 0) return pd;
+    return a.created_at.getTime() - b.created_at.getTime();
+  });
+  for (const t of sortedMasterTracks) {
+    if (!masterByParticipant.has(t.participant_id)) {
+      masterByParticipant.set(t.participant_id, t.recording_started_at);
+    }
+  }
+
+  const startOffsetSecByParticipant = new Map<string, number>();
+  for (const [participantId, recordingStartedAt] of masterByParticipant) {
+    if (sessionStartMs != null && recordingStartedAt != null) {
+      const offsetMs = recordingStartedAt.getTime() - sessionStartMs;
+      startOffsetSecByParticipant.set(participantId, Math.max(0, offsetMs / 1000));
+    } else {
+      startOffsetSecByParticipant.set(participantId, 0);
+    }
+  }
+
   const audioByParticipant = new Map(
     audioTracks.map((t) => [t.participant_id, t.storage_key_final!])
   );
@@ -219,6 +281,7 @@ export async function reconcileCombinedAssetForRecording(args: {
             id: readyParticipants[0]!.asset!.id,
             storageKey: readyParticipants[0]!.asset!.storageKey as string,
             audioStorageKey: audioByParticipant.get(readyParticipants[0]!.participantId),
+            startOffsetSec: startOffsetSecByParticipant.get(readyParticipants[0]!.participantId) ?? 0,
             updatedAtIso: readyParticipants[0]!.asset!.readyAt ?? readyParticipants[0]!.asset!.processingStartedAt ?? new Date(0).toISOString(),
           },
         ]
@@ -226,6 +289,7 @@ export async function reconcileCombinedAssetForRecording(args: {
           id: participant.asset!.id,
           storageKey: participant.asset!.storageKey as string,
           audioStorageKey: audioByParticipant.get(participant.participantId),
+          startOffsetSec: startOffsetSecByParticipant.get(participant.participantId) ?? 0,
           updatedAtIso:
             participant.asset!.readyAt ??
             participant.asset!.processingStartedAt ??
@@ -318,6 +382,7 @@ export async function reconcileCombinedAssetForRecording(args: {
         id: source.id,
         storageKey: source.storageKey,
         audioStorageKey: source.audioStorageKey,
+        startOffsetSec: source.startOffsetSec,
       })),
     });
 

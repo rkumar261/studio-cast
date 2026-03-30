@@ -17,6 +17,7 @@ import { authGuard } from '../middlewares/auth.guard.js';
 import { emitTelemetry } from '../lib/telemetry.js';
 
 const COOKIE_SECURE = String(process.env.COOKIE_SECURE ?? 'false') === 'true';
+const COOKIE_SAME_SITE = (process.env.COOKIE_SAME_SITE ?? 'lax') as 'lax' | 'strict' | 'none';
 
 function inviteTokenHashPrefix(token: string | undefined): string | undefined {
   const normalized = token?.trim();
@@ -62,7 +63,7 @@ export default async function participantRoutes(app: FastifyInstance) {
       res.setCookie('guest_access_token', result.guestAccessToken, {
         path: '/',
         httpOnly: true,
-        sameSite: 'lax',
+        sameSite: COOKIE_SAME_SITE,
         secure: COOKIE_SECURE,
       });
 
@@ -106,7 +107,7 @@ export default async function participantRoutes(app: FastifyInstance) {
       res.setCookie('guest_access_token', result.guestAccessToken, {
         path: '/',
         httpOnly: true,
-        sameSite: 'lax',
+        sameSite: COOKIE_SAME_SITE,
         secure: COOKIE_SECURE,
       });
 
