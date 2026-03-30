@@ -13,7 +13,7 @@ export default function CreateRecordingForm() {
     setBusy(true);
     try {
       const { recording } = await RecordingsAPI.create(title.trim() || undefined);
-      router.push(`/recordings/${recording.id}`);
+      router.push(`/projects/${recording.id}`);
     } catch (e) {
       alert((e as Error).message);
     } finally {

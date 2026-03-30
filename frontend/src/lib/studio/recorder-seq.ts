@@ -1,5 +1,5 @@
 export function sanitizeNextSeq(nextSeq: number | undefined): number {
-  if (!Number.isFinite(nextSeq)) return 1;
+  if (typeof nextSeq !== 'number' || !Number.isFinite(nextSeq)) return 1;
   return Math.max(1, Math.floor(nextSeq));
 }
 

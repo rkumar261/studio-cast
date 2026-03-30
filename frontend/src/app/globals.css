@@ -1,28 +1,76 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #0c0b12;
+  --foreground: #f5f7fa;
+  --workspace-bg: #0d0d10;
+  --workspace-shell: #111114;
+  --workspace-canvas: #17171a;
+  --workspace-card: #202024;
+  --workspace-card-elevated: #25252b;
+  --workspace-border: rgba(255, 255, 255, 0.08);
+  --workspace-border-strong: rgba(255, 255, 255, 0.16);
+  --workspace-text-primary: #f8fafc;
+  --workspace-text-secondary: #cbd5e1;
+  --workspace-text-muted: #8f96a3;
+  --workspace-purple: #7c5cff;
+  --workspace-purple-soft: rgba(124, 92, 255, 0.14);
+  --workspace-red: #f45774;
+  --workspace-green: #65d481;
+  --workspace-lime: #b9ef5a;
+  --workspace-radius-xl: 1.75rem;
+  --workspace-radius-lg: 1.25rem;
+  --workspace-radius-md: 1rem;
+  --workspace-gap: 1.5rem;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
+  --font-sans: var(--font-space-grotesk);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-space-grotesk), Arial, Helvetica, sans-serif;
+  text-rendering: optimizeLegibility;
+}
+
+a {
+  text-decoration: none;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+.workspace-surface {
+  border: 1px solid var(--workspace-border);
+  background: var(--workspace-card);
+}
+
+.workspace-canvas {
+  border: 1px solid var(--workspace-border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent 18%),
+    var(--workspace-canvas);
+  border-radius: var(--workspace-radius-xl);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.02),
+    0 18px 50px rgba(0, 0, 0, 0.28);
+}
+
+.workspace-section-enter {
+  animation: studio-rise 0.35s ease-out;
 }
 
 @keyframes studio-rise {

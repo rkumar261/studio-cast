@@ -87,7 +87,10 @@ export default function TranscriptPanel(props: Props) {
     loadTranscript();
   }, [loadTranscript]);
 
-  const activeSegments = editMode ? draftSegments : (data?.segments ?? []);
+  const activeSegments = useMemo(
+    () => (editMode ? draftSegments : (data?.segments ?? [])),
+    [data?.segments, draftSegments, editMode]
+  );
 
   const filteredSegments = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();

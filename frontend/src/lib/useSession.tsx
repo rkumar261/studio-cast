@@ -14,9 +14,29 @@ interface SessionContextType {
   isLoading: boolean;
   setProfile: (p: Profile) => void;
   refreshProfile: () => Promise<void>;
+  logout: () => Promise<void>;
 }
 
 const SessionContext = createContext<SessionContextType | undefined>(undefined);
+
+function clearFrontendSessionCookies() {
+  if (typeof document === 'undefined') return;
+
+  document.cookie = 'studio_cast_session=; Path=/; Max-Age=0; SameSite=Lax';
+  document.cookie = 'access_token=; Path=/; Max-Age=0; SameSite=Lax';
+}
+
+function syncSessionMarkerCookie(isAuthed: boolean) {
+  if (typeof document === 'undefined') return;
+
+  if (!isAuthed) {
+    clearFrontendSessionCookies();
+    return;
+  }
+
+  const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = `studio_cast_session=1; Path=/; SameSite=Lax${secure}`;
+}
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [profile, setProfile] = useState<Profile>(null);
@@ -25,10 +45,24 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   async function refreshProfile() {
     try {
       const user = await AuthAPI.me();
+      syncSessionMarkerCookie(true);
       setProfile(user);
     } catch {
+      syncSessionMarkerCookie(false);
       setProfile(null);
     } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function logout() {
+    try {
+      await AuthAPI.logout();
+    } catch {
+      // Clear local session state even if the network request fails.
+    } finally {
+      clearFrontendSessionCookies();
+      setProfile(null);
       setIsLoading(false);
     }
   }
@@ -38,7 +72,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <SessionContext.Provider value={{ profile, isLoading, setProfile, refreshProfile }}>
+    <SessionContext.Provider value={{ profile, isLoading, setProfile, refreshProfile, logout }}>
       {children}
     </SessionContext.Provider>
   );

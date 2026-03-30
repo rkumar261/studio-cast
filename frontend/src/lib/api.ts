@@ -43,19 +43,21 @@ async function api<T>(
   }
 
   if (!res.ok) {
-    let detail: any = undefined;
+    let detail: unknown = undefined;
     try {
       detail = await res.json();
     } catch {
       detail = undefined;
     }
+    const detailRecord =
+      typeof detail === 'object' && detail !== null ? (detail as Record<string, unknown>) : null;
     const code =
-      typeof detail === 'object' && detail !== null
-        ? String(detail.code ?? detail.error ?? 'http_error')
+      detailRecord
+        ? String(detailRecord.code ?? detailRecord.error ?? 'http_error')
         : 'http_error';
     const message =
-      typeof detail === 'object' && detail !== null && 'message' in detail
-        ? String(detail.message)
+      detailRecord && 'message' in detailRecord
+        ? String(detailRecord.message)
         : `HTTP ${res.status}`;
     const requestId = res.headers.get('x-request-id') ?? undefined;
     const err = new Error(message) as Error & {
@@ -65,7 +67,7 @@ async function api<T>(
       status?: number;
     };
     err.code = code;
-    err.details = typeof detail === 'object' && detail !== null ? detail.details : undefined;
+    err.details = detailRecord?.details;
     err.requestId = requestId;
     err.status = res.status;
     throw err;
