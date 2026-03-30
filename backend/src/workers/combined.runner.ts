@@ -12,6 +12,12 @@ export type CombinedCompositionSource = {
   storageKey: string;
   /** Optional separate audio-only track to merge into the video source. */
   audioStorageKey?: string;
+  /**
+   * Seconds after the session start when this participant's recorder actually
+   * began. Used to prepend black video + silence so all tiles are aligned to
+   * the same session timeline. Defaults to 0 (no prepend).
+   */
+  startOffsetSec?: number;
 };
 
 export type CombinedCompositionOutcome = {
@@ -162,7 +168,11 @@ async function runFfmpegMergeAudio(videoPath: string, audioPath: string, outputP
  *   the video stream ends, even if any padded stream extends slightly beyond.
  * Falls back to concat_all for 5+ participants.
  */
-async function runFfmpegSideBySide(processedPaths: string[], outputPath: string): Promise<void> {
+async function runFfmpegSideBySide(
+  processedPaths: string[],
+  outputPath: string,
+  startOffsets?: number[]
+): Promise<void> {
   const n = processedPaths.length;
   if (n === 0) throw new Error('side_by_side_no_sources');
 
@@ -181,29 +191,39 @@ async function runFfmpegSideBySide(processedPaths: string[], outputPath: string)
   );
   const audioFlags = probes.map((p) => p.hasAudio);
   const anyAudio = audioFlags.some(Boolean);
-  // maxDurationSec is the reference length for the combined output.
-  const maxDurationSec = Math.max(...probes.map((p) => p.durationSec), 0);
+  // Effective end time per source = startOffset + actualDuration.
+  // padTarget is the reference length for the combined output.
+  const effectiveEndTimes = probes.map((p, i) => (startOffsets?.[i] ?? 0) + p.durationSec);
+  const maxEffectiveDuration = Math.max(...effectiveEndTimes, 0);
   // Small buffer so tpad/apad filters always cover the full video.
-  const padTarget = maxDurationSec + 0.5;
+  const padTarget = maxEffectiveDuration + 0.5;
 
   const inputs = processedPaths.flatMap((p) => ['-i', p]);
 
   const TILE_W = 640;
-  const TILE_H = 360;
+  // For n=2: portrait tiles (640×720) so hstack → 1280×720 (16:9 standard output).
+  // For n=3/4: landscape tiles (640×360) so vstack rows → 1280×720 (16:9).
+  const tileH = n === 2 ? 720 : 360;
 
   // Scale each input to a consistent tile size.
-  // If a participant's video is shorter than the longest, tpad extends it with a
-  // frozen last frame so hstack never terminates early due to EOF from a shorter input.
+  // - tpad start_duration: prepends black frames for participants who joined after
+  //   the session started, aligning all tiles to the same session timeline.
+  // - tpad stop_duration: extends short tiles with a frozen last frame so hstack
+  //   never terminates early due to EOF from a shorter participant.
   const scaleFilters = probes
     .map(({ durationSec }, i) => {
-      const shortfall = padTarget - durationSec;
-      const tpadClause =
-        shortfall > 0.05
-          ? `,tpad=stop_mode=clone:stop_duration=${shortfall.toFixed(3)}`
-          : '';
+      const startOffset = startOffsets?.[i] ?? 0;
+      const stopShortfall = padTarget - (startOffset + durationSec);
+      const startPart = startOffset > 0.01
+        ? `start_duration=${startOffset.toFixed(3)}:start_mode=add:`
+        : '';
+      const stopPart = stopShortfall > 0.05
+        ? `stop_mode=clone:stop_duration=${stopShortfall.toFixed(3)}`
+        : `stop_mode=clone:stop_duration=0`;
       return (
-        `[${i}:v]scale=${TILE_W}:${TILE_H}:force_original_aspect_ratio=decrease,` +
-        `pad=${TILE_W}:${TILE_H}:(ow-iw)/2:(oh-ih)/2${tpadClause}[sv${i}]`
+        `[${i}:v]scale=${TILE_W}:${tileH}:force_original_aspect_ratio=decrease,` +
+        `pad=${TILE_W}:${tileH}:(ow-iw)/2:(oh-ih)/2,` +
+        `tpad=${startPart}${stopPart}[sv${i}]`
       );
     })
     .join(';');
@@ -211,12 +231,13 @@ async function runFfmpegSideBySide(processedPaths: string[], outputPath: string)
   // Build the tile layout.
   let videoFilter: string;
   if (n === 2) {
+    // Two portrait columns side by side → 1280×720 (16:9)
     videoFilter = `${scaleFilters};[sv0][sv1]hstack=inputs=2[v]`;
   } else if (n === 3) {
     videoFilter = [
       scaleFilters,
       `[sv0][sv1]hstack=inputs=2[top]`,
-      `[sv2]pad=${TILE_W * 2}:${TILE_H}:${TILE_W / 2}:0[bot]`,
+      `[sv2]pad=${TILE_W * 2}:${tileH}:${TILE_W / 2}:0[bot]`,
       `[top][bot]vstack=inputs=2[v]`,
     ].join(';');
   } else if (n === 4) {
@@ -235,17 +256,23 @@ async function runFfmpegSideBySide(processedPaths: string[], outputPath: string)
   let filterComplex = videoFilter;
 
   if (anyAudio) {
-    // For inputs WITH audio: apad extends to padTarget so amix doesn't terminate
-    // early when one participant's audio is slightly shorter than another's.
+    // For inputs WITH audio:
+    // - adelay prepends silence equal to the participant's join offset so audio
+    //   aligns to the session timeline (matches the tpad start prepend on video).
+    // - apad extends to padTarget so amix doesn't terminate early.
     // For inputs WITHOUT audio: finite silence via atrim'd anullsrc (avoids the
     // infinite-source hang that occurs with duration=longest + bare anullsrc).
     const audioPreFilters = probes
       .map(({ hasAudio, durationSec }, i) => {
+        const startOffset = startOffsets?.[i] ?? 0;
+        const effectiveEnd = startOffset + durationSec;
         if (hasAudio) {
-          const shortfall = padTarget - durationSec;
+          const delayMs = Math.round(startOffset * 1000);
+          const delayPart = delayMs > 50 ? `adelay=${delayMs}:all=1,` : '';
+          const shortfall = padTarget - effectiveEnd;
           return shortfall > 0.05
-            ? `[${i}:a:0]apad=whole_dur=${padTarget.toFixed(3)}[apad${i}]`
-            : `[${i}:a:0]anull[apad${i}]`;
+            ? `[${i}:a:0]${delayPart}apad=whole_dur=${padTarget.toFixed(3)}[apad${i}]`
+            : `[${i}:a:0]${delayPart}anull[apad${i}]`;
         }
         // Audio-less input: generate finite silence matching padTarget.
         return (
@@ -355,11 +382,13 @@ export async function runCombinedComposition(args: {
       }
     }
 
+    const startOffsets = selectedSources.map((s) => s.startOffsetSec ?? 0);
+
     if (processedPaths.length === 1) {
       await fs.copyFile(processedPaths[0]!, composedTmpPath);
     } else if (args.mode === 'side_by_side' && processedPaths.length <= 4) {
       // Side-by-side: all participants visible simultaneously in a tiled layout.
-      await runFfmpegSideBySide(processedPaths, composedTmpPath);
+      await runFfmpegSideBySide(processedPaths, composedTmpPath, startOffsets);
     } else {
       // concat_all (or side_by_side fallback for 5+ participants):
       // place participants sequentially one after another.

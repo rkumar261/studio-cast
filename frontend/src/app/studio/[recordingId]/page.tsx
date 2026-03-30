@@ -584,6 +584,9 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   // Guests receive it and include it in finalizeTrack so the transcode worker can
   // compute expected_duration_ms and flag deviations >5s.
   const [sessionStartedAt, setSessionStartedAt] = useState<string | null>(null);
+  // Actual time the local MediaRecorder first started — more accurate than sessionStartedAt
+  // for guests who join slightly after the session begins.
+  const [actualRecorderStartedAt, setActualRecorderStartedAt] = useState<string | null>(null);
 
   // P3/U2: stream quality probe — detects black video / silent audio on join
   const { probe: probeStreamQuality, result: streamQualityResult } = useStreamQualityProbe();
@@ -1496,8 +1499,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     if (trackIds.length === 0) return;
 
     const captureClosedAt = new Date().toISOString();
-    // P2: include recording start time so transcode worker can flag duration deviations
-    const startedAt = sessionStartedAt ?? recordingSession?.startedAt ?? undefined;
+    // P2: use actual MediaRecorder start time when available (more accurate for guests
+    // who join a few seconds after the session begins), falling back to the broadcast
+    // session start time from the host.
+    const startedAt = actualRecorderStartedAt ?? sessionStartedAt ?? recordingSession?.startedAt ?? undefined;
     await Promise.all(
       trackIds.map(async (trackId) => {
         const observedFinalSeq = latestChunkSeqByTrackRef.current.get(trackId) ?? 0;
@@ -1514,7 +1519,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         });
       })
     );
-  }, [recordingId, recoveredNextSeqByTrack, recordingSession?.startedAt, sessionMode, sessionStartedAt, trackIdByKind]);
+  }, [actualRecorderStartedAt, recordingId, recoveredNextSeqByTrack, recordingSession?.startedAt, sessionMode, sessionStartedAt, trackIdByKind]);
 
   // Auto-finalize guest tracks when the host stops the session.
   // Guests never call handleToggleRecordingSession, so this is the only place
@@ -1552,6 +1557,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     initialNextSeqByTrack: recoveredNextSeqByTrack,
     onChunk: onChunkEmitted,
     onError: setRecorderError,
+    onStart: setActualRecorderStartedAt,
   });
 
   const active = engine === 'livekit'
