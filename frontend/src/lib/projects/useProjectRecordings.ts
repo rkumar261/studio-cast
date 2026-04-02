@@ -23,8 +23,10 @@ export function buildProjectRecordingCards(
       buildRecordingCardViewModel({
         id: item.id,
         title: item.title,
+        participantNames: item.participantNames,
         state: item.status,
         createdAt: item.createdAt,
+        thumbnailUrl: item.thumbnailUrl,
         primaryAction: {
           label: 'Open project',
           href: `/projects/${item.id}`,

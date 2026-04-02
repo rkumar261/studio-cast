@@ -142,7 +142,8 @@
         "id": "rec_related_1",
         "title": "Related session",
         "status": "ready",
-        "createdAt": "2026-03-29T08:00:00.000Z"
+        "createdAt": "2026-03-29T08:00:00.000Z",
+        "thumbnailUrl": "https://example.com/project-related.jpg"
       }
     ]
   }

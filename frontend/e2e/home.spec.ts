@@ -21,6 +21,21 @@ test('signed-in user sees the dashboard shell and home sections', async ({ page 
   await expect(page.getByTestId('dashboard-ai-tools')).toBeVisible();
   await expect(page.getByTestId('recent-card-rec_home_1')).toBeVisible();
   await expect(page.locator('[data-testid^="recent-card-"]')).toHaveCount(2);
+  await expect(page.locator('img[alt="Raw & RAKESH"]')).toBeVisible();
+});
+
+test('recent cards fall back cleanly when thumbnail loading fails', async ({ page }) => {
+  await mockAuthedSession(page, { recordingsList: homeWithRecents });
+  await page.route('https://example.com/**', async (route) => {
+    await route.fulfill({ status: 404, body: '' });
+  });
+
+  await page.goto('/');
+
+  const firstCard = page.getByTestId('recent-card-rec_home_1');
+  await expect(firstCard).toBeVisible();
+  await expect(firstCard.locator('img')).toHaveCount(0);
+  await expect(firstCard.getByText('Raw & RAKESH')).toBeVisible();
 });
 
 test('signed-in home handles an empty recent state', async ({ page }) => {

@@ -105,7 +105,14 @@ export type CreateRecordingResponse = {
 };
 
 export type ListRecordingsResponse = {
-  items: Array<{ id: string; title?: string; status: string; createdAt: string }>;
+  items: Array<{
+    id: string;
+    title?: string;
+    participantNames?: string[];
+    status: string;
+    createdAt: string;
+    thumbnailUrl?: string;
+  }>;
   nextCursor?: string;
 };
 
@@ -293,6 +300,11 @@ export const RecordingsAPI = {
   listMine: (limit = 20, cursor?: string) =>
     api<ListRecordingsResponse>(`/v1/recordings?owner=me&limit=${limit}${cursor ? `&cursor=${cursor}` : ''}`),
   getById: (id: string) => api<GetRecordingResponse>(`/v1/recordings/${id}`),
+  rename: (id: string, title: string) =>
+    api<GetRecordingResponse>(`/v1/recordings/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    }),
   getProjectAssets: (id: string) =>
     api<GetProjectAssetsGraphResponse>(`/v1/recordings/${id}/project-assets`),
   getSession: (id: string) =>

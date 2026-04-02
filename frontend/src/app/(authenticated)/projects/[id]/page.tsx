@@ -1,17 +1,13 @@
 'use client';
 
-import { useMemo, useRef } from 'react';
+import { useRef } from 'react';
+import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import TranscriptPanel from '@/components/recordings/TranscriptPanel';
-import ProjectActionBar from '@/components/projects/ProjectActionBar';
-import ProjectArtifactsPanel from '@/components/projects/ProjectArtifactsPanel';
+import ProjectFlatTrackList from '@/components/projects/ProjectFlatTrackList';
 import ProjectHeader from '@/components/projects/ProjectHeader';
 import ProjectHeroPreview from '@/components/projects/ProjectHeroPreview';
 import ProjectProcessingBanner from '@/components/projects/ProjectProcessingBanner';
-import ProjectRecordingsRail from '@/components/projects/ProjectRecordingsRail';
-import ProjectTracksPanel from '@/components/projects/ProjectTracksPanel';
-import WorkspaceTabs from '@/components/workspace/WorkspaceTabs';
-import useProjectRecordings from '@/lib/projects/useProjectRecordings';
 import useProjectWorkspace from '@/lib/projects/useProjectWorkspace';
 
 export default function ProjectWorkspacePage() {
@@ -19,20 +15,9 @@ export default function ProjectWorkspacePage() {
   const recordingId = params?.id;
   const previewRef = useRef<HTMLVideoElement | null>(null);
   const workspace = useProjectWorkspace(recordingId);
-  const relatedRecordings = useProjectRecordings({ limit: 4, excludeId: recordingId });
-
-  const tabs = useMemo(
-    () => [
-      { label: 'Recordings', active: true },
-      { label: 'Tracks' },
-      { label: 'Exports' },
-      { label: 'Transcript' },
-    ],
-    []
-  );
 
   if (workspace.loading) {
-    return <p className="py-8 text-sm text-slate-400">Loading project workspace...</p>;
+    return <p className="py-8 text-sm text-slate-400">Loading project...</p>;
   }
 
   if (workspace.error || !workspace.viewModel) {
@@ -53,53 +38,68 @@ export default function ProjectWorkspacePage() {
   }
 
   return (
-    <div className="space-y-8 pb-4">
+    <div className="space-y-5 pb-8">
+      {/* Header — breadcrumb + title + status */}
       <ProjectHeader
         title={viewModel.title}
         createdAtLabel={viewModel.createdAtLabel}
         statusLabel={viewModel.projectStateLabel}
         statusClassName={viewModel.projectStateClass}
+        onRenameTitle={workspace.renameTitle}
       />
 
-      <WorkspaceTabs tabs={tabs} />
+      {/* Slim processing banner — only shown while not fully ready */}
+      {viewModel.processingBanner && (
+        <ProjectProcessingBanner banner={viewModel.processingBanner} />
+      )}
 
-      <ProjectProcessingBanner banner={viewModel.processingBanner} />
+      <div className="space-y-6">
+        {/* Meta + actions */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <p className="text-sm text-slate-500">{viewModel.createdAtLabel}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Link
+              href={`/studio/${viewModel.id}?mode=studio`}
+              className="rounded-xl bg-[var(--workspace-purple)] px-4 py-2 text-sm font-semibold text-white hover:opacity-90 transition-opacity"
+            >
+              Open studio
+            </Link>
+            <button
+              type="button"
+              onClick={() => void workspace.refreshProject()}
+              className="rounded-xl border border-white/8 px-3 py-2 text-sm text-slate-300 hover:border-white/16 hover:text-white transition-colors"
+            >
+              Refresh
+            </button>
+          </div>
+        </div>
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.3fr)_380px]">
+        {/* Error message */}
+        {(workspace.assetActionError ?? workspace.projectAssetsError) && (
+          <div className="rounded-xl border border-rose-400/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+            {workspace.assetActionError ?? workspace.projectAssetsError}
+          </div>
+        )}
+
+        {/* Preview first, tracks directly below */}
         <ProjectHeroPreview hero={viewModel.hero} videoRef={previewRef} />
-        <ProjectActionBar
-          recordingId={viewModel.id}
-          actions={viewModel.hero?.actions ?? []}
+
+        <ProjectFlatTrackList
+          tracks={viewModel.tracks}
+          artifacts={viewModel.artifacts}
           busyId={workspace.assetActionBusyId}
-          actionError={workspace.assetActionError ?? workspace.projectAssetsError}
           onAction={workspace.handleAssetAction}
-          onRefresh={workspace.refreshProject}
         />
       </div>
 
-      <ProjectRecordingsRail
-        recordings={relatedRecordings.items}
-        loading={relatedRecordings.loading}
-        error={relatedRecordings.error}
-      />
-
-      <ProjectTracksPanel
-        tracks={viewModel.tracks}
-        busyId={workspace.assetActionBusyId}
-        onAction={workspace.handleAssetAction}
-      />
-
-      <ProjectArtifactsPanel
-        artifacts={viewModel.artifacts}
-        busyId={workspace.assetActionBusyId}
-        onAction={workspace.handleAssetAction}
-      />
-
-      <TranscriptPanel
-        recordingId={viewModel.id}
-        onSeekToMs={seekPrimaryMediaTo}
-        onSavedRevision={() => void workspace.refreshProjectAssets()}
-      />
+      {/* Transcript section */}
+      <div className="pt-2">
+        <TranscriptPanel
+          recordingId={viewModel.id}
+          onSeekToMs={seekPrimaryMediaTo}
+          onSavedRevision={() => void workspace.refreshProjectAssets()}
+        />
+      </div>
     </div>
   );
 }

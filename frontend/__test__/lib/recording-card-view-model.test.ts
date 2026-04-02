@@ -16,14 +16,21 @@ describe('recording-card-view-model', () => {
     const card = buildRecordingCardViewModel({
       id: 'rec_123',
       title: '   ',
+      participantNames: ['Rakesh', 'Raw Man'],
       state: 'upload complete',
       createdAt: '2026-03-30T10:00:00.000Z',
     });
 
-    expect(formatRecordingTitle('')).toBe('Untitled project');
-    expect(card.title).toBe('Untitled project');
+    expect(formatRecordingTitle('', ['Rakesh', 'Raw Man'])).toBe('Rakesh & Raw Man');
+    expect(card.title).toBe('Rakesh & Raw Man');
     expect(card.href).toBe('/projects/rec_123');
     expect(card.state).toBe('processing');
     expect(card.stateLabel).toBe('Upload complete');
+  });
+
+  it('falls back to the recording date when no title or participant names exist', () => {
+    expect(formatRecordingTitle('', [], '2026-03-30T10:00:00.000Z')).toBe(
+      'Recording — Mar 30, 2026'
+    );
   });
 });

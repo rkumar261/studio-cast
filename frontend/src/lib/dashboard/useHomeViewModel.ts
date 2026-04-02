@@ -86,8 +86,10 @@ export function buildHomeRecordingCards(
     buildRecordingCardViewModel({
       id: recording.id,
       title: recording.title,
+      participantNames: recording.participantNames,
       state: recording.status,
       createdAt: recording.createdAt,
+      thumbnailUrl: recording.thumbnailUrl,
       primaryAction: {
         label: index === 0 ? 'Open project' : 'Continue',
         href: `/projects/${recording.id}`,

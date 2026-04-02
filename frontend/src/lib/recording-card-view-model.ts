@@ -38,9 +38,27 @@ export function toRecordingCardStateLabel(state?: string) {
   return toConsumerStateLabel(normalized);
 }
 
-export function formatRecordingTitle(title?: string | null) {
+export function formatRecordingTitle(
+  title?: string | null,
+  participantNames?: string[],
+  createdAt?: string
+) {
   const trimmed = title?.trim();
-  return trimmed?.length ? trimmed : 'Untitled project';
+  if (trimmed?.length) return trimmed;
+  if (participantNames && participantNames.length > 0) {
+    return participantNames.slice(0, 2).join(' & ');
+  }
+  if (createdAt) {
+    const date = new Date(createdAt);
+    if (!Number.isNaN(date.getTime())) {
+      return `Recording — ${date.toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      })}`;
+    }
+  }
+  return 'Untitled project';
 }
 
 export function formatRecordingDuration(durationMs?: number) {
@@ -63,6 +81,7 @@ export function formatRecordingCreatedLabel(createdAt?: string) {
 type BuildRecordingCardInput = {
   id: string;
   title?: string | null;
+  participantNames?: string[];
   state?: string;
   createdAt?: string;
   durationMs?: number;
@@ -79,7 +98,7 @@ export function buildRecordingCardViewModel(
 ): RecordingCardViewModel {
   return {
     id: input.id,
-    title: formatRecordingTitle(input.title),
+    title: formatRecordingTitle(input.title, input.participantNames, input.createdAt),
     href: input.href ?? `/projects/${input.id}`,
     state: toRecordingCardState(input.state),
     stateLabel: toRecordingCardStateLabel(input.state),

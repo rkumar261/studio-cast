@@ -10,14 +10,14 @@ export default function ProjectHeroPreview({
 }) {
   if (!hero) {
     return (
-      <section className="rounded-[1.75rem] border border-white/6 bg-white/[0.03] p-5">
-        <div className="aspect-video rounded-[1.35rem] border border-white/5 bg-black/20" />
+      <section className="rounded-[1.75rem] border border-white/6 bg-white/[0.03] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] md:p-5">
+        <div className="aspect-[16/10] rounded-[1.35rem] border border-white/5 bg-black/20 lg:aspect-[16/9.25]" />
       </section>
     );
   }
 
   return (
-    <section className="rounded-[1.75rem] border border-white/6 bg-white/[0.03] p-5">
+    <section className="rounded-[1.75rem] border border-white/6 bg-white/[0.03] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] md:p-5">
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-xl font-semibold text-white">{hero.label}</p>
@@ -30,7 +30,7 @@ export default function ProjectHeroPreview({
         </span>
       </div>
 
-      <div className="mt-4 aspect-video overflow-hidden rounded-[1.35rem] border border-white/6 bg-black/20">
+      <div className="mt-3 aspect-[16/10] overflow-hidden rounded-[1.35rem] border border-white/6 bg-black/30 lg:aspect-[16/9.25]">
         {hero.previewUrl ? (
           <video
             ref={videoRef}

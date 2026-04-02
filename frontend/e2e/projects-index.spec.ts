@@ -13,4 +13,18 @@ test('projects nav resolves to the project index instead of the recordings archi
   await expect(page.getByTestId('projects-index-grid')).toBeVisible();
   await expect(page).toHaveURL(/\/projects$/);
   await expect(page.getByRole('link', { name: 'All recordings' })).toBeVisible();
+  await expect(page.locator('img[alt="Weekly interview"]')).toBeVisible();
+});
+
+test('project cards fall back cleanly when thumbnail loading fails', async ({ page }) => {
+  await mockAuthedSession(page, { recordingsList: archiveList });
+  await page.route('https://example.com/**', async (route) => {
+    await route.fulfill({ status: 404, body: '' });
+  });
+
+  await page.goto('/projects');
+
+  const firstCard = page.getByRole('link', { name: /Weekly interview/i }).first();
+  await expect(firstCard).toBeVisible();
+  await expect(firstCard.locator('img')).toHaveCount(0);
 });

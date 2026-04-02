@@ -1,11 +1,66 @@
+/* eslint-disable @next/next/no-img-element */
+
 'use client';
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { RecordingsAPI } from '@/lib/api';
-import { toTrackAccentClass } from '@/lib/recording-card-view-model';
+import {
+  type RecordingCardViewModel,
+  toTrackAccentClass,
+} from '@/lib/recording-card-view-model';
 import useProjectRecordings from '@/lib/projects/useProjectRecordings';
+
+function ProjectIndexCard({
+  project,
+}: {
+  project: RecordingCardViewModel;
+}) {
+  const [imageFailed, setImageFailed] = useState(false);
+
+  useEffect(() => {
+    setImageFailed(false);
+  }, [project.thumbnailUrl]);
+
+  const showThumbnail = Boolean(project.thumbnailUrl && !imageFailed);
+
+  return (
+    <Link
+      href={project.href}
+      className="group overflow-hidden rounded-[1.5rem] border border-white/6 bg-white/[0.025] p-4 transition hover:border-white/12 hover:bg-white/[0.04]"
+    >
+      <div className="relative overflow-hidden rounded-[1.25rem] border border-white/6">
+        {showThumbnail ? (
+          <img
+            src={project.thumbnailUrl}
+            alt={project.title}
+            className="aspect-[1.18/1] w-full object-cover transition duration-300 group-hover:scale-[1.02]"
+            loading="lazy"
+            onError={() => setImageFailed(true)}
+          />
+        ) : (
+          <div className="aspect-[1.18/1] bg-[radial-gradient(circle_at_25%_20%,rgba(255,255,255,0.16),transparent_22%),linear-gradient(135deg,#c6c0ae,#d8d1bf_45%,#a4a0a0)] transition duration-300 group-hover:scale-[1.02]" />
+        )}
+        <div className="absolute right-3 top-3">
+          <span className={`rounded-full border px-2 py-1 text-[11px] ${toTrackAccentClass(project.state)}`}>
+            {project.stateLabel}
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-5 space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <p className="line-clamp-1 text-2xl font-semibold text-white">{project.title}</p>
+          <span className="text-sm text-slate-500">Open</span>
+        </div>
+        <p className="text-base text-slate-400">
+          Created {project.createdLabel ?? 'recently'}
+        </p>
+      </div>
+    </Link>
+  );
+}
 
 export default function ProjectsIndexPage() {
   const router = useRouter();
@@ -132,30 +187,7 @@ export default function ProjectsIndexPage() {
         ) : (
           <div className="grid gap-6 lg:grid-cols-2 2xl:grid-cols-3">
             {visibleProjects.map((project) => (
-              <Link
-                key={project.id}
-                href={project.href}
-                className="group overflow-hidden rounded-[1.5rem] border border-white/6 bg-white/[0.025] p-4 transition hover:border-white/12 hover:bg-white/[0.04]"
-              >
-                <div className="relative overflow-hidden rounded-[1.25rem] border border-white/6">
-                  <div className="aspect-[1.18/1] bg-[radial-gradient(circle_at_25%_20%,rgba(255,255,255,0.16),transparent_22%),linear-gradient(135deg,#c6c0ae,#d8d1bf_45%,#a4a0a0)] transition duration-300 group-hover:scale-[1.02]" />
-                  <div className="absolute right-3 top-3">
-                    <span className={`rounded-full border px-2 py-1 text-[11px] ${toTrackAccentClass(project.state)}`}>
-                      {project.stateLabel}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="mt-5 space-y-2">
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="line-clamp-1 text-2xl font-semibold text-white">{project.title}</p>
-                    <span className="text-sm text-slate-500">Open</span>
-                  </div>
-                  <p className="text-base text-slate-400">
-                    Created {project.createdLabel ?? 'recently'}
-                  </p>
-                </div>
-              </Link>
+              <ProjectIndexCard key={project.id} project={project} />
             ))}
           </div>
         )}

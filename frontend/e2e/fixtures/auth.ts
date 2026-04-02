@@ -96,12 +96,34 @@ export async function mockAuthedSession(
 
   if (input.project) {
     const recordingId = input.project.recording.recording.id;
+    let recordingTitle = input.project.recording.recording.title;
 
     await page.route(`**/v1/recordings/${recordingId}`, async (route) => {
+      if (route.request().method() === 'PATCH') {
+        const payload = route.request().postDataJSON() as { title?: string };
+        recordingTitle = payload.title?.trim() || recordingTitle;
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            recording: {
+              ...input.project?.recording.recording,
+              title: recordingTitle,
+            },
+          }),
+        });
+        return;
+      }
+
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(input.project?.recording),
+        body: JSON.stringify({
+          recording: {
+            ...input.project?.recording.recording,
+            title: recordingTitle,
+          },
+        }),
       });
     });
 

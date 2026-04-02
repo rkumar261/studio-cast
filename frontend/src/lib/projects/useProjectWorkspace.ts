@@ -12,6 +12,7 @@ import {
   type RecordingProgressResponse,
 } from '@/lib/api';
 import { triggerDownloadFromUrl } from '@/lib/download';
+import { formatRecordingTitle } from '@/lib/recording-card-view-model';
 import { consumerStateBadgeClass, toConsumerStateLabel } from '@/lib/recording-journey';
 
 export type ProjectHeroViewModel = {
@@ -117,6 +118,10 @@ function qualityWarningsForAsset(asset: GetProjectAssetsGraphResponse['participa
   return warnings;
 }
 
+function normalizeArtifactLabel(value?: string | null) {
+  return value?.trim().toLowerCase() ?? '';
+}
+
 export function buildProjectWorkspaceViewModel(input: {
   recording: GetRecordingResponse['recording'];
   progress: RecordingProgressResponse | null;
@@ -126,10 +131,36 @@ export function buildProjectWorkspaceViewModel(input: {
   const projectState = projectAssets?.project.state ?? progress?.projectState ?? 'uploading';
   const heroAsset = projectAssets?.combinedAsset;
   const processingSummary = projectAssets?.processingSummary;
+  const captionLabel = normalizeArtifactLabel(projectAssets?.captions.label);
+  const exportArtifacts =
+    projectAssets?.exports.items.reduce<ProjectArtifactRowViewModel[]>((items, item) => {
+      if (item.type === 'mp4_captions') return items;
+      if (normalizeArtifactLabel(item.label) === captionLabel) return items;
+
+      items.push({
+        id: item.id ?? item.type,
+        title: item.label,
+        kind: 'export',
+        state: item.state,
+        stateLabel: toConsumerStateLabel(item.state),
+        summary:
+          item.state === 'ready' ? 'Download is available.' : stateSummaryCopy(item.state),
+        blockedReason: formatBlockedReason(item.blockedReason),
+        actions: item.state === 'ready' ? item.actions : [],
+      });
+
+      return items;
+    }, []) ?? [];
 
   return {
     id: recording.id,
-    title: recording.title?.trim() || 'Untitled project',
+    title: formatRecordingTitle(
+      recording.title,
+      (projectAssets?.participantAssets ?? [])
+        .map((asset) => asset.participant?.name?.trim())
+        .filter((name): name is string => Boolean(name)),
+      recording.createdAt
+    ),
     createdAtLabel: new Date(recording.createdAt).toLocaleString(),
     projectState,
     projectStateLabel: toConsumerStateLabel(projectState),
@@ -189,20 +220,6 @@ export function buildProjectWorkspaceViewModel(input: {
     artifacts: projectAssets
       ? [
           {
-            id: projectAssets.transcript.id ?? 'transcript',
-            title: projectAssets.transcript.label,
-            kind: 'transcript',
-            state: projectAssets.transcript.state,
-            stateLabel: toConsumerStateLabel(projectAssets.transcript.state),
-            summary:
-              projectAssets.transcript.state === 'ready'
-                ? 'Ready for preview or download.'
-                : stateSummaryCopy(projectAssets.transcript.state),
-            blockedReason: formatBlockedReason(projectAssets.transcript.blockedReason),
-            actions:
-              projectAssets.transcript.state === 'ready' ? projectAssets.transcript.actions : [],
-          },
-          {
             id: projectAssets.captions.id ?? 'captions',
             title: projectAssets.captions.label,
             kind: 'captions',
@@ -216,17 +233,7 @@ export function buildProjectWorkspaceViewModel(input: {
             actions:
               projectAssets.captions.state === 'ready' ? projectAssets.captions.actions : [],
           },
-          ...projectAssets.exports.items.map((item) => ({
-            id: item.id ?? item.type,
-            title: item.label,
-            kind: 'export' as const,
-            state: item.state,
-            stateLabel: toConsumerStateLabel(item.state),
-            summary:
-              item.state === 'ready' ? 'Download is available.' : stateSummaryCopy(item.state),
-            blockedReason: formatBlockedReason(item.blockedReason),
-            actions: item.state === 'ready' ? item.actions : [],
-          })),
+          ...exportArtifacts,
         ]
       : [],
   };
@@ -334,6 +341,15 @@ export default function useProjectWorkspace(recordingId?: string) {
     }
   }, []);
 
+  const renameTitle = useCallback(
+    async (title: string) => {
+      if (!recordingId) return;
+      const renamed = await RecordingsAPI.rename(recordingId, title);
+      setRecording(renamed);
+    },
+    [recordingId]
+  );
+
   const viewModel = useMemo(
     () =>
       recording
@@ -353,6 +369,7 @@ export default function useProjectWorkspace(recordingId?: string) {
     assetActionBusyId,
     assetActionError,
     handleAssetAction,
+    renameTitle,
     refreshProject,
     refreshProjectAssets: () => (recordingId ? refreshProjectAssets(recordingId) : Promise.resolve()),
     viewModel,
