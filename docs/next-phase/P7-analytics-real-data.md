@@ -1,122 +1,134 @@
-# P7 — Analytics Real Data
+# P7 — Analytics with Real Data
 
-**Priority:** LOW
-**Status:** Not started (shows "Coming soon" badge — acceptable for alpha)
-**Effort:** Human ~1 day / CC ~20 min
+**Priority:** LOW  
+**Status:** Not started (placeholder state is acceptable for alpha)  
+**Effort:** Human ~1 day / CC ~20-30 min
 
 ---
 
-## Problem
+## Why This Doc Changed
 
-`DashboardAnalyticsPanel` shows a "Coming soon" badge because there is no real data. The component is already built to accept optional `data?: AnalyticsSummaryData` prop — when absent, it renders the placeholder state gracefully.
+The older version assumed a simple backend query shape and an outdated frontend hook path.
 
-This is NOT blocking anything. The "Coming soon" badge is an acceptable alpha state.
+Current reality:
+- `DashboardAnalyticsPanel` already accepts optional `data`
+- `useHomeViewModel()` currently fabricates analytics from recent cards
+- the backend schema includes usable duration data, but it needs to be sourced carefully
 
-## What Needs to Be Built
+## Current Problem
 
-### Backend
+Home analytics is not real yet.
 
-**New endpoint:** `GET /v1/analytics/summary`
+Current behavior in `frontend/src/lib/dashboard/useHomeViewModel.ts`:
+- `episodeCount` is derived from visible recent cards
+- `totalMinutesRecorded` is fabricated
+- `lastRecordingAt` is derived from the first recent card label
 
-Returns:
-```typescript
+That is acceptable as placeholder behavior, but not correct.
+
+## Goal
+
+Replace fake home analytics with a real backend summary endpoint while keeping the current graceful fallback behavior.
+
+## Current Frontend Support
+
+`DashboardAnalyticsPanel` already behaves correctly when `data` is missing:
+- it renders the metrics card
+- it shows a `Coming soon` badge when no real data is present
+
+So the missing work is mostly data sourcing and plumbing.
+
+## Recommended Backend Shape
+
+Add:
+
+```text
+GET /v1/analytics/summary
+```
+
+Suggested response:
+
+```ts
 {
-  totalMinutesRecorded: number;  // sum of all recording durations
-  episodeCount: number;           // count of recordings not in draft
-  lastRecordingAt: string | null; // ISO timestamp of most recent recording
+  totalMinutesRecorded: number;
+  projectCount: number;
+  lastRecordingAt: string | null;
 }
 ```
 
-**New file:** `backend/src/routes/analytics.routes.ts`
-```typescript
-fastify.get('/v1/analytics/summary', { preHandler: [authGuard] }, async (request, reply) => {
-  const userId = request.principal.id;
-  const summary = await getAnalyticsSummary(userId);
-  return reply.send(summary);
-});
-```
+Use `projectCount` or `recordingCount` consistently with the dashboard wording you want to keep.
 
-**New file:** `backend/src/services/analytics.service.ts`
-```typescript
-export async function getAnalyticsSummary(userId: string): Promise<AnalyticsSummary> {
-  const [recordings, lastRecording] = await Promise.all([
-    prisma.recording.findMany({
-      where: { host_participant: { user_id: userId }, recording_lifecycle_state: { not: 'draft' } },
-      select: { duration_ms: true },
-    }),
-    prisma.recording.findFirst({
-      where: { host_participant: { user_id: userId } },
-      orderBy: { created_at: 'desc' },
-      select: { created_at: true },
-    }),
-  ]);
+## Data Source Guidance
 
-  const totalMs = recordings.reduce((sum, r) => sum + (r.duration_ms ?? 0), 0);
+Do not assume every useful metric lives directly on `recording`.
 
-  return {
-    totalMinutesRecorded: Math.round(totalMs / 60000),
-    episodeCount: recordings.length,
-    lastRecordingAt: lastRecording?.created_at.toISOString() ?? null,
-  };
-}
-```
+Before implementing, verify current schema and data availability in:
+- `backend/prisma/schema.prisma`
+- `backend/src/services/recordings.service.ts`
+- `backend/src/services/project-assets.service.ts`
 
-**Register in app.ts:**
-```typescript
-import analyticsRoutes from './routes/analytics.routes.js';
-fastify.register(analyticsRoutes);
-```
+Recommended data strategy:
+- count non-draft recordings/projects owned by the current user
+- compute total duration from the best available asset-level duration
+  - prefer `combined_asset.duration_ms` when available
+  - fall back carefully if combined asset is absent
+- use the most recent `created_at` as `lastRecordingAt`
 
-### Frontend
+## Implementation Plan
 
-**Add to `frontend/src/lib/api.ts`:**
-```typescript
-export async function getAnalyticsSummary(): Promise<AnalyticsSummaryData> {
-  const res = await apiFetch('/v1/analytics/summary');
-  if (!res.ok) throw new Error('Failed to fetch analytics');
-  return res.json();
-}
-```
+### Step 1 — Add backend summary endpoint
 
-**Update `useHomeViewModel.ts`** (or equivalent hook):
-```typescript
-const { data: analytics } = useSWR('analytics-summary', getAnalyticsSummary);
-// Pass to DashboardAnalyticsPanel:
-// <DashboardAnalyticsPanel data={analytics} />
-```
+Suggested files:
+- `backend/src/routes/analytics.routes.ts`
+- `backend/src/services/analytics.service.ts`
 
-**Update `DashboardAnalyticsPanel.tsx`:**
-- Remove "Coming soon" badge when `data` is present
-- Show real numbers: total minutes, episode count, last recording date
-- Keep badge as fallback when `data` is undefined (loading/error state)
+Register the route in the backend app bootstrap.
 
-## DB Query Notes
+### Step 2 — Add frontend API wrapper
 
-The Prisma schema does not have a `duration_ms` field on `recording` directly — check the actual schema at `backend/prisma/schema.prisma`. If duration is not stored, compute it from `session_ended_at - session_started_at`. If neither exists, use the sum of track durations.
+Add a small wrapper in:
+- `frontend/src/lib/api.ts`
 
-Before implementing: read `backend/prisma/schema.prisma` to confirm field names.
+### Step 3 — Replace fake home analytics
 
-## Files to Create
+Update:
+- `frontend/src/lib/dashboard/useHomeViewModel.ts`
 
-| File | Purpose |
-|------|---------|
-| `backend/src/routes/analytics.routes.ts` | New analytics API endpoint |
-| `backend/src/services/analytics.service.ts` | DB aggregation queries |
+Behavior:
+- fetch analytics summary
+- pass real data into `DashboardAnalyticsPanel`
+- keep current fallback UI if the fetch fails or data is missing
 
-## Files to Change
+### Step 4 — Keep panel copy aligned with the real metric
+
+If the panel still says `Total streams` but the backend returns project/recording metrics, decide whether to rename the UI copy.
+
+The metric label should match what is actually being counted.
+
+## Suggested Files To Change
 
 | File | Change |
 |------|--------|
-| `backend/src/app.ts` | Register analytics routes |
-| `frontend/src/lib/api.ts` | Add `getAnalyticsSummary` |
-| `frontend/src/lib/hooks/useHomeViewModel.ts` | Fetch and pass analytics data |
-| `frontend/src/components/dashboard/DashboardAnalyticsPanel.tsx` | Remove "Coming soon" when data present |
+| `backend/src/routes/analytics.routes.ts` | New summary endpoint |
+| `backend/src/services/analytics.service.ts` | Aggregate query logic |
+| `backend/src/app.ts` or equivalent bootstrap | Register route |
+| `frontend/src/lib/api.ts` | Add analytics summary fetch |
+| `frontend/src/lib/dashboard/useHomeViewModel.ts` | Replace fake analytics data |
+| `frontend/src/components/dashboard/DashboardAnalyticsPanel.tsx` | Minor copy cleanup if needed |
 
 ## Verification
 
-1. Log in and go to home dashboard
-2. "Coming soon" badge should be gone — real numbers show
-3. Total minutes should match what you'd expect from your test recordings
-4. Episode count matches recording list count
-5. Last recording timestamp is correct
-6. Run `npm run typecheck` in both `backend/` and `frontend/`
+1. Log in and open the home dashboard.
+2. Confirm the `Coming soon` badge disappears when real data is returned.
+3. Validate:
+   - total minutes against real recordings/assets
+   - count against the current project/recording model
+   - most recent recording date
+4. Force a failing analytics request and confirm the panel still renders its placeholder fallback.
+5. Run:
+
+```bash
+cd backend && npm run build
+cd frontend && npm run typecheck
+cd frontend && npm run lint
+```

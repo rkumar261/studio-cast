@@ -1,159 +1,151 @@
-# P2 — Middleware JWT Hardening
+# P2 — Middleware and Session Hardening
 
-**Priority:** HIGH
-**Status:** Not started
-**Blocks:** Security before public users
-**Effort:** Human ~4 hours / CC ~15 min
+**Priority:** HIGH  
+**Status:** Not started on the refreshed plan  
+**Blocks:** Reliable auth UX for protected project routes  
+**Effort:** Human ~4-6 hours / CC ~20-30 min
 
 ---
 
-## Problem
+## Why This Doc Changed
 
-`frontend/src/middleware.ts` currently checks only for the **presence** of the `access_token` cookie to decide whether to redirect to `/sign-in`. It does not verify the JWT signature or expiry.
+The original version assumed:
+- redirect everything to `/sign-in`
+- auth state is just `access_token` presence
+- middleware can be treated independently from the landing rewrite
 
-**Current behavior:**
-- Set a fake cookie `access_token=anything` → middleware thinks you're logged in
-- Expired JWT → middleware still passes you through → all API calls 401 → confusing UX
+That is no longer true.
 
-**Impact:** Not a security hole (all API routes check the JWT server-side), but causes confusing bounce-loop UX and is incorrect auth state signaling.
+Current frontend auth shape:
+- signed-out `/` rewrites to `/landing`
+- protected routes are `/projects`, `/projects/:id`, `/recordings`, `/settings`
+- middleware currently trusts `studio_cast_session` **or** `access_token`
+- client session recovery still depends on `/auth/me` and cookie-based backend auth
 
-## Current Implementation
+## Current Problem
 
-```typescript
-// frontend/src/middleware.ts (current — cookie presence only)
-const token = request.cookies.get('access_token');
-if (!token) {
-  return NextResponse.redirect(new URL('/sign-in', request.url));
-}
-// No signature check — any value passes
+Current `frontend/src/middleware.ts` is a UX gate, not a trustworthy auth gate.
+
+It currently:
+- checks only cookie presence
+- can be fooled by fake/stale cookies
+- does not preserve the intended destination for deep links
+- can disagree with backend session truth when the marker cookie drifts
+
+Examples:
+- valid backend session + missing frontend marker can bounce the user incorrectly
+- fake `access_token` cookie can look authenticated to middleware
+- protected deep links can collapse back to `/` instead of returning to the requested project
+
+## Goals
+
+1. Preserve the current `landing`-rewrite model.
+2. Make protected-route behavior predictable.
+3. Preserve deep-link intent for `/projects/[id]`.
+4. Decide explicitly whether JWT verification belongs in middleware or whether middleware stays a light UX router.
+
+## Recommended Approach
+
+Implement this phase in two parts.
+
+### Part A — Session correctness (required)
+
+This is the real must-have.
+
+1. Preserve requested protected destination.
+   - If an unauthenticated user hits `/projects/[id]`, redirect or rewrite in a way that keeps `next=/projects/[id]`.
+2. When the user becomes authenticated on `/landing`, redirect them back to `next`, not always to `/`.
+3. Keep `studio_cast_session` synchronized with real successful `/auth/me` checks.
+4. Make logout/session expiry clear both marker cookies and route state consistently.
+
+### Part B — JWT verification at the edge (optional / only if product wants it)
+
+This can be added after Part A.
+
+If done:
+- verify `access_token` with `jose`
+- clear invalid token cookies
+- do **not** break refresh-based or backend-cookie-based recovery flows
+
+Important: do not implement a strict “missing `access_token` means signed out” rule if current backend session recovery still depends on other cookies.
+
+## Current Files
+
+Primary files:
+- `frontend/src/middleware.ts`
+- `frontend/src/app/(public)/landing/page.tsx`
+- `frontend/src/lib/useSession.tsx`
+
+Secondary files:
+- `frontend/src/lib/api.ts`
+
+## Implementation Plan
+
+### Step 1 — Preserve protected route intent
+
+Update middleware so protected-route redirects include the requested destination.
+
+Example intent:
+
+```text
+/projects/abc123
+  -> unauthenticated
+  -> /landing?next=%2Fprojects%2Fabc123
 ```
 
-## Implementation
+### Step 2 — Respect `next` after login/session recovery
 
-### Step 1 — Export public key as env var
+Update the public landing flow so that:
+- successful auth or valid session on `/landing`
+- redirects to the `next` path first
+- falls back to `/` only when no `next` exists
 
-The backend uses RS256 keypair. The public key is already on the backend at `JWT_PUBLIC_KEY_PATH`.
+### Step 3 — Tighten cookie semantics
 
-Add to `frontend/.env.local`:
-```
-NEXT_PUBLIC_JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\nMIIBIj...\n-----END PUBLIC KEY-----"
-```
+Review the current relationship between:
+- `studio_cast_session`
+- `access_token`
+- backend-managed auth cookies
 
-**Why `NEXT_PUBLIC_`?** The middleware runs at the edge runtime. File system access is not available in Next.js edge. The public key must be embedded as an env var. Public keys are safe to expose (they're public).
+The doc target is:
+- marker cookie is a convenience only
+- backend `/auth/me` remains the source of truth
+- logout clears both frontend marker state and backend session state
 
-Export the public key from your backend keypair:
-```bash
-openssl rsa -in /path/to/private.pem -pubout -out public.pem
-cat public.pem  # copy into .env.local
-```
+### Step 4 — Optional JWT verification
 
-### Step 2 — Update middleware.ts
+Only after the current session contract is stable:
+- add `jose`
+- verify `access_token` signature/expiry in middleware
+- clear invalid cookies safely
+- fall back without breaking legitimate refresh/session recovery
 
-```typescript
-import { NextRequest, NextResponse } from 'next/server';
-import { importSPKI, jwtVerify } from 'jose';
+If this part is implemented, document the public key strategy explicitly.
 
-const PUBLIC_ROUTES = ['/sign-in', '/sign-up', '/auth'];
-
-export async function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
-
-  // Skip auth check for public routes
-  if (PUBLIC_ROUTES.some((r) => pathname.startsWith(r))) {
-    return NextResponse.next();
-  }
-
-  const token = request.cookies.get('access_token')?.value;
-
-  if (!token) {
-    return NextResponse.redirect(new URL('/sign-in', request.url));
-  }
-
-  // Verify JWT signature + expiry
-  try {
-    const publicKeyPem = process.env.NEXT_PUBLIC_JWT_PUBLIC_KEY!;
-    const publicKey = await importSPKI(publicKeyPem, 'RS256');
-    await jwtVerify(token, publicKey, { algorithms: ['RS256'] });
-    return NextResponse.next();
-  } catch {
-    // Invalid or expired token — clear cookie and redirect
-    const response = NextResponse.redirect(new URL('/sign-in', request.url));
-    response.cookies.delete('access_token');
-    return response;
-  }
-}
-
-export const config = {
-  matcher: [
-    '/((?!_next/static|_next/image|favicon.ico|api/).*)',
-  ],
-};
-```
-
-### Step 3 — Key import caching
-
-`importSPKI` is called per-request. Cache it at module level:
-
-```typescript
-let _cachedPublicKey: CryptoKey | null = null;
-
-async function getPublicKey(): Promise<CryptoKey> {
-  if (_cachedPublicKey) return _cachedPublicKey;
-  const pem = process.env.NEXT_PUBLIC_JWT_PUBLIC_KEY!;
-  _cachedPublicKey = await importSPKI(pem, 'RS256');
-  return _cachedPublicKey;
-}
-```
-
-## Edge Runtime Constraints
-
-- `jose` works in Next.js edge runtime (uses Web Crypto API, not Node crypto)
-- `fs`, `path`, `child_process` do NOT work in edge runtime — do not use them
-- `process.env` works in edge runtime for static env vars
-
-## Performance
-
-`importSPKI` + `jwtVerify` adds ~3-5ms per request. With module-level key caching, repeat requests add ~1ms (just the verify call). Acceptable.
-
-## Data Flow
-
-```
-Request → middleware
-  │
-  ├─ public route? → pass through
-  │
-  ├─ no cookie? → redirect /sign-in
-  │
-  └─ cookie present?
-        │
-        ├─ jwtVerify(token, RS256 public key)
-        │     ├─ valid + not expired → NextResponse.next()
-        │     └─ invalid / expired → delete cookie + redirect /sign-in
-        │
-        └─ importSPKI error (bad env var) → log + redirect /sign-in (fail safe)
-```
-
-## Files to Change
+## Suggested File Changes
 
 | File | Change |
 |------|--------|
-| `frontend/src/middleware.ts` | Add `jose` JWT verification |
-| `frontend/.env.local` | Add `NEXT_PUBLIC_JWT_PUBLIC_KEY` |
-| `frontend/.env.example` | Document the new var |
-
-## Dependencies
-
-`jose` is already a dependency in most Next.js projects. Check:
-```bash
-cd frontend && grep "jose" package.json
-```
-
-If not present: `npm install jose`
+| `frontend/src/middleware.ts` | Preserve `next`, tighten protected route logic |
+| `frontend/src/app/(public)/landing/page.tsx` | Redirect back to intended path after auth |
+| `frontend/src/lib/useSession.tsx` | Keep marker cookie behavior aligned with real auth state |
+| `frontend/.env.local` / `.env.example` | Only if JWT verification is actually added |
 
 ## Verification
 
-1. Log in normally — should work as before
-2. Manually set a fake `access_token` cookie in browser devtools → should redirect to `/sign-in`
-3. Let token expire (or use a token with wrong expiry) → should redirect to `/sign-in` and clear cookie
-4. Run `npm run typecheck` in `frontend/` — must pass
-5. Run `npm run build` in `frontend/` — edge runtime must accept the middleware
+1. Signed-out user opens `/projects/[id]` directly.
+2. They are sent to `/landing?next=...`.
+3. After login/session recovery, they land on the original `/projects/[id]`.
+4. Fake/stale cookie values do not permanently trap the user in a bad auth state.
+5. Logout clears session state and returns to a signed-out landing flow.
+6. Run:
+
+```bash
+cd frontend && npm run typecheck
+cd frontend && npm run lint
+```
+
+If Playwright coverage is updated, add:
+- deep-link protected route recovery
+- logout
+- missing marker + valid session recovery

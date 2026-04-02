@@ -1,92 +1,119 @@
 # P4 — Studio Visual Harmonization
 
-**Priority:** MEDIUM
-**Status:** Not started
-**Depends on:** Dashboard redesign (feat/project-page-layout) must be shipped
-**Effort:** Human ~1 day / CC ~20 min
+**Priority:** MEDIUM  
+**Status:** Ready after doc refresh  
+**Depends on:** Dashboard/workspace shell is already shipped  
+**Effort:** Human ~1 day / CC ~20-30 min
 
 ---
 
+## Why This Doc Changed
+
+The older version assumed the dashboard redesign had not shipped yet.
+
+That is no longer true:
+- the authenticated shell already exists
+- dashboard/home/projects/project workspace already use shared workspace styling
+
+The remaining need is still valid: studio and studio-adjacent pages visually lag behind the new workspace shell.
+
 ## Problem
 
-The studio page (`/studio/[recordingId]`) was built before the dashboard redesign. It uses older design tokens and layout patterns that don't match the redesigned shell. After the dashboard ships, the studio page will look visually inconsistent.
+These pages still feel visually older than the dashboard/workspace surfaces:
+- `frontend/src/app/studio/[recordingId]/page.tsx`
+- `frontend/src/app/studio/[recordingId]/thanks/page.tsx`
 
-## Goals
+The current mismatch is mainly about:
+- color tokens
+- borders / card surfaces
+- typography consistency
+- button and badge styling
 
-1. Update studio page colors/tokens to match the design system
-2. Match header/nav pattern from the authenticated shell
-3. Ensure participant video tiles match the recording card visual style
-4. Keep all functional behavior unchanged — this is purely visual
+## Goal
 
-## Scope
+Harmonize studio visuals with the dashboard design system without touching recording behavior.
 
-**In scope:**
-- Color token updates (background, surface, border colors)
-- Typography scale consistency
-- Header/toolbar layout alignment
-- Button and badge visual style
-- Participant tile card borders/shadows
+## Hard Rule
 
-**Out of scope:**
-- Any recording functionality changes
-- WebRTC or LiveKit changes
-- Layout restructuring (tiles arrangement)
-- Mobile responsiveness (tracked in P6)
+This phase is visual-only.
 
-## Implementation
+Do **not**:
+- restructure the core recorder flow
+- alter media device / upload / signaling behavior
+- refactor the giant studio state machine unless absolutely required for styling hooks
 
-### Step 1 — Audit current tokens
+## In Scope
 
-Read `frontend/src/app/studio/[recordingId]/page.tsx` and note all Tailwind classes that use:
-- Background colors (`bg-*`)
-- Text colors (`text-*`)
-- Border colors (`border-*`)
-- Shadow utilities
+- token cleanup
+- consistent card surfaces
+- header / toolbar styling
+- participant tile visual cleanup
+- thanks page styling pass
 
-Compare against the design system tokens used in:
-- `frontend/src/components/dashboard/` components
-- `frontend/src/app/(authenticated)/layout.tsx`
+## Out of Scope
 
-### Step 2 — Map token replacements
+- `/start`, `/tech-check`, or `/meet` route redesign
+- mobile responsiveness beyond small visual fixes (tracked separately in P6)
+- studio layout/interaction redesign
 
-Common replacements expected:
+## Implementation Plan
 
-| Old (studio) | New (design system) |
-|---|---|
-| `bg-gray-900` | `bg-slate-950` |
-| `bg-gray-800` | `bg-slate-900` |
-| `border-gray-700` | `border-slate-800` |
-| `text-gray-300` | `text-slate-300` |
-| `text-gray-500` | `text-slate-500` |
-| `rounded` | `rounded-xl` (cards) |
+### Step 1 — Audit current studio tokens
 
-### Step 3 — Update studio page layout
+Review:
+- `frontend/src/app/studio/[recordingId]/page.tsx`
+- `frontend/src/app/studio/[recordingId]/thanks/page.tsx`
 
-The studio page header should use the same `h-14` shell header height and `border-b border-slate-800` divider as the authenticated layout.
+Compare their classes against current workspace tokens used by:
+- `frontend/src/app/globals.css`
+- `frontend/src/components/workspace/*`
+- dashboard/project page components
 
-Recording status indicator (the red "REC" badge) should use the badge style from the design system.
+### Step 2 — Align surfaces and typography
 
-### Step 4 — Participant tile cards
+Bring studio surfaces closer to the workspace shell:
+- background hierarchy
+- border opacity
+- muted text colors
+- radius scale
+- button treatment
 
-Each participant video tile should match the `DashboardRecentCard` visual language:
-- `bg-slate-900 rounded-xl border border-slate-800`
-- Name label: `text-sm font-medium text-slate-200`
-- Status indicator: match dot style from recording cards
+### Step 3 — Align participant tile styling
 
-### Step 5 — Thanks page
+Participant tiles should feel like they belong to the same product as:
+- dashboard recording cards
+- project workspace preview cards
 
-Apply the same token pass to `frontend/src/app/studio/[recordingId]/thanks/page.tsx`.
+Keep layout behavior intact, but normalize:
+- tile chrome
+- labels
+- status affordances
+- badge colors
 
-## Files to Change
+### Step 4 — Update thanks page
+
+Apply the same visual pass to:
+- `frontend/src/app/studio/[recordingId]/thanks/page.tsx`
+
+Goal:
+- it should feel like a continuation of the project workspace, not a different app
+
+## Suggested Files To Change
 
 | File | Change |
 |------|--------|
-| `frontend/src/app/studio/[recordingId]/page.tsx` | Color/token pass |
-| `frontend/src/app/studio/[recordingId]/thanks/page.tsx` | Color/token pass |
+| `frontend/src/app/studio/[recordingId]/page.tsx` | Token and visual cleanup only |
+| `frontend/src/app/studio/[recordingId]/thanks/page.tsx` | Token and visual cleanup only |
 
 ## Verification
 
-1. Start a recording session as host + guest
-2. Visually compare studio page against dashboard — backgrounds, borders, typography should feel unified
-3. Verify all recording functions still work (start, stop, audio/video indicators)
-4. Run `npm run typecheck` and `npm run lint` in `frontend/`
+1. Start a recording session and compare studio visually to the dashboard shell.
+2. Check participant tiles, toolbar, and status badges for consistency.
+3. Stop a session and open the thanks page.
+4. Confirm all studio functionality still behaves exactly as before.
+5. Run:
+
+```bash
+cd frontend && npm run typecheck
+cd frontend && npm run lint
+```

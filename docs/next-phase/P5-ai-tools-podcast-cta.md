@@ -1,105 +1,110 @@
-# P5 — AI Tools / Podcast CTA Backend Wiring
+# P5 — Home Secondary CTA Wiring
 
-**Priority:** MEDIUM
-**Status:** Not started
-**Effort:** Human ~1 day / CC ~20 min
+**Priority:** MEDIUM  
+**Status:** Needs product decision before implementation  
+**Effort:** Human ~1 day / CC ~20-30 min
 
 ---
 
-## Problem
+## Why This Doc Changed
 
-The dashboard has two decorative components that are currently static/non-functional:
-- `DashboardAiToolsRail` — shows AI tool cards (clip generation, transcript editing, etc.)
-- `DashboardPodcastCta` — shows a "Start your podcast" call-to-action inside the analytics panel
+The older version assumed:
+- the home screen should keep a podcast-hosting CTA
+- AI cards should deep-link into `/recordings/:id`
 
-Both are visual placeholders. Clicking them either does nothing or links to dead routes.
+Both assumptions are stale.
 
-## Goals
+Current product reality:
+- canonical workspace is `/projects/[id]`
+- `/recordings` is only an archive
+- some premium/podcast language has already been removed from the product
+- AI tools and the secondary CTA modules are still mostly decorative
 
-1. Wire `DashboardPodcastCta` to the "New Recording" flow
-2. Wire `DashboardAiToolCard` items to their respective feature pages (clips, transcript, exports)
-3. No new backend work needed — all these features already exist, they just need correct links
+## Current Problem
 
-## AI Tools Rail — Link Map
+These home modules are not meaningfully wired:
+- `DashboardAiToolsRail`
+- `DashboardPodcastCta`
 
-| Tool Card | Target Route |
-|-----------|-------------|
-| "Transcript" | `/recordings/:id` → transcript tab |
-| "Clips" | `/recordings/:id` → clips section |
-| "Export" | `/recordings/:id` → exports section |
-| "Captions" | `/recordings/:id` → exports → mp4_captions |
+Current issues:
+- buttons are decorative or dead-end
+- route assumptions are outdated
+- messaging may not match the current product direction
 
-Since the rail is on the home dashboard (no specific recording selected), these should either:
-- Link to the most recent recording that has the relevant feature available, OR
-- Show a tooltip/modal saying "Select a recording first"
+## Product Decision Needed First
 
-**Recommended:** Show a `"Select a recording to use this tool"` tooltip on hover/click, and disable the card visually if no recordings exist.
+Before wiring behavior, confirm whether the right-hand analytics CTA should remain:
 
-## Podcast CTA — Implementation
+### Option A — Keep a generic creation CTA
 
-File: `frontend/src/components/dashboard/DashboardPodcastCta.tsx`
+Examples:
+- `Create project`
+- `Upload media`
+- `Open latest project`
 
-Change the CTA button to navigate to create a new recording:
-```typescript
-import { useRouter } from 'next/navigation';
+### Option B — Keep a podcast/publishing CTA
 
-const router = useRouter();
+Only valid if podcast hosting is still a real near-term feature.
 
-// CTA button:
-<button onClick={() => router.push('/recordings/new')}>
-  Start recording
-</button>
-```
+### Option C — Replace the entire panel with something else
 
-If `/recordings/new` without `?mode=upload` shows the "New Recording" form (P3 creates this page), this route doubles as the podcast start flow.
+Examples:
+- workspace tips
+- recent activity
+- upload prompt
 
-## AI Tools Rail — Implementation
+## Recommended Direction
 
-File: `frontend/src/components/dashboard/DashboardAiToolsRail.tsx`
-File: `frontend/src/components/dashboard/DashboardAiToolCard.tsx`
+For the current product, the safest direction is:
+- keep AI tool cards
+- replace podcast-specific CTA language with a neutral workspace CTA
+- deep-link AI cards into `/projects/[id]`, not `/recordings/[id]`
 
-Update `DashboardAiToolCard` to accept:
-```typescript
-type DashboardAiToolCardProps = {
-  title: string;
-  description: string;
-  icon: React.ReactNode;
-  href?: string;          // direct link if recording context available
-  disabled?: boolean;     // grayed out when no recordings exist
-  disabledTooltip?: string;
-};
-```
+## AI Tool Wiring Plan
 
-In `DashboardAiToolsRail`, pass `disabled={recordingCount === 0}` and `disabledTooltip="Create a recording first"`.
+AI tool cards should either:
+1. navigate to the latest relevant project section, or
+2. be visibly disabled when there is no usable project context
 
-When `href` is set and not disabled, clicking navigates. When disabled, clicking shows the tooltip.
+Preferred target model:
+- `Transcript` -> `/projects/:id#transcript`
+- `Exports` -> `/projects/:id#exports`
+- `Captions` -> `/projects/:id#exports`
+- `Clips` -> disabled or “coming soon” until clips actually exist
 
-## Data Needed
+If section anchors are used, the project page should expose matching IDs.
 
-`DashboardAiToolsRail` needs to know:
-- Does the user have any recordings? (to decide disabled state)
-- What is the most recent recording ID? (for deep links)
+## Secondary CTA Plan
 
-This data is already fetched by `useHomeViewModel` (or equivalent). Pass it down as props.
+If podcast CTA is removed, recommended replacement actions are:
+- `Create project`
+- `Upload media`
 
-## Files to Change
+Both should align to the current projects-first IA:
+- `/projects`
+- `/projects/new?mode=upload` once P3 lands
+
+## Suggested Files To Change
 
 | File | Change |
 |------|--------|
-| `frontend/src/components/dashboard/DashboardPodcastCta.tsx` | Wire CTA button to `/recordings/new` |
-| `frontend/src/components/dashboard/DashboardAiToolCard.tsx` | Add `href`, `disabled`, `disabledTooltip` props |
-| `frontend/src/components/dashboard/DashboardAiToolsRail.tsx` | Pass recording count/id from view model |
-
-## Files to Read First
-
-Before implementing, read:
-- `frontend/src/components/dashboard/DashboardAiToolsRail.tsx` — understand current structure
-- `frontend/src/components/dashboard/DashboardAiToolCard.tsx` — understand current props
-- `frontend/src/components/dashboard/DashboardPodcastCta.tsx` — understand current CTA
+| `frontend/src/components/dashboard/DashboardAiToolsRail.tsx` | Pass actionable/disabled state |
+| `frontend/src/components/dashboard/DashboardAiToolCard.tsx` | Support links / disabled state / click affordance |
+| `frontend/src/components/dashboard/DashboardPodcastCta.tsx` | Replace with neutral CTA or re-scope copy |
+| `frontend/src/lib/dashboard/useHomeViewModel.ts` | Provide latest project / section target data |
 
 ## Verification
 
-1. Home dashboard with no recordings: AI tool cards show disabled state with tooltip
-2. Home dashboard with recordings: AI tool cards link to correct sections
-3. Podcast CTA button navigates to `/recordings/new`
-4. Run `npm run typecheck` and `npm run lint` in `frontend/`
+1. Home dashboard with no projects:
+   - AI tool cards show disabled or fallback behavior
+   - CTA does not route to dead pages
+2. Home dashboard with projects:
+   - cards route into `/projects/[id]`
+   - CTA routes into a valid project/create/upload path
+3. No references remain to `/recordings/:id` in this home CTA flow.
+4. Run:
+
+```bash
+cd frontend && npm run typecheck
+cd frontend && npm run lint
+```

@@ -6,7 +6,11 @@ import type { TrackChunkRecoveryResponse } from '../dto/chunks/recovery.dto.js';
 import type { FinalizeTrackBody, FinalizeTrackResponse } from '../dto/tracks/finalize.dto.js';
 import type { RegisterTrackBody, RegisterTrackResponse } from '../dto/tracks/register.dto.js';
 import { getRequestPrincipal } from '../lib/request-principal.js';
-import { createRecordingService, getRecordingService } from '../services/recordings.service.js';
+import {
+    createRecordingService,
+    getRecordingService,
+    renameRecordingService,
+} from '../services/recordings.service.js';
 import type { GetRecordingResponse } from '../dto/recordings/get.dto.js';
 import type { GetProjectAssetsGraphResponse } from '../dto/recordings/project-assets.dto.js';
 import type { RecordingLifecycleDiagnosticsResponse } from '../dto/recordings/lifecycle-diagnostics.dto.js';
@@ -96,6 +100,37 @@ export default async function recordingRoutes(app: FastifyInstance) {
 
         const { id } = req.params;
         const result = await getRecordingService({ id, requesterId });
+
+        if (result.code === 'not_found') return res.code(404).send({ code: 'not_found', message: 'Recording not found' });
+        if (result.code === 'forbidden') return res.code(403).send({ code: 'forbidden', message: 'Not allowed' });
+
+        return res.code(200).send(result.data as GetRecordingResponse);
+    });
+
+    app.patch<{
+        Params: { id: string };
+        Body: { title?: string | null };
+    }>('/v1/recordings/:id', { preHandler: authGuard }, async (req, res) => {
+        const requesterId = (req as any).user?.id as string | undefined;
+        const guest = (req as any).guest as { participantId?: string; recordingId?: string } | undefined;
+        if (!requesterId) {
+            if (guest?.participantId) {
+                emitGuestAccessBlocked(req, {
+                    recordingId: guest.recordingId ?? req.params.id,
+                    participantId: guest.participantId,
+                    action: 'recording_rename',
+                    reason: 'owner_credentials_required',
+                });
+                return res.code(403).send({ code: 'forbidden', message: 'Not allowed' });
+            }
+            return res.code(401).send({ error: 'Unauthorized', message: 'User not authenticated, Login required' });
+        }
+
+        const result = await renameRecordingService({
+            id: req.params.id,
+            requesterId,
+            title: req.body?.title,
+        });
 
         if (result.code === 'not_found') return res.code(404).send({ code: 'not_found', message: 'Recording not found' });
         if (result.code === 'forbidden') return res.code(403).send({ code: 'forbidden', message: 'Not allowed' });

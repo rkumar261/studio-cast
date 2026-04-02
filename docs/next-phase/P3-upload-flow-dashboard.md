@@ -1,197 +1,183 @@
-# P3 — Upload Flow from Home Dashboard
+# P3 — Upload Flow into the Project Workspace
 
-**Priority:** HIGH
-**Status:** Not started
-**Blocks:** Dashboard UX completeness
-**Effort:** Human ~2 days / CC ~30 min
+**Priority:** HIGH  
+**Status:** Not started on the refreshed plan  
+**Blocks:** Home quick-action completeness, project-first creation flow  
+**Effort:** Human ~2 days / CC ~30-45 min
 
 ---
 
-## Problem
+## Why This Doc Changed
 
-The dashboard "Quick Actions" panel shows an "Upload" button. Clicking it currently does nothing (or navigates to a dead end). Users who want to upload pre-recorded files have no path from the home screen.
+The older version assumed a recordings-first flow:
+- upload from home
+- create a recording shell
+- redirect to `/recordings/:id`
 
-Backend upload infrastructure is **already complete**:
-- `POST /v1/uploads/initiate` — starts multipart or TUS upload
-- `POST /v1/uploads/:id/complete` — finalizes upload
-- `backend/src/routes/uploads.routes.ts` — wired and auth-guarded
+The current product is `projects`-first:
+- `Home` is the dashboard
+- `/projects` is the primary index
+- `/projects/[id]` is the canonical workspace
+- `/recordings` is only an archive
 
-The missing piece is the **frontend upload flow**: file picker → upload progress → attach to recording.
+So upload must end in the canonical project workspace, not the archive/detail route.
 
-## User Flow
+## Current Problem
 
-```
-Home Dashboard
-  │
-  └─ Quick Actions → "Upload" button
-        │
-        ├─ Option A: Navigate to /recordings/new?mode=upload
-        │     → Create recording shell → open file picker → upload
-        │
-        └─ Option B: Open upload modal (no navigation)
-              → File picker → choose recording to attach to → upload
-```
+The home quick-action `Upload` exists in the redesigned dashboard, but it currently routes users to the archive surface instead of a real upload workflow.
 
-**Recommended: Option A** — navigate to a dedicated upload page. Simpler state management, bookmarkable, shareable.
+Current behavior:
+- `record` -> creates a recording and opens `/studio/:id?mode=studio`
+- `edit` -> latest project
+- `go-live` -> meet room
+- `schedule` -> `/projects`
+- `upload` -> `/recordings`
 
-## Implementation
+That is not the intended final experience.
 
-### Step 1 — Wire "Upload" Quick Action button
+## Goal
 
-File: `frontend/src/components/dashboard/DashboardQuickActions.tsx`
+Provide a dedicated upload flow that:
+1. starts from the home dashboard
+2. creates a draft project shell
+3. uploads pre-recorded media using existing backend upload APIs
+4. lands the user in `/projects/[id]`
 
-Change the Upload button's `onClick` or `href` to navigate:
-```typescript
-import { useRouter } from 'next/navigation';
+## Recommended Route
 
-// Inside component:
-const router = useRouter();
+Use a dedicated authenticated route:
 
-// Upload button:
-<button onClick={() => router.push('/recordings/new?mode=upload')}>
-  Upload
-</button>
+```text
+/projects/new?mode=upload
 ```
 
-### Step 2 — Create upload recording page
+Why:
+- keeps the `projects`-first IA intact
+- allows future `mode=create` / `mode=upload` branching if needed
+- makes completion routing to `/projects/[id]` natural
 
-File: `frontend/src/app/(authenticated)/recordings/new/page.tsx`
+## Existing Backend Support
 
-```typescript
-'use client';
-// searchParams.mode === 'upload' shows upload UI
-// searchParams.mode !== 'upload' shows "New Recording" form (existing flow)
+Backend upload infrastructure already exists:
+- `POST /v1/uploads/initiate`
+- `POST /v1/uploads/:id/complete`
+- related upload routes in `backend/src/routes/uploads.routes.ts`
+
+The missing part is the frontend flow and the `projects`-first route wiring.
+
+## Implementation Plan
+
+### Step 1 — Rewire the dashboard Upload action
+
+Update:
+- `frontend/src/lib/dashboard/useHomeViewModel.ts`
+
+Change the `upload` quick action so it navigates to:
+
+```text
+/projects/new?mode=upload
 ```
+
+Do not keep `/recordings` as the upload destination.
+
+### Step 2 — Create the upload entry page
+
+Add:
+- `frontend/src/app/(authenticated)/projects/new/page.tsx`
 
 This page should:
-1. Show a file drop zone (accept `.webm`, `.mp4`, `.wav`, `.mov`)
-2. On file select → call `POST /v1/recordings` to create a draft recording shell
-3. Then call `POST /v1/uploads/initiate` with `{ recordingId, fileName, mimeType, protocol: 'multipart' }`
-4. Upload file parts using presigned URLs from initiate response
-5. Call `POST /v1/uploads/:id/complete` when done
-6. Redirect to `/recordings/:id` on completion
+- inspect `searchParams.mode`
+- show the upload-specific UI when `mode=upload`
+- optionally support future plain “new project” creation if needed
 
-### Step 3 — Upload component
+### Step 3 — Build upload UI components
 
-Create `frontend/src/components/upload/FileUploadZone.tsx`:
-```typescript
-// Props:
-// onFile: (file: File) => void
-// accept: string (e.g. 'video/*,audio/*')
-// maxSizeMb: number
+Recommended components:
+- `frontend/src/components/upload/FileUploadZone.tsx`
+- `frontend/src/components/upload/UploadProgress.tsx`
 
-// Features:
-// - drag-and-drop area
-// - click to browse
-// - file type and size validation
-// - show selected file name + size
+Capabilities:
+- drag and drop
+- click-to-browse
+- file validation
+- upload progress
+- failure state / retry messaging
+
+Accepted types:
+- `.mp4`
+- `.mov`
+- `.webm`
+- `.wav`
+- other explicitly supported audio/video types already accepted by backend
+
+### Step 4 — Create project shell first
+
+On file select:
+1. call the existing recording/project creation API
+2. get back the new recording/project id
+3. use that id as the canonical future `/projects/[id]` route
+
+For now, project identity still maps to recording identity. That is acceptable and consistent with the current architecture.
+
+### Step 5 — Add frontend upload API wrappers
+
+Add wrappers in:
+- `frontend/src/lib/api.ts`
+
+Needed calls:
+- initiate upload
+- complete upload
+
+If multipart presigned URLs are used, expose the minimal typed helpers needed for the upload page.
+
+### Step 6 — Upload and complete
+
+Flow:
+
+```text
+Home dashboard
+  -> Upload quick action
+  -> /projects/new?mode=upload
+  -> create draft project shell
+  -> initiate upload
+  -> upload parts / chunks
+  -> complete upload
+  -> redirect to /projects/:id
 ```
 
-Create `frontend/src/components/upload/UploadProgress.tsx`:
-```typescript
-// Props:
-// progress: number (0-100)
-// fileName: string
-// status: 'uploading' | 'processing' | 'done' | 'error'
-// onCancel?: () => void
-```
+### Step 7 — Land in the canonical project workspace
 
-### Step 4 — Upload API calls
+After upload completion:
+- redirect to `/projects/[id]`
+- do not redirect to `/recordings/[id]`
+- do not use `/recordings` as the post-upload destination
 
-Add to `frontend/src/lib/api.ts`:
-```typescript
-export async function initiateUpload(params: {
-  recordingId: string;
-  fileName: string;
-  mimeType: string;
-  totalBytes: number;
-  protocol: 'multipart';
-}): Promise<{ uploadId: string; presignedUrls: string[] }> { ... }
-
-export async function completeUpload(params: {
-  uploadId: string;
-  parts: { partNumber: number; etag: string }[];
-}): Promise<void> { ... }
-```
-
-### Step 5 — Multipart upload logic
-
-The backend returns presigned PUT URLs (one per part). Upload each part:
-```typescript
-async function uploadParts(
-  file: File,
-  presignedUrls: string[],
-  onProgress: (pct: number) => void
-): Promise<{ partNumber: number; etag: string }[]> {
-  const PART_SIZE = 5 * 1024 * 1024; // 5MB parts
-  const parts: { partNumber: number; etag: string }[] = [];
-
-  for (let i = 0; i < presignedUrls.length; i++) {
-    const start = i * PART_SIZE;
-    const chunk = file.slice(start, start + PART_SIZE);
-    const response = await fetch(presignedUrls[i], {
-      method: 'PUT',
-      body: chunk,
-      headers: { 'Content-Type': file.type },
-    });
-    const etag = response.headers.get('etag') ?? '';
-    parts.push({ partNumber: i + 1, etag });
-    onProgress(Math.round(((i + 1) / presignedUrls.length) * 100));
-  }
-
-  return parts;
-}
-```
-
-## Data Flow
-
-```
-User selects file
-  │
-  ├─ POST /v1/recordings { title: fileName, status: 'draft' }
-  │     → recordingId
-  │
-  ├─ POST /v1/uploads/initiate { recordingId, fileName, mimeType, totalBytes, protocol: 'multipart' }
-  │     → { uploadId, presignedUrls[] }
-  │
-  ├─ PUT presignedUrls[0..N] (file parts, 5MB each)
-  │     → ETags[]
-  │
-  ├─ POST /v1/uploads/:uploadId/complete { parts: [{partNumber, etag}] }
-  │
-  └─ redirect → /recordings/:recordingId
-```
-
-## Edge Cases
-
-| Case | Handling |
-|------|----------|
-| File > 2GB | Show error before upload starts (browser memory limit) |
-| Upload interrupted mid-way | Show "Resume" option (TUS protocol) or restart from part 0 |
-| Unsupported file type | Validate on file select, show inline error |
-| Recording creation fails | Show error, do not attempt upload |
-| Part upload fails | Retry that part up to 3 times before showing error |
-
-## Files to Create
+## Suggested Files To Create
 
 | File | Purpose |
 |------|---------|
-| `frontend/src/app/(authenticated)/recordings/new/page.tsx` | Upload + new recording page |
-| `frontend/src/components/upload/FileUploadZone.tsx` | Drag-and-drop file picker |
-| `frontend/src/components/upload/UploadProgress.tsx` | Progress indicator |
+| `frontend/src/app/(authenticated)/projects/new/page.tsx` | Upload entry route |
+| `frontend/src/components/upload/FileUploadZone.tsx` | File selection/drop |
+| `frontend/src/components/upload/UploadProgress.tsx` | Upload progress UI |
 
-## Files to Change
+## Suggested Files To Change
 
 | File | Change |
 |------|--------|
-| `frontend/src/components/dashboard/DashboardQuickActions.tsx` | Wire Upload button navigation |
-| `frontend/src/lib/api.ts` | Add `initiateUpload`, `completeUpload` |
+| `frontend/src/lib/dashboard/useHomeViewModel.ts` | Rewire Upload quick action |
+| `frontend/src/lib/api.ts` | Add upload wrappers if absent |
 
 ## Verification
 
-1. Click "Upload" on home dashboard → navigates to `/recordings/new?mode=upload`
-2. Drag a `.mp4` file onto the drop zone → shows file name and size
-3. Click Upload → progress bar shows upload advancing
-4. On completion → redirected to `/recordings/:id` page
-5. File appears in the recording's assets list
-6. Run `npm run typecheck` in `frontend/`
+1. Click `Upload` from home.
+2. Confirm navigation goes to `/projects/new?mode=upload`.
+3. Select a supported media file.
+4. Upload completes successfully.
+5. Completion redirects to `/projects/[id]`.
+6. The resulting project shows uploaded media in the canonical workspace.
+7. Run:
+
+```bash
+cd frontend && npm run typecheck
+cd frontend && npm run lint
+```

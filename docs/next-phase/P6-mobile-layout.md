@@ -1,140 +1,139 @@
-# P6 — Mobile Layout
+# P6 — Mobile Layout Refresh
 
-**Priority:** MEDIUM
-**Status:** Not started
-**Depends on:** Dashboard redesign (feat/project-page-layout) must be shipped
-**Effort:** Human ~3 days / CC ~1 hour
+**Priority:** MEDIUM  
+**Status:** Needs IA refresh before implementation  
+**Depends on:** Current projects-first dashboard/workspace structure  
+**Effort:** Human ~2-3 days / CC ~1 hour
 
 ---
 
-## Problem
+## Why This Doc Changed
 
-The current dashboard and studio are built desktop-first. Below tablet breakpoints:
-- Dashboard sidebar may overflow or collapse badly
-- Recording cards grid goes single-column but may not have correct spacing
-- Studio participant tiles are not responsive
-- The analytics panel overflows horizontally
+The older mobile doc assumed:
+- `Recordings` is a primary destination
+- mobile bottom nav should be `Home / Recordings / Upload / Profile`
+- project detail might still use the older right-rail layout
 
-## Target Breakpoints
+Those assumptions are stale.
 
-| Breakpoint | Target | Notes |
-|------------|--------|-------|
-| `xl` (1280px+) | Full two-column dashboard | Sidebar + main |
-| `lg` (1024px+) | Full dashboard, smaller sidebar | |
-| `md` (768px+) | Tablet — sidebar collapses to icon-only | |
-| `sm` (640px-) | Mobile — no sidebar, bottom nav | |
+Current IA:
+- `Home` is the dashboard
+- `Projects` is primary
+- `Project` page is canonical
+- `Recordings` is secondary archive
+- account is currently handled from the shell avatar/popover
 
-## Dashboard Mobile Layout
+## Current Problems
 
-### Navigation
+Below tablet widths:
+- the fixed authenticated sidebar is still desktop-heavy
+- the project workspace can get long and dense
+- account affordances are desktop-oriented
+- the dashboard grid and CTA sections are not yet intentionally mobile-designed
 
-**Desktop (≥md):** Left sidebar with icon + label
-**Mobile (<md):** Bottom navigation bar with 4 icons (Home, Recordings, Upload, Profile)
+## Updated Mobile IA
 
-```
-Mobile bottom nav:
-┌────────────────────────────────┐
-│  🏠 Home  📼 Rec  ⬆ Upload  👤  │
-└────────────────────────────────┘
-```
+### Desktop / large tablet
 
-### Dashboard Grid
+- keep the left workspace rail
 
-| Breakpoint | Layout |
-|------------|--------|
-| xl | 2-col: main content + analytics sidebar |
-| lg-md | Single column, analytics below main |
-| sm | Single column, analytics panel hidden (show "Stats" button) |
+### Small tablet
 
-### Recording Cards Grid
+- collapse the rail to icon-first mode
 
-```typescript
-// Current
-className="grid grid-cols-3 gap-4"
+### Mobile
 
-// Mobile-responsive
-className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
-```
+- hide the full left rail
+- replace it with a compact bottom navigation or equivalent mobile nav pattern
 
-### Quick Actions
+## Recommended Mobile Nav
 
-On mobile, Quick Actions should scroll horizontally rather than wrap:
-```typescript
-className="flex gap-3 overflow-x-auto pb-2 scrollbar-none"
-```
+Use:
+- `Home`
+- `Projects`
+- `Create` or `Upload`
+- `Account`
 
-## Studio Mobile Layout
+Do **not** make `Recordings` a primary mobile nav item.
+The archive can remain accessible from:
+- `Projects`
+- a `More` surface
+- an account/settings area if needed
 
-The studio page is inherently desktop-focused (WebRTC recording). On mobile:
-- Show a "Best experienced on desktop" banner below tablet
-- Still allow joining as guest on mobile (view only, audio recording)
-- Participant tiles: stack vertically on mobile instead of side-by-side
+## Project Page Mobile Rules
 
-```typescript
-// Participant tiles
-className="flex flex-col md:flex-row gap-4"
-```
+The current project page direction should remain:
+1. preview first
+2. tracks/artifacts below
+3. transcript below that
 
-## Implementation Steps
+Do not reintroduce a right-side rail on smaller screens.
 
-### Step 1 — Sidebar collapse (tablet)
+### Mobile stacking order
 
-In the authenticated layout sidebar, add tablet breakpoint behavior:
-- `md`: icon-only sidebar (48px wide, tooltips on hover)
-- `sm`: hide sidebar entirely
-
-```typescript
-// Sidebar width
-className="hidden md:flex w-12 lg:w-64 flex-col ..."
+```text
+Header
+Processing banner
+Hero preview
+Primary actions
+Tracks / artifacts
+Transcript
 ```
 
-### Step 2 — Bottom nav (mobile)
+## Dashboard Mobile Rules
 
-Create `frontend/src/components/layout/MobileBottomNav.tsx`:
-```typescript
-// Shows only on sm breakpoint
-// Links: Home, Recordings, Upload, Profile
-className="fixed bottom-0 left-0 right-0 md:hidden ..."
-```
+### Home
 
-### Step 3 — Responsive grids
+- quick actions should remain prominent
+- recent cards should become a single-column scroll/list on phones
+- analytics and AI tool modules should stack vertically
 
-Update each dashboard component's grid class:
-- `DashboardRecentGrid`: `grid-cols-1 sm:grid-cols-2 lg:grid-cols-3`
-- Analytics panel: move below main on mobile, hide on xs
+### Projects index
 
-### Step 4 — Studio mobile warning
+- card grid should collapse cleanly
+- filters/search should stack above the list
 
-In studio page, add a banner for mobile users:
-```typescript
-{isMobileBreakpoint && (
-  <div className="bg-amber-900/20 border border-amber-700 text-amber-300 px-4 py-2 text-sm">
-    Studio recording works best on desktop. Mobile is limited to audio-only.
-  </div>
-)}
-```
+### Recordings archive
 
-## Files to Create
+- remain simple and list-first
 
-| File | Purpose |
-|------|---------|
-| `frontend/src/components/layout/MobileBottomNav.tsx` | Mobile bottom navigation |
+## Studio Guidance
 
-## Files to Change
+Studio is still desktop-first.
+
+This phase may add:
+- better responsive spacing
+- guardrails/warnings for narrow screens
+
+But it should not attempt a large studio functional redesign.
+
+## Suggested Files To Change
 
 | File | Change |
 |------|--------|
-| `frontend/src/app/(authenticated)/layout.tsx` | Sidebar collapse at md, hide at sm |
-| `frontend/src/components/dashboard/DashboardRecentGrid.tsx` | Responsive grid cols |
-| `frontend/src/components/dashboard/DashboardQuickActions.tsx` | Horizontal scroll on mobile |
-| `frontend/src/components/dashboard/DashboardAnalyticsPanel.tsx` | Stack vertically on mobile |
-| `frontend/src/app/studio/[recordingId]/page.tsx` | Vertical tile stack + mobile warning |
+| `frontend/src/app/(authenticated)/layout.tsx` | Responsive shell adjustments |
+| `frontend/src/components/workspace/WorkspaceSidebar.tsx` | Tablet/mobile nav behavior |
+| `frontend/src/app/(authenticated)/page.tsx` and dashboard components | Responsive dashboard stacking |
+| `frontend/src/app/(authenticated)/projects/page.tsx` | Responsive project index layout |
+| `frontend/src/app/(authenticated)/projects/[id]/page.tsx` | Mobile-safe stacked workspace flow |
+| `frontend/src/app/studio/[recordingId]/page.tsx` | Light responsive support only |
 
 ## Verification
 
-1. Open Chrome DevTools → set viewport to 375px (iPhone)
-2. Dashboard: bottom nav visible, sidebar hidden, cards single-column
-3. Set viewport to 768px (iPad): sidebar shows icon-only, cards 2-column
-4. Set viewport to 1280px: full layout as designed
-5. Studio page on 375px: vertical tile stack, mobile warning banner visible
-6. Run `npm run typecheck` and `npm run lint` in `frontend/`
+Test at:
+- `375px`
+- `768px`
+- `1024px`
+- `1280px`
+
+Confirm:
+1. navigation stays usable
+2. project page remains preview -> tracks -> transcript
+3. home recents and project cards do not overflow
+4. account actions remain reachable on touch devices
+5. Run:
+
+```bash
+cd frontend && npm run typecheck
+cd frontend && npm run lint
+```
