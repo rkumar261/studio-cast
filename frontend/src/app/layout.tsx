@@ -1,6 +1,12 @@
 import './globals.css';
-import Navbar from '@/components/Navbar';
+import { Space_Grotesk } from 'next/font/google';
+import LegacyRouteNavbar from '@/components/LegacyRouteNavbar';
 import { SessionProvider } from '@/lib/useSession';
+
+const spaceGrotesk = Space_Grotesk({
+  subsets: ['latin'],
+  variable: '--font-space-grotesk',
+});
 
 export const metadata = {
   title: 'Studio Cast',
@@ -14,9 +20,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body suppressHydrationWarning>
+      <body suppressHydrationWarning className={spaceGrotesk.variable}>
         <SessionProvider>
-          <Navbar />
+          <LegacyRouteNavbar />
           <main>{children}</main>
         </SessionProvider>
       </body>

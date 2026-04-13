@@ -1,10 +1,13 @@
-import { createRecording } from '../repositories/recording.repo.js';
+import {
+  createRecording,
+  findRecordingById,
+  listRecordingsByOwner,
+  updateRecordingTitleById,
+} from '../repositories/recording.repo.js';
 import type { CreateRecordingResponse } from '../dto/recordings/create.dto.js';
 import type { GetRecordingResponse } from '../dto/recordings/get.dto.js';
-
-import { findRecordingById } from '../repositories/recording.repo.js';
 import { ListRecordingsResponse } from '../dto/recordings/list.dto.js';
-import { listRecordingsByOwner } from '../repositories/recording.repo.js';
+import { toPublicAssetUrl } from '../lib/public-assets.js';
 
 
 export type CreateRecordingArgs = {
@@ -51,6 +54,14 @@ export type GetRecordingResult =
   | { code: 'not_found' }
   | { code: 'forbidden' };
 
+export type RenameRecordingArgs = {
+  id: string;
+  requesterId?: string | null;
+  title?: string | null;
+};
+
+export type RenameRecordingResult = GetRecordingResult;
+
 export async function getRecordingService(
   args: GetRecordingArgs
 ): Promise<GetRecordingResult> {
@@ -74,17 +85,55 @@ export async function getRecordingService(
   return { code: 'ok', data };
 }
 
+export async function renameRecordingService(
+  args: RenameRecordingArgs
+): Promise<RenameRecordingResult> {
+  const rec = await findRecordingById(args.id);
+
+  if (!rec) return { code: 'not_found' };
+
+  if (rec.userId && rec.userId !== (args.requesterId ?? undefined)) {
+    return { code: 'forbidden' };
+  }
+
+  const raw = args.title ?? '';
+  const trimmed = raw.trim();
+  const safeTitle = trimmed.length > 0 ? trimmed : null;
+
+  const updated = await updateRecordingTitleById(args.id, safeTitle);
+
+  return {
+    code: 'ok',
+    data: {
+      recording: {
+        id: updated.id,
+        title: updated.title ?? undefined,
+        createdAt: updated.created_at.toISOString(),
+      },
+    },
+  };
+}
+
 export async function listRecordingService(userId: string, limit = 20, cursor?: string): Promise<ListRecordingsResponse> {
 
   const { rows, nextCursor } = await listRecordingsByOwner(userId, limit, cursor);
 
   return {
-    items: rows.map((r: any) => ({
-      id: r.id,
-      title: r.title ?? undefined,
-      status: r.status,
-      createdAt: r.created_at.toISOString(),
-    })),
+    items: rows.map((r: any) => {
+      const names: string[] = (r.participant ?? [])
+        .map((p: any) => p.display_name?.trim())
+        .filter(Boolean);
+      const combinedAsset = r.combined_asset?.[0];
+      return {
+        id: r.id,
+        title: r.title ?? undefined,
+        participantNames: names.length > 0 ? names : undefined,
+        status: r.status,
+        createdAt: r.created_at.toISOString(),
+        thumbnailUrl:
+          toPublicAssetUrl(combinedAsset?.preview_key ?? combinedAsset?.storage_key) ?? undefined,
+      };
+    }),
     nextCursor,
   };
 }

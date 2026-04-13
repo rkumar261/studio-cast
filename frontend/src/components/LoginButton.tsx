@@ -1,14 +1,19 @@
 'use client';
 import { ReactNode } from 'react';
+import {
+  writeAuthRedirectCookie,
+} from '@/lib/auth-redirect';
 import { AuthAPI } from '@/lib/api';
 
 type Props = {
   className?: string;
   children?: ReactNode;
+  nextPath?: string | null;
 };
 
-export default function LoginButton({ className, children }: Props) {
+export default function LoginButton({ className, children, nextPath }: Props) {
   const handleLogin = () => {
+    writeAuthRedirectCookie(nextPath);
     AuthAPI.googleStart(); // starts OAuth via backend
   };
 

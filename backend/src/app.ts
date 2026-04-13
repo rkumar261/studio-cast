@@ -5,6 +5,7 @@ import cookie from '@fastify/cookie';
 import { validateRequiredEnv } from './lib/validate-env.js';
 import healthRoutes from './routes/health.routes.js';
 import authRoutes from './routes/auth.routes.js';
+import analyticsRoutes from './routes/analytics.routes.js';
 import recordingRoutes from './routes/recordings.routes.js';
 import uploadsRoutes from './routes/uploads.routes.js';
 import participantRoutes from './routes/participants.routes.js';
@@ -56,6 +57,7 @@ export async function buildApp() {
 
   await app.register(healthRoutes);
   await app.register(authRoutes);
+  await app.register(analyticsRoutes);
   await app.register(recordingRoutes);
   await app.register(uploadsRoutes);
   await app.register(participantRoutes);

@@ -4,6 +4,7 @@ import { FormEvent, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import LoginButton from '@/components/LoginButton';
+import { buildAuthRedirectHref, normalizeAuthRedirectPath } from '@/lib/auth-redirect';
 
 type AuthMode = 'login' | 'register';
 
@@ -13,6 +14,11 @@ export default function StartPage() {
     () => (searchParams.get('mode') === 'login' ? 'login' : 'register'),
     [searchParams]
   );
+  const nextPath = useMemo(
+    () => normalizeAuthRedirectPath(searchParams.get('next')),
+    [searchParams]
+  );
+  const backHref = nextPath ? buildAuthRedirectHref('/landing', nextPath) : '/';
 
   const [mode, setMode] = useState<AuthMode>(initialMode);
   const [notice, setNotice] = useState<string | null>(null);
@@ -28,7 +34,10 @@ export default function StartPage() {
         <div className="grid gap-8 md:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] items-start">
           <section className="rounded-3xl border border-slate-800 bg-slate-900/80 p-6 md:p-8 shadow-2xl space-y-6">
             <div className="space-y-2">
-              <Link href="/" className="inline-flex items-center gap-2 text-xs text-slate-400 hover:text-slate-200">
+              <Link
+                href={backHref}
+                className="inline-flex items-center gap-2 text-xs text-slate-400 hover:text-slate-200"
+              >
                 ← Back
               </Link>
               <h1 className="text-2xl md:text-3xl font-semibold">
@@ -41,7 +50,10 @@ export default function StartPage() {
               </p>
             </div>
 
-            <LoginButton className="flex w-full items-center justify-center gap-2 rounded-lg bg-slate-100 px-4 py-2.5 text-sm font-medium text-slate-900 hover:bg-white">
+            <LoginButton
+              nextPath={nextPath}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-slate-100 px-4 py-2.5 text-sm font-medium text-slate-900 hover:bg-white"
+            >
               <span>Continue with Google</span>
             </LoginButton>
 
@@ -148,4 +160,3 @@ export default function StartPage() {
     </div>
   );
 }
-

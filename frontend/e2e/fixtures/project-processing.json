@@ -1,0 +1,128 @@
+{
+  "recording": {
+    "recording": {
+      "id": "rec_processing",
+      "title": "Raw & RAKESH",
+      "createdAt": "2026-03-30T08:39:00.000Z"
+    }
+  },
+  "progress": {
+    "recordingId": "rec_processing",
+    "studioState": "upload complete",
+    "projectState": "processing",
+    "session": {
+      "controlVersion": 1
+    },
+    "studio": {
+      "canOpenProject": true,
+      "keepPageOpen": false
+    },
+    "summary": {
+      "participantsTotal": 2,
+      "participantsComplete": 1,
+      "participantsUploading": 1,
+      "actionRequiredParticipants": 0
+    },
+    "participants": []
+  },
+  "projectAssets": {
+    "project": {
+      "recordingId": "rec_processing",
+      "title": "Raw & RAKESH",
+      "state": "processing",
+      "label": "Raw & RAKESH",
+      "minimumReady": false,
+      "fullyProcessed": false
+    },
+    "combinedAsset": {
+      "id": "combined_processing",
+      "kind": "combined",
+      "type": "combined_playback",
+      "label": "All participants",
+      "state": "processing",
+      "badges": [],
+      "durationMs": 45000,
+      "rawPreviewUrl": "https://example.com/combined-processing.mp4",
+      "availableDerivatives": [],
+      "minimumReady": false,
+      "fullyProcessed": false,
+      "pendingWork": [
+        {
+          "label": "Finalizing combined playback",
+          "state": "processing"
+        }
+      ],
+      "failedWork": [],
+      "actions": []
+    },
+    "participantAssets": [],
+    "processingSummary": {
+      "minimumReady": false,
+      "fullyProcessed": false,
+      "readyPrimaryAsset": false,
+      "readyParticipantCount": 0,
+      "participantCount": 2,
+      "pendingWork": [
+        {
+          "label": "Generate participant playback",
+          "state": "processing"
+        }
+      ],
+      "failedWork": []
+    },
+    "transcript": {
+      "id": "transcript_processing",
+      "type": "transcript_artifact",
+      "label": "Transcript",
+      "state": "processing",
+      "badges": [],
+      "minimumReady": false,
+      "fullyProcessed": false,
+      "pendingWork": [],
+      "failedWork": [],
+      "actions": []
+    },
+    "captions": {
+      "id": "captions_processing",
+      "type": "caption_derivative",
+      "label": "Captions",
+      "state": "processing",
+      "badges": [],
+      "minimumReady": false,
+      "fullyProcessed": false,
+      "pendingWork": [],
+      "failedWork": [],
+      "actions": []
+    },
+    "exports": {
+      "requiredTotal": 1,
+      "ready": 0,
+      "processing": 1,
+      "actionRequired": 0,
+      "items": [
+        {
+          "id": "export_processing",
+          "type": "mp4",
+          "label": "MP4 export",
+          "state": "processing",
+          "badges": [],
+          "minimumReady": false,
+          "fullyProcessed": false,
+          "pendingWork": [],
+          "failedWork": [],
+          "actions": []
+        }
+      ]
+    }
+  },
+  "recordingsList": {
+    "items": [
+      {
+        "id": "rec_related_2",
+        "title": "Archive session",
+        "status": "ready",
+        "createdAt": "2026-03-26T08:00:00.000Z"
+      }
+    ]
+  }
+}

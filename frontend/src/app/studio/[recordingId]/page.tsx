@@ -258,7 +258,7 @@ function ParticipantTile({
         if (!showPin || !onPin) return;
         revealControls();
       }}
-      className={`studio-rise group relative w-full ${fill ? 'h-full' : 'aspect-video'} overflow-hidden rounded-2xl border border-slate-800 bg-slate-950/70 ${className ?? ''}`}
+      className={`studio-rise studio-panel-muted group relative w-full ${fill ? 'h-full' : 'aspect-video'} overflow-hidden rounded-2xl ${className ?? ''}`}
     >
       <div className="absolute inset-0 pointer-events-none bg-gradient-to-b from-slate-900/30 via-transparent to-slate-950/60" />
       {hasVideo ? (
@@ -280,7 +280,7 @@ function ParticipantTile({
       )}
 
       {showBadge && !!tile.badge && (
-        <div className="absolute left-3 top-3 rounded-full bg-black/60 px-3 py-1 text-[11px] text-slate-100">
+        <div className="studio-chip-surface absolute left-3 top-3 rounded-full px-3 py-1 text-[11px] text-slate-100">
           {tile.badge}
         </div>
       )}
@@ -305,7 +305,7 @@ function ParticipantTile({
             className={`flex h-9 w-9 items-center justify-center rounded-full border ${
               micIsOff
                 ? 'border-rose-300/50 bg-rose-500/20 text-rose-100'
-                : 'border-slate-600/60 bg-black/45 text-slate-100'
+                : 'studio-chip-surface text-slate-100'
             }`}
             title={micIsOff ? 'Unmute participant' : 'Mute participant'}
             aria-label={micIsOff ? 'Unmute participant' : 'Mute participant'}
@@ -326,7 +326,7 @@ function ParticipantTile({
             className={`flex h-9 w-9 items-center justify-center rounded-full border ${
               isPinned
                 ? 'border-cyan-300/50 bg-cyan-500/25 text-cyan-100'
-                : 'border-slate-600/60 bg-black/45 text-slate-100'
+                : 'studio-chip-surface text-slate-100'
             }`}
             title={isPinned ? 'Unpin from stage' : 'Pin to stage'}
             aria-label={isPinned ? 'Unpin from stage' : 'Pin to stage'}
@@ -337,7 +337,7 @@ function ParticipantTile({
           </button>
         </div>
       )}
-      <div className="absolute left-3 bottom-3 rounded-full bg-black/60 px-3 py-1 text-[11px] text-slate-100">
+      <div className="studio-chip-surface absolute left-3 bottom-3 rounded-full px-3 py-1 text-[11px] text-slate-100">
         {tile.label}
       </div>
     </div>
@@ -2284,11 +2284,11 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
     if (isGuestWelcomeStep) {
       return (
-        <main className={`${spaceGrotesk.className} min-h-screen bg-[#090b10] text-slate-100`}>
+        <main className={`${spaceGrotesk.className} studio-shell-background min-h-screen text-slate-100`}>
           <div className="mx-auto flex min-h-screen w-full max-w-[980px] flex-col px-6 py-6">
             <header className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <Link href="/" className="text-slate-400 hover:text-slate-100">
+                <Link href="/" className="studio-control-surface rounded-full px-3 py-1.5 text-slate-300 hover:text-slate-100">
                   ←
                 </Link>
                 <p className="text-2xl font-semibold tracking-[0.2em]">STUDIO CAST</p>
@@ -2296,7 +2296,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
             </header>
 
             <section className="flex flex-1 items-center justify-center py-10">
-              <div className="w-full max-w-2xl rounded-3xl border border-slate-800 bg-[#121620] p-10">
+              <div className="studio-panel-surface w-full max-w-2xl rounded-3xl p-10">
                 <span className="inline-flex rounded-full border border-violet-400/40 bg-violet-500/10 px-4 py-2 text-sm text-violet-100">
                   Guest Invite
                 </span>
@@ -2320,7 +2320,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   type="button"
                   onClick={handleGuestWelcomeContinue}
                   disabled={!requestedGuestToken}
-                  className="mt-7 w-full rounded-xl bg-[#8b5cf6] px-4 py-3 text-xl font-semibold text-white hover:bg-[#7c4cf0] disabled:opacity-60"
+                  className="mt-7 w-full rounded-xl bg-[var(--workspace-purple)] px-4 py-3 text-xl font-semibold text-white hover:brightness-110 disabled:opacity-60"
                 >
                   Continue as guest
                 </button>
@@ -2332,11 +2332,11 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     }
 
     return (
-      <main className={`${spaceGrotesk.className} min-h-screen bg-[#090b10] text-slate-100`}>
+      <main className={`${spaceGrotesk.className} studio-shell-background min-h-screen text-slate-100`}>
         <div className="mx-auto flex min-h-screen w-full max-w-[1450px] flex-col px-6 py-6">
           <header className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <Link href="/" className="text-slate-400 hover:text-slate-100">
+              <Link href="/" className="studio-control-surface rounded-full px-3 py-1.5 text-slate-300 hover:text-slate-100">
                 ←
               </Link>
               <p className="text-2xl font-semibold tracking-[0.2em]">STUDIO CAST</p>
@@ -2345,7 +2345,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
             </div>
             <button
               type="button"
-              className="rounded-xl border border-slate-700 bg-[#161a22] px-4 py-2 text-sm text-slate-200 hover:border-slate-500"
+              className="studio-control-surface rounded-xl px-4 py-2 text-sm text-slate-200"
             >
               Get help
             </button>
@@ -2365,7 +2365,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 <h1 className="text-6xl font-semibold leading-tight">Let&apos;s check your cam and mic</h1>
 
                 <div className="space-y-3">
-                  <label className="flex items-center gap-2 rounded-xl border border-slate-700 bg-[#1a1e26] px-4 py-3">
+                  <label className="studio-input-surface flex items-center gap-2 rounded-xl px-4 py-3">
                     <input
                       type="text"
                       value={displayName}
@@ -2373,11 +2373,11 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                       className="min-w-0 flex-1 bg-transparent text-xl outline-none placeholder:text-slate-500"
                       placeholder={isGuestStudioFlow ? 'Your name (required)' : 'Your display name'}
                     />
-                    <span className="rounded-lg bg-[#2a2f39] px-3 py-1 text-sm text-slate-200">{localStudioRoleLabel}</span>
+                    <span className="rounded-lg border border-white/10 bg-white/8 px-3 py-1 text-sm text-slate-200">{localStudioRoleLabel}</span>
                   </label>
 
                   {isGuestStudioFlow && (
-                    <label className="flex items-center gap-2 rounded-xl border border-slate-700 bg-[#1a1e26] px-4 py-3">
+                    <label className="studio-input-surface flex items-center gap-2 rounded-xl px-4 py-3">
                       <input
                         type="email"
                         value={guestEmail}
@@ -2394,8 +2394,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                       onClick={() => setUsingHeadphones(false)}
                       className={`rounded-xl px-4 py-3 text-base ${
                         !usingHeadphones
-                          ? 'bg-[#2a2f39] text-white'
-                          : 'border border-slate-700 bg-[#171b22] text-slate-300'
+                          ? 'border border-violet-400/30 bg-violet-500/12 text-white'
+                          : 'studio-control-surface text-slate-300'
                       }`}
                     >
                       I am not using headphones
@@ -2405,8 +2405,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                       onClick={() => setUsingHeadphones(true)}
                       className={`rounded-xl px-4 py-3 text-base ${
                         usingHeadphones
-                          ? 'bg-[#2a2f39] text-white'
-                          : 'border border-slate-700 bg-[#171b22] text-slate-300'
+                          ? 'border border-violet-400/30 bg-violet-500/12 text-white'
+                          : 'studio-control-surface text-slate-300'
                       }`}
                     >
                       I am using headphones
@@ -2417,7 +2417,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     type="button"
                     onClick={handleJoinFromPreJoin}
                     disabled={preJoinStatus !== 'ready' || joiningFromPreJoin || guestNameMissing}
-                    className="w-full rounded-xl bg-[#8b5cf6] px-4 py-3 text-xl font-semibold text-white hover:bg-[#7c4cf0] disabled:opacity-60"
+                    className="w-full rounded-xl bg-[var(--workspace-purple)] px-4 py-3 text-xl font-semibold text-white hover:brightness-110 disabled:opacity-60"
                   >
                     {joiningFromPreJoin
                       ? 'Joining studio...'
@@ -2444,10 +2444,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 </div>
               </div>
 
-              <div className="rounded-3xl border border-slate-800 bg-[#151820] p-4">
+              <div className="studio-panel-surface rounded-3xl p-4">
                 <div className="relative overflow-hidden rounded-2xl bg-black">
                   <video ref={preJoinVideoRef} autoPlay playsInline muted className="aspect-video w-full object-cover" />
-                  <div className="absolute left-3 top-3 rounded-full bg-black/55 px-3 py-1 text-xs text-slate-100">
+                  <div className="studio-chip-surface absolute left-3 top-3 rounded-full px-3 py-1 text-xs text-slate-100">
                     720p / 30fps
                   </div>
                   <div className="absolute inset-x-0 bottom-4 flex items-center justify-center gap-2">
@@ -2455,7 +2455,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                       type="button"
                       onClick={togglePreJoinMic}
                       className={`rounded-full px-3 py-1 text-sm ${
-                        preJoinMicEnabled ? 'bg-[#1f2530] text-slate-100' : 'bg-rose-500 text-white'
+                        preJoinMicEnabled ? 'studio-chip-surface text-slate-100' : 'bg-rose-500 text-white'
                       }`}
                     >
                       {preJoinMicEnabled ? 'Mic' : 'Mic off'}
@@ -2464,7 +2464,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                       type="button"
                       onClick={togglePreJoinCam}
                       className={`rounded-full px-3 py-1 text-sm ${
-                        preJoinCamEnabled ? 'bg-[#1f2530] text-slate-100' : 'bg-rose-500 text-white'
+                        preJoinCamEnabled ? 'studio-chip-surface text-slate-100' : 'bg-rose-500 text-white'
                       }`}
                     >
                       {preJoinCamEnabled ? 'Cam' : 'Cam off'}
@@ -2473,7 +2473,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 </div>
 
                 <div className="mt-3 space-y-2">
-                  <label className="block rounded-xl border border-slate-700 bg-[#1a1f29] px-3 py-2 text-sm">
+                  <label className="studio-input-surface block rounded-xl px-3 py-2 text-sm">
                     <span className="mb-1 block text-xs text-slate-400">Camera</span>
                     <select
                       value={selectedCameraId}
@@ -2489,7 +2489,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     </select>
                   </label>
 
-                  <label className="block rounded-xl border border-slate-700 bg-[#1a1f29] px-3 py-2 text-sm">
+                  <label className="studio-input-surface block rounded-xl px-3 py-2 text-sm">
                     <span className="mb-1 block text-xs text-slate-400">Microphone</span>
                     <select
                       value={selectedMicId}
@@ -2505,7 +2505,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     </select>
                   </label>
 
-                  <label className="block rounded-xl border border-slate-700 bg-[#1a1f29] px-3 py-2 text-sm">
+                  <label className="studio-input-surface block rounded-xl px-3 py-2 text-sm">
                     <span className="mb-1 block text-xs text-slate-400">Speaker</span>
                     <select
                       value={selectedSpeakerId}
@@ -2524,7 +2524,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   <button
                     type="button"
                     onClick={startPreJoinPreview}
-                    className="w-full rounded-xl border border-slate-700 bg-[#171b23] px-3 py-2 text-sm text-slate-200 hover:border-slate-500"
+                    className="studio-control-surface w-full rounded-xl px-3 py-2 text-sm text-slate-200"
                   >
                     {preJoinStatus === 'starting' ? 'Refreshing preview...' : 'Refresh preview'}
                   </button>
@@ -2721,11 +2721,11 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     };
 
     return (
-      <main className={`${spaceGrotesk.className} h-screen overflow-hidden bg-[#07090f] text-slate-100`}>
+      <main className={`${spaceGrotesk.className} studio-shell-background h-screen overflow-hidden text-slate-100`}>
         <div className="mx-auto flex h-full w-full max-w-[1600px] flex-col px-5 py-4">
-          <header className="flex items-center justify-between rounded-2xl border border-[#1a1f2a] bg-[#0f131a] px-4 py-3">
+          <header className="studio-panel-surface flex items-center justify-between rounded-2xl px-4 py-3">
             <div className="flex min-w-0 items-center gap-3">
-              <Link href="/" className="rounded-full p-1 text-slate-300 hover:bg-[#1b2130] hover:text-white">
+              <Link href="/" className="studio-control-surface rounded-full p-1 text-slate-300 hover:text-white">
                 ←
               </Link>
               <p className="text-xl font-semibold tracking-[0.2em] text-slate-100">STUDIO CAST</p>
@@ -2748,7 +2748,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               {studioUiAccess.canUseBroadcastControls && (
                 <button
                   type="button"
-                  className="flex items-center rounded-2xl border border-[#2a2f3b] bg-[#1c212e] px-4 py-2 text-sm font-medium hover:border-slate-500"
+                  className="studio-control-surface flex items-center rounded-2xl px-4 py-2 text-sm font-medium"
                 >
                   <span className="mr-1.5 text-lg">+</span>
                   Live stream
@@ -2756,13 +2756,13 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               )}
               <button
                 type="button"
-                className="flex h-10 w-10 items-center justify-center rounded-2xl border border-[#2a2f3b] bg-[#1c212e] text-sm"
+                className="studio-control-surface flex h-10 w-10 items-center justify-center rounded-2xl text-sm"
               >
                 ?
               </button>
               <button
                 type="button"
-                className="flex h-10 w-10 items-center justify-center rounded-2xl border border-[#2a2f3b] bg-[#1c212e] text-sm"
+                className="studio-control-surface flex h-10 w-10 items-center justify-center rounded-2xl text-sm"
               >
                 ⚙
               </button>
@@ -2775,7 +2775,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     setInviteNotice(null);
                     setCopyState('idle');
                   }}
-                  className="rounded-2xl border border-[#2a2f3b] bg-[#1c212e] px-4 py-2 text-sm font-medium hover:border-slate-500"
+                  className="studio-control-surface rounded-2xl px-4 py-2 text-sm font-medium"
                 >
                   Invite
                 </button>
@@ -2828,10 +2828,10 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           )}
 
           <div className="mt-3 flex min-h-0 flex-1 gap-4">
-            <section className="flex min-h-0 flex-1 flex-col rounded-3xl bg-[#090b10] p-3">
+            <section className="flex min-h-0 flex-1 flex-col rounded-3xl border border-[color:var(--workspace-border)] bg-[rgba(12,14,18,0.72)] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
               <div className={`flex min-h-0 flex-1 gap-3 ${shouldReserveUploadBarSpace ? 'mb-20' : ''}`}>
                 {studioUiAccess.canSendInvites && showStudioInvitePanel && (
-                  <aside className="hidden w-[400px] shrink-0 rounded-3xl border border-[#2b303d] bg-[#1e222b] p-6 xl:flex xl:flex-col">
+                  <aside className="studio-panel-surface hidden w-[400px] shrink-0 rounded-3xl p-6 xl:flex xl:flex-col">
                     <div className="mb-8 flex items-start justify-between">
                       <h2 className="max-w-[260px] text-[44px] font-semibold leading-[0.98] text-slate-100">
                         Invite someone to join remotely
@@ -2850,39 +2850,39 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                         type="text"
                         readOnly
                         value={inviteLink}
-                        className="min-w-0 truncate rounded-xl border border-[#333949] bg-[#202633] px-3 py-2 text-sm text-slate-300"
+                        className="studio-input-surface min-w-0 truncate rounded-xl px-3 py-2 text-sm text-slate-300"
                       />
                       <select
                         value={inviteRole}
                         onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
-                        className="rounded-xl border border-[#333949] bg-[#202633] px-2 py-2 text-sm"
+                        className="studio-input-surface rounded-xl px-2 py-2 text-sm"
                       >
                         <option value="guest">Guest</option>
                       </select>
                       <button
                         type="button"
                         onClick={handleCopyInviteLink}
-                        className="rounded-xl bg-[#8b5cf6] px-2 py-2 text-sm font-semibold text-white hover:bg-[#7c4cf0]"
+                        className="rounded-xl bg-[var(--workspace-purple)] px-2 py-2 text-sm font-semibold text-white hover:brightness-110"
                       >
                         {copyState === 'copied' ? 'Copied' : 'Copy link'}
                       </button>
                     </div>
                     <div className="my-10 flex items-center gap-3 text-slate-500">
-                      <div className="h-px flex-1 bg-[#303646]" />
-                      <span className="rounded-full border border-[#3d4456] px-3 py-1 text-[11px] uppercase tracking-[0.18em]">New</span>
-                      <div className="h-px flex-1 bg-[#303646]" />
+                      <div className="h-px flex-1 bg-white/10" />
+                      <span className="rounded-full border border-white/12 px-3 py-1 text-[11px] uppercase tracking-[0.18em]">New</span>
+                      <div className="h-px flex-1 bg-white/10" />
                     </div>
                     <p className="text-4xl font-semibold leading-tight text-slate-100">Record someone next to you</p>
                     <button
                       type="button"
-                      className="mt-6 rounded-xl border border-[#3a4051] bg-[#2f3542] px-4 py-3 text-lg font-medium text-slate-100"
+                      className="studio-control-surface mt-6 rounded-xl px-4 py-3 text-lg font-medium text-slate-100"
                     >
                       Add an in-person guest <span className="ml-1 text-lime-300">⚡</span>
                     </button>
                   </aside>
                 )}
 
-                <div className="flex min-h-0 flex-1 rounded-3xl bg-[#05070c] p-2">
+                <div className="studio-stage-surface flex min-h-0 flex-1 rounded-3xl p-2">
                   {/* U3: screen_share_dominant layout — one large screen + webcam thumbnail row */}
                   {isScreenShareDominant ? (
                     <div className="flex h-full w-full flex-col gap-2">
@@ -2956,7 +2956,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               </div>
 
               <footer className="mt-4 flex justify-center">
-                <div className="flex flex-wrap items-start justify-center gap-3 rounded-2xl border border-slate-800 bg-[#121722] px-4 py-3">
+                <div className="studio-panel-muted flex flex-wrap items-start justify-center gap-3 rounded-2xl px-4 py-3">
                   {localStudioRole === 'host' && (
                     <>
                       <div className="flex flex-col items-center gap-1">
@@ -2980,7 +2980,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   <div className="flex flex-col items-center gap-1">
                     <button
                       type="button"
-                      className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100"
+                      className="studio-control-surface flex h-12 w-12 items-center justify-center rounded-xl text-slate-100"
                     >
                       <StudioControlIcon kind="mark" />
                     </button>
@@ -2992,7 +2992,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                       type="button"
                       onClick={active.toggleMic}
                       className={`flex h-12 w-12 items-center justify-center rounded-xl ${
-                        isMicOff ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40' : 'bg-[#222834] text-slate-100'
+                        isMicOff ? 'border border-rose-500/40 bg-rose-500/20 text-rose-300' : 'studio-control-surface text-slate-100'
                       }`}
                     >
                       <StudioControlIcon kind="mic" off={isMicOff} />
@@ -3005,7 +3005,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                       type="button"
                       onClick={active.toggleCamera}
                       className={`flex h-12 w-12 items-center justify-center rounded-xl ${
-                        isCamOff ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40' : 'bg-[#222834] text-slate-100'
+                        isCamOff ? 'border border-rose-500/40 bg-rose-500/20 text-rose-300' : 'studio-control-surface text-slate-100'
                       }`}
                     >
                       <StudioControlIcon kind="cam" off={isCamOff} />
@@ -3014,31 +3014,31 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   </div>
 
                   <div className="flex flex-col items-center gap-1">
-                    <button type="button" className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100">
+                    <button type="button" className="studio-control-surface flex h-12 w-12 items-center justify-center rounded-xl text-slate-100">
                       <StudioControlIcon kind="speaker" />
                     </button>
                     <span className="text-[10px] text-slate-400">Speaker</span>
                   </div>
                   <div className="flex flex-col items-center gap-1">
-                    <button type="button" className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100">
+                    <button type="button" className="studio-control-surface flex h-12 w-12 items-center justify-center rounded-xl text-slate-100">
                       <StudioControlIcon kind="react" />
                     </button>
                     <span className="text-[10px] text-slate-400">React</span>
                   </div>
                   <div className="flex flex-col items-center gap-1">
-                    <button type="button" className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100">
+                    <button type="button" className="studio-control-surface flex h-12 w-12 items-center justify-center rounded-xl text-slate-100">
                       <StudioControlIcon kind="raise" />
                     </button>
                     <span className="text-[10px] text-slate-400">Raise</span>
                   </div>
                   <div className="flex flex-col items-center gap-1">
-                    <button type="button" className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100">
+                    <button type="button" className="studio-control-surface flex h-12 w-12 items-center justify-center rounded-xl text-slate-100">
                       <StudioControlIcon kind="layout" />
                     </button>
                     <span className="text-[10px] text-slate-400">Layout</span>
                   </div>
                   <div className="flex flex-col items-center gap-1">
-                    <button type="button" className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#222834] text-slate-100">
+                    <button type="button" className="studio-control-surface flex h-12 w-12 items-center justify-center rounded-xl text-slate-100">
                       <StudioControlIcon kind="script" />
                     </button>
                     <span className="text-[10px] text-slate-400">Script</span>
@@ -3050,7 +3050,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                       className={`flex h-12 w-12 items-center justify-center rounded-xl ${
                         active.isScreenSharing
                           ? 'border border-cyan-400/60 bg-cyan-500/20 text-cyan-100'
-                          : 'bg-[#222834] text-slate-100'
+                          : 'studio-control-surface text-slate-100'
                       }`}
                     >
                       <StudioControlIcon kind="share" />
@@ -3086,7 +3086,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
             <div className="flex">
               {showStudioPeoplePanel && (
-                <aside className="w-[336px] rounded-3xl border border-[#252b38] bg-[#1a1f28] p-4">
+                <aside className="studio-panel-surface w-[336px] rounded-3xl p-4">
                   <div className="flex items-center justify-between">
                     <h2 className="text-5xl font-semibold leading-none text-slate-100">People</h2>
                     <button
@@ -3101,7 +3101,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     </button>
                   </div>
 
-                  <div className="mt-4 rounded-xl border border-[#2f3544] bg-[#242a36] p-3">
+                  <div className="studio-panel-muted mt-4 rounded-xl p-3">
                     <div className="flex items-center justify-between">
                       <p className="text-sm text-slate-300">Recording info</p>
                       <span className="text-slate-500">⌄</span>
@@ -3110,9 +3110,9 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
                   <div className="mt-4 space-y-3">
                     {peopleForPanel.map((person) => (
-                      <div key={person.id} className="rounded-xl border border-[#2f3544] bg-[#242a36] p-3">
+                      <div key={person.id} className="studio-panel-muted rounded-xl p-3">
                         <div className="flex items-start gap-3">
-                          <div className="h-14 w-14 rounded-md border border-[#3a4153] bg-slate-900" />
+                          <div className="h-14 w-14 rounded-md border border-white/10 bg-slate-900/80" />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center justify-between gap-2">
                               <p className="truncate text-xl font-semibold text-slate-100">{person.label}</p>
@@ -3125,14 +3125,14 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                           </div>
                         </div>
                         {person.showProgressBar ? (
-                          <div className="mt-3 h-1.5 w-full rounded-full bg-[#2f3748]">
+                          <div className="mt-3 h-1.5 w-full rounded-full bg-white/8">
                             <div
                               className="h-full rounded-full bg-emerald-300/90"
                               style={{ width: `${Math.max(person.percent, 5)}%` }}
                             />
                           </div>
                         ) : (
-                          <div className="mt-3 h-1.5 w-full rounded-full bg-[#2f3748]/65" />
+                          <div className="mt-3 h-1.5 w-full rounded-full bg-white/6" />
                         )}
                         {/* U1: Remove button for host during stopped_uploading phase */}
                         {stoppedUploadingPhase && studioUiAccess.canManageParticipants && person.id !== 'local-live' && person.role !== 'Host' && (
@@ -3149,7 +3149,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   </div>
 
                   {studioUiAccess.canManageParticipants && showAddParticipantPanel && (
-                    <div className="mt-4 rounded-xl border border-[#2f3544] bg-[#242a36] p-3">
+                    <div className="studio-panel-muted mt-4 rounded-xl p-3">
                       <button
                         type="button"
                         onClick={() => {
@@ -3158,7 +3158,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                           setCopyState('idle');
                           setShowAddParticipantPanel(false);
                         }}
-                        className="w-full rounded-xl bg-[#3a3f4a] px-4 py-3 text-left hover:bg-[#464e5f]"
+                        className="studio-control-surface w-full rounded-xl px-4 py-3 text-left hover:bg-white/8"
                       >
                         <p className="text-lg font-semibold text-slate-100">Remote guest</p>
                         <p className="text-sm text-slate-400">Send a link to someone joining from another device</p>
@@ -3183,7 +3183,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     <button
                       type="button"
                       onClick={() => setShowAddParticipantPanel((prev) => !prev)}
-                      className="mt-4 w-full rounded-xl border border-[#3a4051] bg-[#252b37] px-3 py-2.5 text-lg text-slate-100 hover:border-slate-500"
+                      className="studio-control-surface mt-4 w-full rounded-xl px-3 py-2.5 text-lg text-slate-100"
                     >
                       + Add participant
                     </button>
@@ -3191,7 +3191,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 </aside>
               )}
 
-              <div className="ml-3 flex w-[88px] shrink-0 flex-col items-center justify-center gap-5 rounded-[30px] border border-[#1a2334] bg-[#0b1322] py-7">
+              <div className="studio-panel-muted ml-3 flex w-[88px] shrink-0 flex-col items-center justify-center gap-5 rounded-[30px] py-7">
                 <button
                   type="button"
                   onClick={() =>
@@ -3205,8 +3205,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                   }
                   className={`flex w-[70px] flex-col items-center rounded-[24px] px-2 py-3 text-[13px] font-medium transition-colors ${
                     showStudioPeoplePanel
-                      ? 'bg-[#303a52] text-white'
-                      : 'bg-transparent text-[#8da0bf] hover:text-[#c7d3e8]'
+                      ? 'border border-violet-400/30 bg-violet-500/15 text-white'
+                      : 'bg-transparent text-slate-400 hover:text-slate-200'
                   }`}
                 >
                   <span className="mb-1">
@@ -3216,28 +3216,28 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                 </button>
                 <button
                   type="button"
-                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-[#8da0bf] transition-colors hover:text-[#c7d3e8]"
+                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-slate-400 transition-colors hover:text-slate-200"
                 >
                   <StudioSidebarIcon kind="chat" />
                   Chat
                 </button>
                 <button
                   type="button"
-                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-[#8da0bf] transition-colors hover:text-[#c7d3e8]"
+                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-slate-400 transition-colors hover:text-slate-200"
                 >
                   <StudioSidebarIcon kind="brand" />
                   Brand
                 </button>
                 <button
                   type="button"
-                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-[#8da0bf] transition-colors hover:text-[#c7d3e8]"
+                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-slate-400 transition-colors hover:text-slate-200"
                 >
                   <StudioSidebarIcon kind="text" />
                   Text
                 </button>
                 <button
                   type="button"
-                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-[#8da0bf] transition-colors hover:text-[#c7d3e8]"
+                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-slate-400 transition-colors hover:text-slate-200"
                 >
                   <StudioSidebarIcon kind="media" />
                   Media
@@ -3292,7 +3292,7 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
         {studioUiAccess.canSendInvites && isInviteModalOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
-            <div className="w-full max-w-[760px] rounded-3xl border border-[#373d4a] bg-[#20242d] p-6 shadow-2xl">
+            <div className="studio-panel-surface w-full max-w-[760px] rounded-3xl p-6 shadow-2xl">
               <div className="mb-4 flex items-center justify-between">
                 <h3 className="text-4xl font-semibold text-slate-100">Invite people</h3>
                 <button
@@ -3320,19 +3320,19 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     type="text"
                     readOnly
                     value={inviteLink}
-                    className="rounded-xl border border-[#3a4151] bg-[#2b3140] px-3 py-3 text-sm text-slate-100"
+                    className="studio-input-surface rounded-xl px-3 py-3 text-sm text-slate-100"
                   />
                   <select
                     value={inviteRole}
                     onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
-                    className="rounded-xl border border-[#3a4151] bg-[#2b3140] px-3 py-3 text-sm text-slate-100"
+                    className="studio-input-surface rounded-xl px-3 py-3 text-sm text-slate-100"
                   >
                     <option value="guest">Guest</option>
                   </select>
                   <button
                     type="button"
                     onClick={handleCopyInviteLink}
-                    className="rounded-xl bg-[#8b5cf6] px-3 py-3 text-sm font-semibold text-white hover:bg-[#7c4cf0]"
+                    className="rounded-xl bg-[var(--workspace-purple)] px-3 py-3 text-sm font-semibold text-white hover:brightness-110"
                   >
                     {copyState === 'copied' ? 'Copied' : 'Copy link'}
                   </button>
@@ -3340,9 +3340,9 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
               </div>
 
               <div className="my-5 flex items-center gap-3">
-                <div className="h-px flex-1 bg-[#404756]" />
+                <div className="h-px flex-1 bg-white/10" />
                 <span className="text-slate-400">Or</span>
-                <div className="h-px flex-1 bg-[#404756]" />
+                <div className="h-px flex-1 bg-white/10" />
               </div>
 
               <div className="space-y-3">
@@ -3356,19 +3356,19 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
                     value={inviteEmail}
                     onChange={(event) => setInviteEmail(event.target.value)}
                     placeholder="example@email.com"
-                    className="rounded-xl border border-[#3a4151] bg-[#2b3140] px-3 py-3 text-sm text-slate-100 placeholder:text-slate-500"
+                    className="studio-input-surface rounded-xl px-3 py-3 text-sm text-slate-100 placeholder:text-slate-500"
                   />
                   <select
                     value={inviteRole}
                     onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
-                    className="rounded-xl border border-[#3a4151] bg-[#2b3140] px-3 py-3 text-sm text-slate-100"
+                    className="studio-input-surface rounded-xl px-3 py-3 text-sm text-slate-100"
                   >
                     <option value="guest">Guest</option>
                   </select>
                   <button
                     type="button"
                     onClick={handleInviteByEmail}
-                    className="rounded-xl bg-[#8b5cf6] px-3 py-3 text-sm font-semibold text-white hover:bg-[#7c4cf0]"
+                    className="rounded-xl bg-[var(--workspace-purple)] px-3 py-3 text-sm font-semibold text-white hover:brightness-110"
                   >
                     Send invite
                   </button>

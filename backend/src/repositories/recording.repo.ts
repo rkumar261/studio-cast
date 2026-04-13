@@ -25,6 +25,13 @@ export async function findRecordingById(id: string) {
     });
 }
 
+export async function updateRecordingTitleById(id: string, title: string | null) {
+    return prisma.recording.update({
+        where: { id },
+        data: { title },
+    });
+}
+
 export async function listTrackByRecordingId(recordingId: string) {
     return prisma.track.findMany({ 
         where: { recording_id: recordingId },
@@ -35,9 +42,18 @@ export async function listTrackByRecordingId(recordingId: string) {
 export async function listRecordingsByOwner(userId: string, limit: number, cursor?: string) {
     const rows = await prisma.recording.findMany({
         where: { userId },
-        orderBy: { created_at: 'asc' },
+        orderBy: [{ created_at: 'desc' }, { id: 'desc' }],
         take: limit + 1,
         ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+        include: {
+            participant: {
+                select: { display_name: true, role: true },
+                orderBy: { id: 'asc' },
+            },
+            combined_asset: {
+                select: { preview_key: true, storage_key: true },
+            },
+        },
     })
 
     let nextCursor: string | undefined = undefined;

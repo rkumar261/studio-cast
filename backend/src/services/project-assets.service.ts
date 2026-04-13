@@ -566,20 +566,28 @@ export async function getProjectAssetsGraphService(args: {
     },
   };
 
-  const pendingWork = [
+  const dedupeByLabel = <T extends { label: string }>(items: T[]): T[] => {
+    const seen = new Set<string>();
+    return items.filter((item) => {
+      if (seen.has(item.label)) return false;
+      seen.add(item.label);
+      return true;
+    });
+  };
+  const pendingWork = dedupeByLabel([
     ...data.combinedAsset.pendingWork,
     ...data.participantAssets.flatMap((asset) => asset.pendingWork),
     ...data.transcript.pendingWork,
     ...data.captions.pendingWork,
     ...data.exports.items.flatMap((item) => item.pendingWork),
-  ];
-  const failedWork = [
+  ]);
+  const failedWork = dedupeByLabel([
     ...data.combinedAsset.failedWork,
     ...data.participantAssets.flatMap((asset) => asset.failedWork),
     ...data.transcript.failedWork,
     ...data.captions.failedWork,
     ...data.exports.items.flatMap((item) => item.failedWork),
-  ];
+  ]);
   const minimumReady = data.combinedAsset.state === 'ready'
     && data.processingSummary.readyParticipantCount > 0;
   const fullyProcessed = minimumReady && pendingWork.length === 0;

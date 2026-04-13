@@ -43,19 +43,21 @@ async function api<T>(
   }
 
   if (!res.ok) {
-    let detail: any = undefined;
+    let detail: unknown = undefined;
     try {
       detail = await res.json();
     } catch {
       detail = undefined;
     }
+    const detailRecord =
+      typeof detail === 'object' && detail !== null ? (detail as Record<string, unknown>) : null;
     const code =
-      typeof detail === 'object' && detail !== null
-        ? String(detail.code ?? detail.error ?? 'http_error')
+      detailRecord
+        ? String(detailRecord.code ?? detailRecord.error ?? 'http_error')
         : 'http_error';
     const message =
-      typeof detail === 'object' && detail !== null && 'message' in detail
-        ? String(detail.message)
+      detailRecord && 'message' in detailRecord
+        ? String(detailRecord.message)
         : `HTTP ${res.status}`;
     const requestId = res.headers.get('x-request-id') ?? undefined;
     const err = new Error(message) as Error & {
@@ -65,7 +67,7 @@ async function api<T>(
       status?: number;
     };
     err.code = code;
-    err.details = typeof detail === 'object' && detail !== null ? detail.details : undefined;
+    err.details = detailRecord?.details;
     err.requestId = requestId;
     err.status = res.status;
     throw err;
@@ -86,9 +88,12 @@ export const AuthAPI = {
     setApiAuthMode('default');
     return data.user; // unwrap here
   },
-  logout: () => {
+  logout: async () => {
     setApiAuthMode('default');
-    return fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' });
+    const res = await fetch(`${API_BASE}/auth/logout`, { method: 'POST', credentials: 'include' });
+    if (!res.ok) {
+      throw new Error(`Logout failed with status ${res.status}`);
+    }
   },
   // Google OAuth start is a redirect; just bounce the browser:
   googleStart: () => {
@@ -97,13 +102,30 @@ export const AuthAPI = {
   },
 };
 
+export type AnalyticsSummaryResponse = {
+  totalMinutesRecorded: number;
+  projectCount: number;
+  lastRecordingAt: string | null;
+};
+
+export const AnalyticsAPI = {
+  summary: async () => api<AnalyticsSummaryResponse>('/v1/analytics/summary'),
+};
+
 // ---- Recordings ----
 export type CreateRecordingResponse = {
   recording: { id: string; title?: string; status: string; createdAt: string };
 };
 
 export type ListRecordingsResponse = {
-  items: Array<{ id: string; title?: string; status: string; createdAt: string }>;
+  items: Array<{
+    id: string;
+    title?: string;
+    participantNames?: string[];
+    status: string;
+    createdAt: string;
+    thumbnailUrl?: string;
+  }>;
   nextCursor?: string;
 };
 
@@ -250,6 +272,43 @@ export type RecordingSessionResponse = {
   canControl: boolean;
 };
 
+export type UploadKind = 'audio' | 'video' | 'screen';
+export type UploadProtocol = 'tus' | 'multipart';
+
+export type InitiateUploadRequest = {
+  recordingId: string;
+  participantId: string;
+  kind: UploadKind;
+  protocol: UploadProtocol;
+  filename?: string;
+  size?: number;
+  contentType?: string;
+  partSize?: number;
+};
+
+export type InitiateUploadResponse = {
+  upload: {
+    id: string;
+    trackId: string;
+    protocol: UploadProtocol;
+    state: 'in_progress';
+  };
+  tusEndpoint?: string;
+  presignedUrls?: string[];
+  partSize?: number;
+};
+
+export type CompleteMultipartUploadRequest = {
+  protocol: 'multipart';
+  parts: Array<{ partNumber: number; etag: string }>;
+  totalBytes?: number;
+};
+
+export type CompleteUploadResponse = {
+  ok: true;
+  jobId: string;
+};
+
 export type RecordingParticipantProgressDto = {
   participantId: string;
   role: 'host' | 'guest' | string;
@@ -291,6 +350,11 @@ export const RecordingsAPI = {
   listMine: (limit = 20, cursor?: string) =>
     api<ListRecordingsResponse>(`/v1/recordings?owner=me&limit=${limit}${cursor ? `&cursor=${cursor}` : ''}`),
   getById: (id: string) => api<GetRecordingResponse>(`/v1/recordings/${id}`),
+  rename: (id: string, title: string) =>
+    api<GetRecordingResponse>(`/v1/recordings/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    }),
   getProjectAssets: (id: string) =>
     api<GetProjectAssetsGraphResponse>(`/v1/recordings/${id}/project-assets`),
   getSession: (id: string) =>
@@ -345,6 +409,19 @@ export const ParticipantsAPI = {
     }),
   list: (recordingId: string) =>
     api<GetParticipantsResponse>(`/v1/recordings/${recordingId}/participants`),
+};
+
+export const UploadsAPI = {
+  initiate: (body: InitiateUploadRequest) =>
+    api<InitiateUploadResponse>('/v1/uploads/initiate', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  completeMultipart: (uploadId: string, body: CompleteMultipartUploadRequest) =>
+    api<CompleteUploadResponse>(`/v1/uploads/${uploadId}/complete`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 };
 
 // --- Transcript types & API ---

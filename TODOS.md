@@ -49,3 +49,35 @@
 
 ---
 
+## Deferred from feat/project-page-layout (dashboard + project workspace redesign)
+
+### Wire real analytics data to DashboardAnalyticsPanel
+**What:** Replace the "coming soon" placeholder in `DashboardAnalyticsPanel` with real per-user metrics (total minutes recorded, episode count, last recording date) from a new `/v1/analytics/summary` backend endpoint.
+
+**Why:** The analytics section is built slot-ready (accepts optional data props, shows preview badge when absent) but has no real data. Users see empty placeholder state indefinitely.
+
+**Pros:** Completes the home dashboard experience. Gives users meaningful usage insight.
+
+**Cons:** Requires a new backend endpoint with DB aggregation queries. Not blocking for alpha.
+
+**Context:** `DashboardAnalyticsPanel` in `frontend/src/components/dashboard/` accepts `data?: AnalyticsSummary` prop. When absent, renders a "Coming soon" badge. Backend needs `GET /v1/analytics/summary` returning `{ totalMinutesRecorded, episodeCount, lastRecordingAt }`. Add to the recordings domain service.
+
+**Depends on:** Dashboard redesign (feat/project-page-layout) must be shipped first.
+
+---
+
+### Harden middleware auth check with JWT signature verification
+**What:** The `middleware.ts` added in feat/project-page-layout checks only for cookie *presence* to determine auth state for redirect logic. Upgrade to verify the JWT signature using `jose` so tampered or expired tokens don't pass the middleware redirect.
+
+**Why:** Cookie presence check can be bypassed by setting a fake `access_token` cookie, which would redirect users to the authenticated shell where all API calls will 401. Not a security hole (APIs still check JWT) but causes confusing UX.
+
+**Pros:** Correct behavior on expired/invalid tokens — middleware redirects to sign-in rather than bouncing at the API layer.
+
+**Cons:** `jose` JWT verify adds ~5ms latency to every request hitting the middleware matcher. The public key must be available at the edge runtime (check Next.js edge runtime constraints for file system access).
+
+**Context:** Middleware is at `frontend/src/middleware.ts`. Auth uses RS256 keypair. The public key is at `JWT_PUBLIC_KEY_PATH` on the backend — for the frontend edge, export the public key as `NEXT_PUBLIC_JWT_PUBLIC_KEY` env var (safe, it's a public key). Use `jose.importSPKI` + `jose.jwtVerify`.
+
+**Depends on:** feat/project-page-layout middleware must be shipped first.
+
+---
+
