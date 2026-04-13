@@ -87,3 +87,63 @@ select {
 .studio-rise {
   animation: studio-rise 0.35s ease-out;
 }
+
+.studio-shell-background {
+  background:
+    radial-gradient(circle at top, rgba(124, 92, 255, 0.1), transparent 26%),
+    radial-gradient(circle at 18% 22%, rgba(101, 212, 129, 0.06), transparent 18%),
+    var(--workspace-bg);
+}
+
+.studio-panel-surface {
+  border: 1px solid var(--workspace-border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0) 22%),
+    rgba(23, 24, 30, 0.94);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    0 18px 50px rgba(0, 0, 0, 0.24);
+}
+
+.studio-panel-muted {
+  border: 1px solid var(--workspace-border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0) 24%),
+    rgba(29, 31, 39, 0.94);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+
+.studio-stage-surface {
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background:
+    radial-gradient(circle at 30% 30%, rgba(124, 92, 255, 0.08), transparent 24%),
+    radial-gradient(circle at 70% 70%, rgba(101, 212, 129, 0.05), transparent 20%),
+    #06080d;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.02),
+    0 20px 40px rgba(0, 0, 0, 0.2);
+}
+
+.studio-control-surface {
+  border: 1px solid var(--workspace-border);
+  background: rgba(255, 255, 255, 0.045);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+.studio-control-surface:hover {
+  border-color: var(--workspace-border-strong);
+}
+
+.studio-input-surface {
+  border: 1px solid var(--workspace-border);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0) 30%),
+    rgba(31, 33, 41, 0.96);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+.studio-chip-surface {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(8, 9, 14, 0.62);
+  backdrop-filter: blur(12px);
+}

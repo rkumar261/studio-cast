@@ -7,6 +7,12 @@ type ProjectFixture = {
   recordingsList?: unknown;
 };
 
+type AnalyticsSummaryFixture = {
+  totalMinutesRecorded: number;
+  projectCount: number;
+  lastRecordingAt: string | null;
+};
+
 const DEFAULT_USER = {
   user: {
     id: 'user_e2e',
@@ -45,21 +51,30 @@ export async function mockAuthedSession(
   input: {
     recordingsList?: unknown;
     project?: ProjectFixture;
+    analyticsSummary?: AnalyticsSummaryFixture | null;
+    analyticsStatus?: number;
+    seedSessionCookie?: boolean;
+    logoutStatus?: number;
   } = {}
 ) {
   let signedOut = false;
+  const seedSessionCookie = input.seedSessionCookie ?? true;
+  const logoutStatus = input.logoutStatus ?? 204;
+  const analyticsStatus = input.analyticsStatus ?? 200;
 
-  await page.context().addCookies([
-    {
-      name: 'studio_cast_session',
-      value: '1',
-      domain: '127.0.0.1',
-      path: '/',
-      httpOnly: false,
-      secure: false,
-      sameSite: 'Lax',
-    },
-  ]);
+  if (seedSessionCookie) {
+    await page.context().addCookies([
+      {
+        name: 'studio_cast_session',
+        value: '1',
+        domain: '127.0.0.1',
+        path: '/',
+        httpOnly: false,
+        secure: false,
+        sameSite: 'Lax',
+      },
+    ]);
+  }
 
   await page.route('**/auth/me', async (route) => {
     if (signedOut) {
@@ -79,10 +94,13 @@ export async function mockAuthedSession(
   });
 
   await page.route('**/auth/logout', async (route) => {
-    signedOut = true;
+    if (logoutStatus >= 200 && logoutStatus < 300) {
+      signedOut = true;
+    }
     await route.fulfill({
-      status: 204,
-      body: '',
+      status: logoutStatus,
+      contentType: 'application/json',
+      body: logoutStatus === 204 ? '' : JSON.stringify({ error: 'logout_failed' }),
     });
   });
 
@@ -91,6 +109,33 @@ export async function mockAuthedSession(
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify(input.recordingsList ?? input.project?.recordingsList ?? { items: [] }),
+    });
+  });
+
+  await page.route('**/v1/analytics/summary', async (route) => {
+    if (analyticsStatus >= 400) {
+      await route.fulfill({
+        status: analyticsStatus,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: 'analytics_unavailable' }),
+      });
+      return;
+    }
+
+    const list = (input.recordingsList ??
+      input.project?.recordingsList ??
+      { items: [] }) as { items?: Array<{ createdAt?: string }> };
+
+    const derivedSummary: AnalyticsSummaryFixture = {
+      totalMinutesRecorded: Math.max(0, (list.items?.length ?? 0) * 12),
+      projectCount: list.items?.length ?? 0,
+      lastRecordingAt: list.items?.[0]?.createdAt ?? null,
+    };
+
+    await route.fulfill({
+      status: analyticsStatus,
+      contentType: 'application/json',
+      body: JSON.stringify(input.analyticsSummary ?? derivedSummary),
     });
   });
 

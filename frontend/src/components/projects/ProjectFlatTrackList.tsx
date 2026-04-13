@@ -17,42 +17,40 @@ function TrackFlatRow({
 }) {
   const isReady = track.state === 'ready';
   return (
-    <div className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.02] transition-colors">
-      {/* Avatar */}
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/[0.06] text-sm font-semibold text-slate-300">
-        {track.title.charAt(0).toUpperCase()}
+    <div className="flex flex-col gap-3 px-4 py-3 transition-colors hover:bg-white/[0.02] sm:flex-row sm:items-center">
+      <div className="flex min-w-0 items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/[0.06] text-sm font-semibold text-slate-300">
+          {track.title.charAt(0).toUpperCase()}
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-white">{track.title}</p>
+          <p className="text-xs text-slate-500">{track.subtitle}</p>
+          {track.warnings.length > 0 && (
+            <p className="mt-0.5 text-xs text-amber-300">{track.warnings.join(' · ')}</p>
+          )}
+        </div>
       </div>
 
-      {/* Name + meta */}
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-white">{track.title}</p>
-        <p className="text-xs text-slate-500">{track.subtitle}</p>
-        {track.warnings.length > 0 && (
-          <p className="mt-0.5 text-xs text-amber-300">{track.warnings.join(' · ')}</p>
-        )}
-      </div>
+      <div className="flex flex-wrap items-center gap-3 sm:ml-auto sm:flex-nowrap">
+        <div className="flex shrink-0 items-center gap-1.5">
+          {isReady ? (
+            <span className="flex items-center gap-1 text-xs text-emerald-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              Ready
+            </span>
+          ) : (
+            <span className="text-xs text-slate-500">{track.stateLabel}</span>
+          )}
+        </div>
 
-      {/* State */}
-      <div className="flex shrink-0 items-center gap-1.5">
-        {isReady ? (
-          <span className="flex items-center gap-1 text-xs text-emerald-400">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            Ready
-          </span>
-        ) : (
-          <span className="text-xs text-slate-500">{track.stateLabel}</span>
-        )}
-      </div>
-
-      {/* Actions */}
-      <div className="flex shrink-0 items-center gap-2">
         {track.actions.map((action) => (
           <button
             key={action.id}
             type="button"
             disabled={busyId === action.id}
             onClick={() => void onAction(action)}
-            className="flex items-center gap-1.5 rounded-lg border border-white/8 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-white/16 hover:text-white disabled:opacity-50 transition-colors"
+            className="flex items-center gap-1.5 rounded-lg border border-white/8 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:border-white/16 hover:text-white disabled:opacity-50"
           >
             <svg className="h-3.5 w-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
@@ -91,41 +89,39 @@ function ArtifactFlatRow({
     );
 
   return (
-    <div className="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.02] transition-colors">
-      {/* Icon */}
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/[0.04]">
-        {icon}
+    <div className="flex flex-col gap-3 px-4 py-3 transition-colors hover:bg-white/[0.02] sm:flex-row sm:items-center">
+      <div className="flex min-w-0 items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/[0.04]">
+          {icon}
+        </div>
+
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-white">{artifact.title}</p>
+          {artifact.blockedReason && (
+            <p className="text-xs text-amber-300">{artifact.blockedReason}</p>
+          )}
+        </div>
       </div>
 
-      {/* Name + meta */}
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-white">{artifact.title}</p>
-        {artifact.blockedReason && (
-          <p className="text-xs text-amber-300">{artifact.blockedReason}</p>
-        )}
-      </div>
+      <div className="flex flex-wrap items-center gap-3 sm:ml-auto sm:flex-nowrap">
+        <div className="flex shrink-0 items-center gap-1.5">
+          {isReady ? (
+            <span className="flex items-center gap-1 text-xs text-emerald-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              Ready
+            </span>
+          ) : (
+            <span className="text-xs text-slate-500">{artifact.stateLabel}</span>
+          )}
+        </div>
 
-      {/* State */}
-      <div className="flex shrink-0 items-center gap-1.5">
-        {isReady ? (
-          <span className="flex items-center gap-1 text-xs text-emerald-400">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            Ready
-          </span>
-        ) : (
-          <span className="text-xs text-slate-500">{artifact.stateLabel}</span>
-        )}
-      </div>
-
-      {/* Actions */}
-      <div className="flex shrink-0 items-center gap-2">
         {artifact.actions.map((action) => (
           <button
             key={action.id}
             type="button"
             disabled={busyId === action.id}
             onClick={() => void onAction(action)}
-            className="flex items-center gap-1.5 rounded-lg border border-white/8 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-white/16 hover:text-white disabled:opacity-50 transition-colors"
+            className="flex items-center gap-1.5 rounded-lg border border-white/8 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:border-white/16 hover:text-white disabled:opacity-50"
           >
             {busyId === action.id ? '...' : action.label}
           </button>
@@ -149,7 +145,7 @@ export default function ProjectFlatTrackList({
   const hasContent = tracks.length > 0 || artifacts.length > 0;
 
   return (
-    <section>
+    <section data-testid="project-track-list">
       <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-500">
         Tracks
       </p>

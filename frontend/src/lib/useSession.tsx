@@ -1,5 +1,6 @@
 'use client';
 import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { clearAuthRedirectCookie } from '@/lib/auth-redirect';
 import { AuthAPI } from '@/lib/api';
 
 type Profile = {
@@ -56,13 +57,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }
 
   async function logout() {
+    setIsLoading(true);
     try {
       await AuthAPI.logout();
-    } catch {
-      // Clear local session state even if the network request fails.
-    } finally {
       clearFrontendSessionCookies();
+      clearAuthRedirectCookie();
       setProfile(null);
+    } finally {
       setIsLoading(false);
     }
   }

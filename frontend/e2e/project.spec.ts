@@ -43,6 +43,21 @@ test('project title can be renamed inline', async ({ page }) => {
   await expect(page.locator('header')).toContainText('Rakesh & Raw Man');
 });
 
+test('project title rename can be cancelled with escape', async ({ page }) => {
+  await mockAuthedSession(page, { project: projectReady });
+
+  await page.goto('/projects/rec_ready');
+
+  await page.getByRole('button', { name: 'Raw & RAKESH' }).click();
+  const input = page.getByLabel('Project title');
+  await input.fill('This should not persist');
+  await input.press('Escape');
+
+  await expect(page.getByRole('button', { name: 'Raw & RAKESH' })).toBeVisible();
+  await expect(page.getByLabel('Project title')).toHaveCount(0);
+  await expect(page.locator('header')).not.toContainText('This should not persist');
+});
+
 test('project workspace keeps captions single and transcript out of the flat list', async ({ page }) => {
   await mockAuthedSession(page, { project: projectProcessing });
 
@@ -50,4 +65,17 @@ test('project workspace keeps captions single and transcript out of the flat lis
 
   await expect(page.getByText('Captions', { exact: true })).toHaveCount(1);
   await expect(page.getByText('Transcript', { exact: true })).toHaveCount(1);
+});
+
+test('transcript search filters results and shows an empty state for misses', async ({ page }) => {
+  await mockAuthedSession(page, { project: projectReady });
+
+  await page.goto('/projects/rec_ready');
+
+  const search = page.getByPlaceholder('Search transcript text or speaker...');
+  await search.fill('studio');
+  await expect(page.getByText('Welcome to Studio Cast.')).toBeVisible();
+
+  await search.fill('does-not-exist');
+  await expect(page.getByText('No segments match your search.')).toBeVisible();
 });

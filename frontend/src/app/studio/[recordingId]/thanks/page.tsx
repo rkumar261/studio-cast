@@ -40,8 +40,8 @@ export default function StudioGuestThanksPage({ params }: GuestThanksProps) {
   });
 
   return (
-    <main className={`${spaceGrotesk.className} flex min-h-screen items-center justify-center bg-[#07090f] px-6 text-slate-100`}>
-      <div className="w-full max-w-2xl rounded-3xl border border-slate-800 bg-[#111620] p-8 text-center">
+    <main className={`${spaceGrotesk.className} studio-shell-background flex min-h-screen items-center justify-center px-6 text-slate-100`}>
+      <div className="studio-panel-surface w-full max-w-2xl rounded-3xl p-8 text-center">
         <p className="text-5xl font-semibold">
           {uploadState === 'uploading'
             ? 'Uploading'
@@ -56,7 +56,7 @@ export default function StudioGuestThanksPage({ params }: GuestThanksProps) {
               ? 'This upload needs attention. Retry the failed upload before closing the page.'
               : 'Your recording upload is complete. You can close this tab now.'}
         </p>
-        <div className="mt-6 rounded-xl border border-slate-700 bg-[#181f2d] p-4 text-left">
+        <div className="studio-panel-muted mt-6 rounded-xl p-4 text-left">
           <p className="text-xs uppercase tracking-[0.18em] text-slate-400">Upload status</p>
           <div className="mt-2 flex items-center justify-between text-sm text-slate-200">
             <span>{toConsumerStateLabel(uploadState)}</span>
@@ -78,7 +78,7 @@ export default function StudioGuestThanksPage({ params }: GuestThanksProps) {
         <div className="mt-6">
           <Link
             href="/"
-            className="inline-flex rounded-xl border border-slate-700 bg-[#1b2230] px-4 py-2 text-sm text-slate-100 hover:border-slate-500"
+            className="studio-control-surface inline-flex rounded-xl px-4 py-2 text-sm text-slate-100"
           >
             Back to home
           </Link>

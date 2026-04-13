@@ -45,10 +45,10 @@ export default function DashboardQuickActions({
 }) {
   return (
     <section
-      className="flex flex-col items-center justify-center gap-8 py-8 md:py-12"
+      className="flex flex-col items-center justify-center gap-6 py-6 md:gap-8 md:py-12"
       data-testid="dashboard-quick-actions"
     >
-      <div className="flex flex-wrap items-start justify-center gap-6 md:gap-8">
+      <div className="flex flex-wrap items-start justify-center gap-4 sm:gap-5 md:gap-8">
         {actions.map((action) => {
           const busy = busyAction === action.key;
           const primary = action.key === 'record';
@@ -58,10 +58,10 @@ export default function DashboardQuickActions({
               type="button"
               onClick={() => onQuickAction(action.key)}
               disabled={busyAction !== null}
-              className="group flex w-[110px] flex-col items-center gap-3 text-center disabled:opacity-70"
+              className="group flex w-[88px] flex-col items-center gap-2 text-center disabled:opacity-70 sm:w-[96px] md:w-[110px] md:gap-3"
             >
               <span
-                className={`flex h-[92px] w-[92px] items-center justify-center rounded-full border transition ${
+                className={`flex h-[72px] w-[72px] items-center justify-center rounded-full border transition sm:h-[80px] sm:w-[80px] md:h-[92px] md:w-[92px] ${
                   primary
                     ? 'border-rose-400/20 bg-rose-500/12 text-rose-200 shadow-[0_12px_30px_rgba(244,87,116,0.12)]'
                     : 'border-white/5 bg-white/[0.03] text-slate-100 group-hover:bg-white/[0.06]'
@@ -69,10 +69,10 @@ export default function DashboardQuickActions({
               >
                 {ICONS[action.key]}
               </span>
-              <span className="text-lg font-semibold text-white">
+              <span className="text-sm font-semibold text-white sm:text-base md:text-lg">
                 {busy ? 'Opening...' : action.label}
               </span>
-              <span className="text-xs text-slate-500">{action.caption}</span>
+              <span className="text-[11px] leading-4 text-slate-500 md:text-xs">{action.caption}</span>
             </button>
           );
         })}

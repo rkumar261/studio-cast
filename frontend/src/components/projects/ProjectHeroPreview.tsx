@@ -10,15 +10,21 @@ export default function ProjectHeroPreview({
 }) {
   if (!hero) {
     return (
-      <section className="rounded-[1.75rem] border border-white/6 bg-white/[0.03] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] md:p-5">
+      <section
+        className="rounded-[1.75rem] border border-white/6 bg-white/[0.03] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] md:p-5"
+        data-testid="project-hero-preview"
+      >
         <div className="aspect-[16/10] rounded-[1.35rem] border border-white/5 bg-black/20 lg:aspect-[16/9.25]" />
       </section>
     );
   }
 
   return (
-    <section className="rounded-[1.75rem] border border-white/6 bg-white/[0.03] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] md:p-5">
-      <div className="flex items-start justify-between gap-4">
+    <section
+      className="rounded-[1.75rem] border border-white/6 bg-white/[0.03] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] md:p-5"
+      data-testid="project-hero-preview"
+    >
+      <div className="flex flex-col items-start justify-between gap-3 sm:flex-row">
         <div>
           <p className="text-xl font-semibold text-white">{hero.label}</p>
           <p className="mt-1 text-sm text-slate-400">

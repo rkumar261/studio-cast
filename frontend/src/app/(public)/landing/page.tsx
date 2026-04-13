@@ -2,16 +2,30 @@
 
 import Link from 'next/link';
 import { useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
+import {
+  buildAuthRedirectHref,
+  clearAuthRedirectCookie,
+  normalizeAuthRedirectPath,
+} from '@/lib/auth-redirect';
 import { useSession } from '@/lib/useSession';
 
 export default function PublicLandingPage() {
   const { profile, isLoading } = useSession();
+  const searchParams = useSearchParams();
+  const nextPath = normalizeAuthRedirectPath(searchParams.get('next'));
+  const startHref = buildAuthRedirectHref('/start', nextPath);
+  const loginHref = `/start?${new URLSearchParams({
+    mode: 'login',
+    ...(nextPath ? { next: nextPath } : {}),
+  }).toString()}`;
 
   useEffect(() => {
     if (!isLoading && profile) {
-      window.location.replace('/');
+      clearAuthRedirectCookie();
+      window.location.replace(nextPath ?? '/');
     }
-  }, [isLoading, profile]);
+  }, [isLoading, nextPath, profile]);
 
   return (
     <div className="min-h-[calc(100vh-56px)] bg-slate-950 text-slate-50">
@@ -46,13 +60,13 @@ export default function PublicLandingPage() {
             </div>
             <div className="flex items-center gap-3 pt-2">
               <Link
-                href="/start"
+                href={startHref}
                 className="rounded-xl bg-violet-500 px-6 py-3 text-base font-semibold text-white hover:bg-violet-400"
               >
                 Start for free
               </Link>
               <Link
-                href="/start?mode=login"
+                href={loginHref}
                 className="rounded-xl border border-white/30 px-6 py-3 text-base text-slate-100 hover:bg-white/10"
               >
                 Login

@@ -41,9 +41,15 @@ export default function AuthenticatedHomePage() {
         error={viewModel.recentsError}
       />
 
-      <DashboardAnalyticsPanel data={viewModel.analyticsData} />
+      <DashboardAnalyticsPanel
+        data={viewModel.analyticsData}
+        cta={viewModel.secondaryCta}
+      />
 
-      <DashboardAiToolsRail tools={viewModel.aiTools} />
+      <DashboardAiToolsRail
+        tools={viewModel.aiTools}
+        exploreHref={viewModel.aiToolsExploreHref}
+      />
     </div>
   );
 }

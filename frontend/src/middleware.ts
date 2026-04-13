@@ -1,5 +1,9 @@
 import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
+import {
+  normalizeAuthRedirectPath,
+  POST_AUTH_REDIRECT_COOKIE,
+} from '@/lib/auth-redirect';
 
 function isProtectedPath(pathname: string) {
   return (
@@ -17,20 +21,54 @@ export function middleware(req: NextRequest) {
   const isAuthed = Boolean(
     req.cookies.get('studio_cast_session')?.value || req.cookies.get('access_token')?.value
   );
+  const nextFromQuery = normalizeAuthRedirectPath(req.nextUrl.searchParams.get('next'));
+  const nextFromCookie = normalizeAuthRedirectPath(
+    req.cookies.get(POST_AUTH_REDIRECT_COOKIE)?.value
+  );
 
   if (pathname === '/') {
     if (!isAuthed) {
       return NextResponse.rewrite(new URL('/landing', req.url));
     }
+
+    if (nextFromCookie && nextFromCookie !== '/') {
+      const response = NextResponse.redirect(new URL(nextFromCookie, req.url));
+      response.cookies.delete(POST_AUTH_REDIRECT_COOKIE);
+      return response;
+    }
+
     return NextResponse.next();
   }
 
   if (pathname === '/landing' && isAuthed) {
-    return NextResponse.redirect(new URL('/', req.url));
+    const target = nextFromQuery ?? nextFromCookie ?? '/';
+    const response = NextResponse.redirect(new URL(target, req.url));
+    response.cookies.delete(POST_AUTH_REDIRECT_COOKIE);
+    return response;
   }
 
   if (isProtectedPath(pathname) && !isAuthed) {
-    return NextResponse.redirect(new URL('/', req.url));
+    const requestedPath = normalizeAuthRedirectPath(
+      `${pathname}${req.nextUrl.search || ''}`
+    );
+    const landingUrl = new URL('/landing', req.url);
+
+    if (requestedPath && requestedPath !== '/') {
+      landingUrl.searchParams.set('next', requestedPath);
+      const response = NextResponse.redirect(landingUrl);
+      response.cookies.set({
+        name: POST_AUTH_REDIRECT_COOKIE,
+        value: encodeURIComponent(requestedPath),
+        path: '/',
+        sameSite: 'lax',
+        secure: req.nextUrl.protocol === 'https:',
+      });
+      return response;
+    } else {
+      const response = NextResponse.redirect(landingUrl);
+      response.cookies.delete(POST_AUTH_REDIRECT_COOKIE);
+      return response;
+    }
   }
 
   return NextResponse.next();

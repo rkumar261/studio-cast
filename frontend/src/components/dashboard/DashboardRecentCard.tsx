@@ -52,9 +52,9 @@ export default function DashboardRecentCard({
         </div>
       </Link>
 
-      <div className="mt-4 flex items-start justify-between gap-3">
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="space-y-1">
-          <p className="text-xl font-semibold text-white">{card.title}</p>
+          <p className="text-lg font-semibold text-white sm:text-xl">{card.title}</p>
           <p className="text-sm text-slate-400">
             Recorded {card.createdLabel ?? 'recently'}
           </p>
@@ -64,7 +64,7 @@ export default function DashboardRecentCard({
         </div>
         <Link
           href={card.href}
-          className="rounded-full border border-white/8 px-3 py-2 text-xs text-slate-300 hover:border-white/14 hover:text-white"
+          className="w-full rounded-full border border-white/8 px-3 py-2 text-center text-xs text-slate-300 hover:border-white/14 hover:text-white sm:w-auto"
         >
           Open project
         </Link>

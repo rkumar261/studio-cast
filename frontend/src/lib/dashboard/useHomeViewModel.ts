@@ -2,11 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { RecordingsAPI, type ListRecordingsResponse } from '@/lib/api';
+import {
+  AnalyticsAPI,
+  type AnalyticsSummaryResponse,
+  RecordingsAPI,
+  type ListRecordingsResponse,
+} from '@/lib/api';
 import { useSession } from '@/lib/useSession';
 import { createRoomId } from '@/lib/studio/roomId';
 import {
   buildRecordingCardViewModel,
+  formatRecordingCreatedLabel,
   type RecordingCardViewModel,
 } from '@/lib/recording-card-view-model';
 
@@ -23,12 +29,28 @@ export type AiToolCardViewModel = {
   title: string;
   description: string;
   imageStyle: string;
+  href?: string;
+  ctaLabel: string;
+  disabled?: boolean;
 };
 
 export type AnalyticsSummaryData = {
   totalMinutesRecorded: number;
-  episodeCount: number;
-  lastRecordingAt: string;
+  projectCount: number;
+  lastRecordingAt?: string;
+};
+
+export type HomeSecondaryCtaViewModel = {
+  title: string;
+  description: string;
+  primaryAction: {
+    label: string;
+    href: string;
+  };
+  secondaryAction: {
+    label: string;
+    href: string;
+  };
 };
 
 export type HomeViewModel = {
@@ -42,6 +64,8 @@ export type HomeViewModel = {
   analyticsData?: AnalyticsSummaryData;
   quickActions: QuickActionViewModel[];
   aiTools: AiToolCardViewModel[];
+  aiToolsExploreHref: string;
+  secondaryCta: HomeSecondaryCtaViewModel;
   onQuickAction: (key: Exclude<BusyAction, null>) => Promise<void> | void;
 };
 
@@ -50,7 +74,7 @@ const QUICK_ACTIONS: QuickActionViewModel[] = [
   { key: 'edit', label: 'Edit', caption: 'Jump back into a recent project' },
   { key: 'go-live', label: 'Go live', caption: 'Launch an instant meet room' },
   { key: 'schedule', label: 'Schedule', caption: 'Plan upcoming sessions' },
-  { key: 'upload', label: 'Upload', caption: 'Open the archive workspace' },
+  { key: 'upload', label: 'Upload', caption: 'Import pre-recorded media into a project' },
 ];
 
 const AI_TOOLS: AiToolCardViewModel[] = [
@@ -60,6 +84,7 @@ const AI_TOOLS: AiToolCardViewModel[] = [
     description: 'Translate, dub, and localize your finished recordings for new audiences.',
     imageStyle:
       'bg-[radial-gradient(circle_at_20%_20%,rgba(152,109,255,0.55),transparent_35%),linear-gradient(135deg,#17102a,#261547_60%,#0f1020)]',
+    ctaLabel: 'Open transcript',
   },
   {
     id: 'magic-audio',
@@ -67,6 +92,7 @@ const AI_TOOLS: AiToolCardViewModel[] = [
     description: 'Clean and balance remote audio into a polished studio-quality mix.',
     imageStyle:
       'bg-[linear-gradient(140deg,#101217,#181b22_30%,#0d0f13)]',
+    ctaLabel: 'Open tracks',
   },
   {
     id: 'clips',
@@ -74,6 +100,7 @@ const AI_TOOLS: AiToolCardViewModel[] = [
     description: 'Generate social-ready cuts from long-form recordings in a few clicks.',
     imageStyle:
       'bg-[radial-gradient(circle_at_65%_35%,rgba(255,255,255,0.16),transparent_25%),linear-gradient(140deg,#13141b,#1c1b24_50%,#0e0f14)]',
+    ctaLabel: 'Coming soon',
   },
 ];
 
@@ -98,6 +125,81 @@ export function buildHomeRecordingCards(
   );
 }
 
+export function buildHomeAiTools(latestProjectHref?: string): AiToolCardViewModel[] {
+  return AI_TOOLS.map((tool) => {
+    if (tool.id === 'clips') {
+      return {
+        ...tool,
+        disabled: true,
+      };
+    }
+
+    if (!latestProjectHref) {
+      return {
+        ...tool,
+        disabled: true,
+      };
+    }
+
+    const href =
+      tool.id === 'translate'
+        ? `${latestProjectHref}#transcript`
+        : `${latestProjectHref}#tracks`;
+
+    return {
+      ...tool,
+      href,
+      disabled: false,
+    };
+  });
+}
+
+export function buildHomeSecondaryCta(
+  latestProjectHref?: string
+): HomeSecondaryCtaViewModel {
+  return latestProjectHref
+    ? {
+        title: 'Keep the workspace moving',
+        description:
+          'Jump back into your latest project or upload media into a fresh workspace.',
+        primaryAction: {
+          label: 'Open latest project',
+          href: latestProjectHref,
+        },
+        secondaryAction: {
+          label: 'Upload media',
+          href: '/projects/new?mode=upload',
+        },
+      }
+    : {
+        title: 'Start your next project',
+        description:
+          'Create a new project workspace or bring in pre-recorded media to keep shipping.',
+        primaryAction: {
+          label: 'Create project',
+          href: '/projects',
+        },
+        secondaryAction: {
+          label: 'Upload media',
+          href: '/projects/new?mode=upload',
+        },
+      };
+}
+
+export function buildHomeAnalyticsData(
+  summary?: AnalyticsSummaryResponse | null
+): AnalyticsSummaryData | undefined {
+  if (!summary) return undefined;
+
+  return {
+    totalMinutesRecorded: Math.max(0, summary.totalMinutesRecorded ?? 0),
+    projectCount: Math.max(0, summary.projectCount ?? 0),
+    lastRecordingAt: summary.lastRecordingAt
+      ? formatRecordingCreatedLabel(summary.lastRecordingAt)
+      : undefined,
+  };
+}
+
 export default function useHomeViewModel(): HomeViewModel {
   const router = useRouter();
   const { profile, isLoading } = useSession();
@@ -106,6 +208,7 @@ export default function useHomeViewModel(): HomeViewModel {
   const [recentsError, setRecentsError] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [analyticsData, setAnalyticsData] = useState<AnalyticsSummaryData | undefined>(undefined);
 
   useEffect(() => {
     if (!profile) {
@@ -137,7 +240,32 @@ export default function useHomeViewModel(): HomeViewModel {
     };
   }, [profile]);
 
+  useEffect(() => {
+    if (!profile) {
+      setAnalyticsData(undefined);
+      return;
+    }
+
+    let active = true;
+    setAnalyticsData(undefined);
+
+    AnalyticsAPI.summary()
+      .then((summary) => {
+        if (!active) return;
+        setAnalyticsData(buildHomeAnalyticsData(summary));
+      })
+      .catch(() => {
+        if (!active) return;
+        setAnalyticsData(undefined);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [profile]);
+
   const latestProjectHref = recents[0]?.href ?? '/projects';
+  const latestProjectTarget = recents[0]?.href;
 
   const onQuickAction = useCallback(
     async (key: Exclude<BusyAction, null>) => {
@@ -166,7 +294,7 @@ export default function useHomeViewModel(): HomeViewModel {
           return;
         }
 
-        router.push('/recordings');
+        router.push('/projects/new?mode=upload');
       } catch (error) {
         setActionError((error as Error).message || 'Unable to open that workflow.');
       } finally {
@@ -176,15 +304,15 @@ export default function useHomeViewModel(): HomeViewModel {
     [latestProjectHref, router]
   );
 
-  const analyticsData = useMemo<AnalyticsSummaryData | undefined>(() => {
-    if (!recents.length) return undefined;
+  const aiTools = useMemo(
+    () => buildHomeAiTools(latestProjectTarget),
+    [latestProjectTarget]
+  );
 
-    return {
-      totalMinutesRecorded: recents.length * 12,
-      episodeCount: recents.length,
-      lastRecordingAt: recents[0]?.createdLabel ?? 'Recently',
-    };
-  }, [recents]);
+  const secondaryCta = useMemo(
+    () => buildHomeSecondaryCta(latestProjectTarget),
+    [latestProjectTarget]
+  );
 
   return {
     isLoading,
@@ -196,7 +324,9 @@ export default function useHomeViewModel(): HomeViewModel {
     actionError,
     analyticsData,
     quickActions: QUICK_ACTIONS,
-    aiTools: AI_TOOLS,
+    aiTools,
+    aiToolsExploreHref: '/projects',
+    secondaryCta,
     onQuickAction,
   };
 }

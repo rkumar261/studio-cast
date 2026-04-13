@@ -50,8 +50,8 @@ function ProjectIndexCard({
       </div>
 
       <div className="mt-5 space-y-2">
-        <div className="flex items-center justify-between gap-3">
-          <p className="line-clamp-1 text-2xl font-semibold text-white">{project.title}</p>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <p className="line-clamp-1 text-xl font-semibold text-white sm:text-2xl">{project.title}</p>
           <span className="text-sm text-slate-500">Open</span>
         </div>
         <p className="text-base text-slate-400">
@@ -87,15 +87,15 @@ export default function ProjectsIndexPage() {
 
   return (
     <div className="space-y-8 pb-4">
-      <header className="flex flex-wrap items-start justify-between gap-4">
+      <header className="flex flex-col items-start justify-between gap-4 lg:flex-row">
         <div className="space-y-2">
-          <h1 className="text-4xl font-semibold tracking-tight text-white">Projects</h1>
+          <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">Projects</h1>
           <p className="max-w-2xl text-sm leading-6 text-slate-400">
             Open a project to manage tracks, exports, transcript work, and every recording-related action in one place.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex w-full flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-end lg:w-auto">
           <div className="flex items-center gap-2 rounded-2xl border border-white/6 bg-white/[0.03] p-1">
             <button
               type="button"
@@ -130,7 +130,7 @@ export default function ProjectsIndexPage() {
             type="button"
             onClick={() => void createProject()}
             disabled={creating}
-            className="rounded-2xl bg-[var(--workspace-purple)] px-5 py-3 text-sm font-semibold text-white disabled:opacity-60"
+            className="rounded-2xl bg-[var(--workspace-purple)] px-5 py-3 text-sm font-semibold text-white disabled:opacity-60 sm:min-w-[140px]"
           >
             {creating ? 'Creating...' : 'New project'}
           </button>
@@ -138,24 +138,24 @@ export default function ProjectsIndexPage() {
       </header>
 
       <section className="space-y-5 rounded-[1.6rem] border border-white/6 bg-white/[0.03] p-5" data-testid="projects-index-grid">
-        <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex flex-col items-start justify-between gap-4 lg:flex-row lg:items-center">
           <div>
             <p className="text-sm uppercase tracking-[0.18em] text-slate-500">Workspace</p>
             <h2 className="mt-2 text-2xl font-semibold text-white">Recent and active projects</h2>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex w-full flex-col items-stretch gap-3 sm:flex-row sm:items-center lg:w-auto">
             <input
               type="search"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search projects"
               aria-label="Search projects"
-              className="w-full min-w-[260px] rounded-2xl border border-white/8 bg-black/15 px-4 py-3 text-sm text-white placeholder:text-slate-500 outline-none"
+              className="w-full min-w-0 rounded-2xl border border-white/8 bg-black/15 px-4 py-3 text-sm text-white placeholder:text-slate-500 outline-none sm:min-w-[260px]"
             />
             <Link
               href="/recordings"
-              className="rounded-2xl border border-white/8 bg-white/[0.02] px-4 py-3 text-sm font-medium text-slate-200"
+              className="rounded-2xl border border-white/8 bg-white/[0.02] px-4 py-3 text-center text-sm font-medium text-slate-200"
             >
               All recordings
             </Link>

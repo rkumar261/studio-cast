@@ -29,10 +29,10 @@ export default function RecordingsArchivePage() {
 
   return (
     <div className="space-y-8 pb-4">
-      <header className="flex flex-wrap items-start justify-between gap-4">
+      <header className="flex flex-col items-start justify-between gap-4 lg:flex-row">
         <div className="space-y-2">
           <p className="text-sm uppercase tracking-[0.18em] text-slate-500">All recordings</p>
-          <h1 className="text-4xl font-semibold tracking-tight text-white">Recording archive</h1>
+          <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">Recording archive</h1>
           <p className="max-w-2xl text-sm leading-6 text-slate-400">
             Browse every recording in one place. Open a project when you need the full
             workspace.
@@ -49,7 +49,7 @@ export default function RecordingsArchivePage() {
       </header>
 
       <section className="rounded-[1.5rem] border border-white/6 bg-white/[0.03] p-5">
-        <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex flex-col items-start justify-between gap-4 lg:flex-row lg:items-center">
           <div className="max-w-xl">
             <h2 className="text-xl font-semibold text-white">Archive</h2>
             <p className="mt-1 text-sm text-slate-500">
@@ -62,7 +62,7 @@ export default function RecordingsArchivePage() {
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search recordings"
             aria-label="Search recordings"
-            className="w-full max-w-sm rounded-2xl border border-white/8 bg-black/15 px-4 py-3 text-sm text-white placeholder:text-slate-500 outline-none"
+            className="w-full max-w-full rounded-2xl border border-white/8 bg-black/15 px-4 py-3 text-sm text-white placeholder:text-slate-500 outline-none lg:max-w-sm"
           />
         </div>
 
@@ -94,7 +94,7 @@ export default function RecordingsArchivePage() {
             {archive.items.map((item) => (
               <article
                 key={item.id}
-                className="flex flex-wrap items-center justify-between gap-4 rounded-[1.2rem] border border-white/6 bg-white/[0.025] px-4 py-4"
+                className="flex flex-col items-start justify-between gap-4 rounded-[1.2rem] border border-white/6 bg-white/[0.025] px-4 py-4 sm:flex-row sm:items-center"
               >
                 <div className="min-w-0 flex-1 space-y-2">
                   <div className="flex flex-wrap items-center gap-3">
@@ -108,7 +108,7 @@ export default function RecordingsArchivePage() {
                 <button
                   type="button"
                   onClick={() => router.push(item.href)}
-                  className="rounded-2xl border border-white/8 bg-white/[0.02] px-4 py-3 text-sm font-medium text-slate-200"
+                  className="w-full rounded-2xl border border-white/8 bg-white/[0.02] px-4 py-3 text-sm font-medium text-slate-200 sm:w-auto"
                 >
                   Open project
                 </button>

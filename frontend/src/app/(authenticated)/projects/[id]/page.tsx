@@ -55,7 +55,7 @@ export default function ProjectWorkspacePage() {
 
       <div className="space-y-6">
         {/* Meta + actions */}
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:flex-wrap sm:items-center">
           <p className="text-sm text-slate-500">{viewModel.createdAtLabel}</p>
           <div className="flex flex-wrap items-center gap-2">
             <Link
@@ -84,16 +84,18 @@ export default function ProjectWorkspacePage() {
         {/* Preview first, tracks directly below */}
         <ProjectHeroPreview hero={viewModel.hero} videoRef={previewRef} />
 
-        <ProjectFlatTrackList
-          tracks={viewModel.tracks}
-          artifacts={viewModel.artifacts}
-          busyId={workspace.assetActionBusyId}
-          onAction={workspace.handleAssetAction}
-        />
+        <div id="tracks" className="scroll-mt-28">
+          <ProjectFlatTrackList
+            tracks={viewModel.tracks}
+            artifacts={viewModel.artifacts}
+            busyId={workspace.assetActionBusyId}
+            onAction={workspace.handleAssetAction}
+          />
+        </div>
       </div>
 
       {/* Transcript section */}
-      <div className="pt-2">
+      <div id="transcript" className="scroll-mt-28 pt-2">
         <TranscriptPanel
           recordingId={viewModel.id}
           onSeekToMs={seekPrimaryMediaTo}
