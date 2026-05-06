@@ -1,41 +1,45 @@
 'use client';
 
-import React, { use, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import Link from 'next/link';
+import React, { use, useEffect, useMemo, useRef, useState } from 'react';
 import { Space_Grotesk } from 'next/font/google';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
-  LiveKitAPI,
   ParticipantsAPI,
   RecordingsAPI,
   setApiAuthMode,
-  type ConsumerRecordingState,
-  type RecordingProgressResponse,
-  type RecordingSessionResponse,
 } from '@/lib/api';
-import {
-  deriveGuestUploadState,
-  deriveHostStudioPhase,
-  toConsumerStateLabel,
-} from '@/lib/recording-journey';
-import { StudioRecordingAPI } from '@/lib/studio/internal-api';
-import {
-  useRollingChunkRecorder,
-  type RollingRecorderChunk,
-  type RollingRecorderSource,
-} from '@/lib/studio/useRollingChunkRecorder';
 import { deriveStudioUiAccess } from '@/lib/studio/access';
+import { buildMeetViewModel } from '@/lib/studio/stage-view-model';
+import {
+  buildMeetHeaderViewModel,
+  buildStudioRouteViewModel,
+} from '@/lib/studio/studio-page-view-model';
+import { deriveStudioUploadState } from '@/lib/studio/studio-upload-state';
 import { useChunkUploadQueue, type ChunkUploadProtocol } from '@/lib/studio/useChunkUploadQueue';
+import { useStudioConnectionCoordinator } from '@/lib/studio/useStudioConnectionCoordinator';
+import { useStudioDevices } from '@/lib/studio/useStudioDevices';
+import { useStudioInviteControls } from '@/lib/studio/useStudioInviteControls';
+import { useMeetStageUi } from '@/lib/studio/useMeetStageUi';
+import { useStudioRecording } from '@/lib/studio/useStudioRecording';
+import { useStudioSessionState } from '@/lib/studio/useStudioSessionState';
 import { useStreamQualityProbe } from '@/lib/studio/useStreamQualityProbe';
 import { useSession } from '@/lib/useSession';
-import {
-  Room,
-  RoomEvent,
-  Track,
-  type Participant,
-  type RemoteParticipant,
-} from 'livekit-client';
-import { useMeshRoom } from '@/lib/studio/useMeshRoom';
+import { StudioControlBar } from '@/components/studio/StudioControlBar';
+import { StudioInviteModal } from '@/components/studio/StudioInviteModal';
+import { StudioInviteSidePanel } from '@/components/studio/StudioInviteSidePanel';
+import { StudioPeopleSidebar } from '@/components/studio/StudioPeopleSidebar';
+import { StudioHeaderBar } from '@/components/studio/StudioHeaderBar';
+import { StudioRetryUploadsButton } from '@/components/studio/StudioRetryUploadsButton';
+import { StudioStageArea } from '@/components/studio/StudioStageArea';
+import { StudioStatusBanners } from '@/components/studio/StudioStatusBanners';
+import { MeetControlBar } from '@/components/studio/MeetControlBar';
+import { MeetContextMenu } from '@/components/studio/MeetContextMenu';
+import { MeetHeaderBar } from '@/components/studio/MeetHeaderBar';
+import { MeetPeoplePanel } from '@/components/studio/MeetPeoplePanel';
+import { MeetStageArea } from '@/components/studio/MeetStageArea';
+import { MeetStatusBanners } from '@/components/studio/MeetStatusBanners';
+import { StudioGuestWelcome } from '@/components/studio/StudioGuestWelcome';
+import { StudioPreJoinSetup } from '@/components/studio/StudioPreJoinSetup';
 import UploadStatusModal from '@/components/studio/UploadStatusModal';
 
 type RouteParams = {
@@ -46,459 +50,12 @@ type StudioPageProps = {
   params: Promise<RouteParams>;
 };
 
-type Engine = 'livekit' | 'mesh';
-
-type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'error';
 type SessionMode = 'meet' | 'studio';
-type DeviceOption = { id: string; label: string };
-
-type MediaSource =
-  | { kind: 'livekit'; track: Track | null }
-  | { kind: 'media'; stream: MediaStream | null };
-
-type Tile = {
-  key: string;
-  label: string;
-  badge: string;
-  video: MediaSource;
-  audio?: MediaSource;
-  muted?: boolean;
-  micOff?: boolean;
-};
-
-type RecorderKind = 'audio' | 'video' | 'screen';
-type StudioControlIconKind =
-  | 'mark'
-  | 'mic'
-  | 'cam'
-  | 'speaker'
-  | 'react'
-  | 'raise'
-  | 'layout'
-  | 'script'
-  | 'share'
-  | 'leave';
-type StudioSidebarIconKind = 'people' | 'chat' | 'brand' | 'text' | 'media';
 
 const spaceGrotesk = Space_Grotesk({
   subsets: ['latin'],
   weight: ['400', '500', '600', '700'],
 });
-
-const mediaSource = (stream: MediaStream | null): MediaSource => ({
-  kind: 'media',
-  stream,
-});
-
-const livekitSource = (track: Track | null): MediaSource => ({
-  kind: 'livekit',
-  track,
-});
-
-function livekitTrackToStream(track: Track | null): MediaStream | null {
-  const mediaStreamTrack = (track as any)?.mediaStreamTrack as MediaStreamTrack | undefined;
-  if (!mediaStreamTrack) return null;
-  if (mediaStreamTrack.readyState !== 'live') return null;
-  return new MediaStream([mediaStreamTrack]);
-}
-
-function selectTracksAsStream(stream: MediaStream | null, kind: 'audio' | 'video'): MediaStream | null {
-  if (!stream) return null;
-  const tracks = kind === 'audio' ? stream.getAudioTracks() : stream.getVideoTracks();
-  if (tracks.length === 0) return null;
-  return new MediaStream(tracks);
-}
-
-function getTrack(participant: Participant, source: Track.Source): Track | null {
-  const pub = participant.getTrackPublication(source);
-  return pub?.track ?? null;
-}
-
-function tokenFromMagicLink(magicLink?: string): string | null {
-  if (!magicLink) return null;
-  try {
-    const parsed = new URL(magicLink, window.location.origin);
-    const fromQuery = parsed.searchParams.get('guestToken')?.trim();
-    if (fromQuery) return fromQuery;
-    const segment = parsed.pathname.split('/').filter(Boolean).pop()?.trim();
-    return segment || null;
-  } catch {
-    const segment = magicLink.split('/').filter(Boolean).pop()?.trim();
-    return segment || null;
-  }
-}
-
-function buildStudioInviteLink(args: {
-  origin: string;
-  recordingId: string;
-  role: 'guest' | 'host';
-  participantId?: string | null;
-  guestToken?: string | null;
-}) {
-  const url = new URL(`/studio/${args.recordingId}`, args.origin);
-  url.searchParams.set('mode', 'studio');
-  url.searchParams.set('role', args.role);
-  if (args.participantId) {
-    url.searchParams.set('participantId', args.participantId);
-  }
-  if (args.role === 'guest' && args.guestToken) {
-    url.searchParams.set('guestToken', args.guestToken);
-  }
-  return url.toString();
-}
-
-function useAttachMedia<T extends HTMLMediaElement>(
-  mediaRef: React.RefObject<T | null>,
-  source?: MediaSource,
-  kind: 'video' | 'audio' = 'video'
-) {
-  const sourceKind = source?.kind;
-  const sourceTrack = source?.kind === 'livekit' ? source.track : null;
-  const sourceStream = source?.kind === 'media' ? source.stream : null;
-
-  useEffect(() => {
-    const element = mediaRef.current;
-    if (!element) return;
-
-    if (!sourceKind) {
-      if ('srcObject' in element) {
-        (element as HTMLMediaElement).srcObject = null;
-      }
-      return;
-    }
-
-    if (sourceKind === 'livekit') {
-      if (!sourceTrack) return;
-      sourceTrack.attach(element);
-      return () => {
-        try {
-          sourceTrack.detach(element);
-        } catch {
-          // ignore
-        }
-      };
-    }
-
-    if (sourceKind === 'media') {
-      (element as HTMLMediaElement).srcObject = sourceStream ?? null;
-      element.play?.().catch(() => {});
-      return () => {
-        try {
-          (element as HTMLMediaElement).srcObject = null;
-        } catch {
-          // ignore
-        }
-      };
-    }
-  }, [kind, mediaRef, sourceKind, sourceStream, sourceTrack]);
-}
-
-function ParticipantTile({
-  tile,
-  className,
-  showPin = false,
-  isPinned = false,
-  onPin,
-  micPublishEnabled,
-  onTogglePublishMic,
-  fit = 'cover',
-  fill = false,
-  showBadge = true,
-}: {
-  tile: Tile;
-  className?: string;
-  showPin?: boolean;
-  isPinned?: boolean;
-  onPin?: () => void;
-  micPublishEnabled?: boolean;
-  onTogglePublishMic?: () => void;
-  fit?: 'cover' | 'contain';
-  fill?: boolean;
-  showBadge?: boolean;
-}) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const controlsHideTimerRef = useRef<number | null>(null);
-  const [showControlsOnClick, setShowControlsOnClick] = useState(false);
-  const [isTileMuted, setIsTileMuted] = useState(Boolean(tile.muted));
-
-  const hasVideo = tile.video.kind === 'livekit'
-    ? !!tile.video.track
-    : !!tile.video.stream;
-  const remoteMicOff = !!tile.micOff;
-  const isAudioMuted = isTileMuted;
-  const isPublishMicControl = typeof micPublishEnabled === 'boolean' && !!onTogglePublishMic;
-  const shouldMutePlayback = isPublishMicControl ? isAudioMuted : (isAudioMuted || remoteMicOff);
-  const micIsOff = isPublishMicControl ? !micPublishEnabled : shouldMutePlayback;
-
-  useAttachMedia(videoRef, tile.video, 'video');
-  useAttachMedia(audioRef, shouldMutePlayback ? undefined : tile.audio, 'audio');
-
-  useEffect(() => {
-    return () => {
-      if (controlsHideTimerRef.current) {
-        window.clearTimeout(controlsHideTimerRef.current);
-      }
-    };
-  }, []);
-
-  const revealControls = useCallback(() => {
-    setShowControlsOnClick(true);
-    if (controlsHideTimerRef.current) {
-      window.clearTimeout(controlsHideTimerRef.current);
-    }
-    controlsHideTimerRef.current = window.setTimeout(() => {
-      setShowControlsOnClick(false);
-    }, 2200);
-  }, []);
-
-  return (
-    <div
-      onClick={() => {
-        if (!showPin || !onPin) return;
-        revealControls();
-      }}
-      className={`studio-rise studio-panel-muted group relative w-full ${fill ? 'h-full' : 'aspect-video'} overflow-hidden rounded-2xl ${className ?? ''}`}
-    >
-      <div className="absolute inset-0 pointer-events-none bg-gradient-to-b from-slate-900/30 via-transparent to-slate-950/60" />
-      {hasVideo ? (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted={tile.muted}
-          className={`h-full w-full ${fit === 'contain' ? 'object-contain bg-black' : 'object-cover'}`}
-        />
-      ) : (
-        <div className="absolute inset-0 flex items-center justify-center text-xs text-slate-400 text-center px-4">
-          No video track available.
-        </div>
-      )}
-
-      {tile.audio && !shouldMutePlayback && (
-        <audio ref={audioRef} autoPlay playsInline className="hidden" />
-      )}
-
-      {showBadge && !!tile.badge && (
-        <div className="studio-chip-surface absolute left-3 top-3 rounded-full px-3 py-1 text-[11px] text-slate-100">
-          {tile.badge}
-        </div>
-      )}
-      {showPin && onPin && (
-        <div
-          className={`absolute left-1/2 top-1/2 z-20 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 transition-opacity duration-150 ${
-            showControlsOnClick
-              ? 'pointer-events-auto opacity-100'
-              : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100'
-          }`}
-        >
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              if (isPublishMicControl) {
-                onTogglePublishMic();
-                return;
-              }
-              setIsTileMuted((prev) => !prev);
-            }}
-            className={`flex h-9 w-9 items-center justify-center rounded-full border ${
-              micIsOff
-                ? 'border-rose-300/50 bg-rose-500/20 text-rose-100'
-                : 'studio-chip-surface text-slate-100'
-            }`}
-            title={micIsOff ? 'Unmute participant' : 'Mute participant'}
-            aria-label={micIsOff ? 'Unmute participant' : 'Mute participant'}
-          >
-            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="9" y="4" width="6" height="10" rx="3" />
-              <path d="M6 11a6 6 0 0 0 12 0M12 17v3M9 20h6" />
-              {micIsOff && <line x1="5" y1="19" x2="19" y2="5" />}
-            </svg>
-          </button>
-
-          <button
-            type="button"
-            onClick={(event) => {
-              event.stopPropagation();
-              onPin();
-            }}
-            className={`flex h-9 w-9 items-center justify-center rounded-full border ${
-              isPinned
-                ? 'border-cyan-300/50 bg-cyan-500/25 text-cyan-100'
-                : 'studio-chip-surface text-slate-100'
-            }`}
-            title={isPinned ? 'Unpin from stage' : 'Pin to stage'}
-            aria-label={isPinned ? 'Unpin from stage' : 'Pin to stage'}
-          >
-            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M8 3h8l-1.5 5 3.5 3v1H6v-1l3.5-3L8 3zM12 12v9" />
-            </svg>
-          </button>
-        </div>
-      )}
-      <div className="studio-chip-surface absolute left-3 bottom-3 rounded-full px-3 py-1 text-[11px] text-slate-100">
-        {tile.label}
-      </div>
-    </div>
-  );
-}
-
-function StudioControlIcon({ kind, off = false }: { kind: StudioControlIconKind; off?: boolean }) {
-  const icon = (() => {
-    switch (kind) {
-      case 'mark':
-        return <path d="M12 3 19 6v6c0 5-3.5 7.8-7 9-3.5-1.2-7-4-7-9V6l7-3z" />;
-      case 'mic':
-        return (
-          <>
-            <rect x="9" y="4" width="6" height="10" rx="3" />
-            <path d="M6 11a6 6 0 0 0 12 0M12 17v3M9 20h6" />
-          </>
-        );
-      case 'cam':
-        return (
-          <>
-            <rect x="3" y="7" width="13" height="10" rx="2" />
-            <path d="M16 10 21 7v10l-5-3z" />
-          </>
-        );
-      case 'speaker':
-        return (
-          <>
-            <path d="M4 13h4l5 4V7l-5 4H4z" />
-            <path d="M16 10a4 4 0 0 1 0 4M18 8a7 7 0 0 1 0 8" />
-          </>
-        );
-      case 'react':
-        return (
-          <>
-            <circle cx="12" cy="12" r="8" />
-            <circle cx="9" cy="10" r="1" />
-            <circle cx="15" cy="10" r="1" />
-            <path d="M8 14c1 2 3 3 4 3s3-1 4-3" />
-            <path d="M18 4v4M16 6h4" />
-          </>
-        );
-      case 'raise':
-        return (
-          <path d="M8 12V7.2a1.6 1.6 0 1 1 3.2 0V11M11.2 11V5.8a1.6 1.6 0 1 1 3.2 0V11M14.4 11V6.6a1.6 1.6 0 1 1 3.2 0v8.3A6.1 6.1 0 0 1 11.5 21h-.4A6.1 6.1 0 0 1 5 14.9v-2.3a1.6 1.6 0 1 1 3.2 0V12z" />
-        );
-      case 'layout':
-        return (
-          <>
-            <rect x="4" y="5" width="16" height="14" rx="2" />
-            <path d="M12 5v14M4 12h16" />
-          </>
-        );
-      case 'script':
-        return (
-          <>
-            <rect x="5" y="4" width="14" height="16" rx="2" />
-            <path d="M8 9h8M8 13h8M8 17h6" />
-          </>
-        );
-      case 'share':
-        return (
-          <>
-            <path d="M12 4v11M8 8l4-4 4 4" />
-            <rect x="5" y="14" width="14" height="6" rx="2" />
-          </>
-        );
-      case 'leave':
-        return (
-          <path d="M22 16.9v2.2a2 2 0 0 1-2.2 2A19.8 19.8 0 0 1 11.2 18a19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3-8.6A2 2 0 0 1 4.2 1h2.2a2 2 0 0 1 2 1.7c.1 1 .4 1.9.8 2.8a2 2 0 0 1-.4 2.1l-.9.9a16 16 0 0 0 6 6l.9-.9a2 2 0 0 1 2.1-.4c.9.4 1.8.7 2.8.8a2 2 0 0 1 1.7 2z" />
-        );
-      default:
-        return null;
-    }
-  })();
-
-  return (
-    <span className="relative inline-flex h-5 w-5 items-center justify-center">
-      <svg
-        viewBox="0 0 24 24"
-        className="h-5 w-5"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        {icon}
-      </svg>
-      {off && (
-        <svg
-          viewBox="0 0 24 24"
-          className="pointer-events-none absolute inset-0 h-5 w-5 text-rose-400"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.4"
-          strokeLinecap="round"
-        >
-          <line x1="4" y1="20" x2="20" y2="4" />
-        </svg>
-      )}
-    </span>
-  );
-}
-
-function StudioSidebarIcon({ kind }: { kind: StudioSidebarIconKind }) {
-  const icon = (() => {
-    switch (kind) {
-      case 'people':
-        return (
-          <>
-            <circle cx="9" cy="9" r="2.5" />
-            <circle cx="16" cy="10" r="2" />
-            <path d="M4.5 18a4.5 4.5 0 0 1 9 0" />
-            <path d="M13 18a3.5 3.5 0 0 1 7 0" />
-          </>
-        );
-      case 'chat':
-        return (
-          <>
-            <path d="M5 6h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H10l-5 4v-4H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z" />
-            <path d="M8 10h8M8 13h6" />
-          </>
-        );
-      case 'brand':
-        return (
-          <>
-            <rect x="4" y="6" width="16" height="12" rx="2" />
-            <circle cx="9" cy="10" r="1.5" />
-            <path d="m20 15-4.2-4.2L10 16" />
-          </>
-        );
-      case 'text':
-        return (
-          <>
-            <path d="M5 6h14M12 6v12" />
-            <path d="M9 18h6" />
-          </>
-        );
-      case 'media':
-        return <path d="M15 5v10.7a2.7 2.7 0 1 1-2.2-2.6V8h6V5z" />;
-      default:
-        return null;
-    }
-  })();
-
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      className="h-4 w-4"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      {icon}
-    </svg>
-  );
-}
 
 export default function StudioRecordingPage({ params }: StudioPageProps) {
   const { recordingId } = use(params);
@@ -519,8 +76,6 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   const allowStudioMeshFallback =
     String(process.env.NEXT_PUBLIC_STUDIO_ALLOW_MESH_FALLBACK ?? 'false') === 'true';
 
-  const [engine, setEngine] = useState<Engine>('livekit');
-  const [fallbackNotice, setFallbackNotice] = useState<string | null>(null);
   const [pinnedTileKey, setPinnedTileKey] = useState<string | null>(null);
   const [showPreJoin, setShowPreJoin] = useState(sessionMode === 'studio');
   const [displayName, setDisplayName] = useState('');
@@ -530,63 +85,19 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   );
   const [guestJoinError, setGuestJoinError] = useState<string | null>(null);
   const [usingHeadphones, setUsingHeadphones] = useState(true);
-  const [preJoinStatus, setPreJoinStatus] = useState<'idle' | 'starting' | 'ready' | 'error'>('idle');
-  const [preJoinError, setPreJoinError] = useState<string | null>(null);
   const [joiningFromPreJoin, setJoiningFromPreJoin] = useState(false);
-  const [preJoinMicEnabled, setPreJoinMicEnabled] = useState(true);
-  const [preJoinCamEnabled, setPreJoinCamEnabled] = useState(true);
-  const preJoinVideoRef = useRef<HTMLVideoElement | null>(null);
-  const preJoinStreamRef = useRef<MediaStream | null>(null);
-  const [preJoinPreviewStream, setPreJoinPreviewStream] = useState<MediaStream | null>(null);
-  const [cameraDevices, setCameraDevices] = useState<DeviceOption[]>([]);
-  const [micDevices, setMicDevices] = useState<DeviceOption[]>([]);
-  const [speakerDevices, setSpeakerDevices] = useState<DeviceOption[]>([]);
-  const [selectedCameraId, setSelectedCameraId] = useState('');
-  const [selectedMicId, setSelectedMicId] = useState('');
-  const [selectedSpeakerId, setSelectedSpeakerId] = useState('');
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [showStudioInvitePanel, setShowStudioInvitePanel] = useState(true);
   const [showStudioPeoplePanel, setShowStudioPeoplePanel] = useState(true);
   const [showAddParticipantPanel, setShowAddParticipantPanel] = useState(false);
-  const [inviteRole, setInviteRole] = useState<'guest' | 'host'>('guest');
-  const [inviteEmail, setInviteEmail] = useState('');
-  const [inviteNotice, setInviteNotice] = useState<string | null>(null);
-  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
-  const [recordingSession, setRecordingSession] = useState<RecordingSessionResponse['session'] | null>(null);
-  const [recordingProgress, setRecordingProgress] = useState<RecordingProgressResponse | null>(null);
-  const [canControlRecording, setCanControlRecording] = useState(false);
-  const [sessionBusy, setSessionBusy] = useState(false);
-  const [sessionError, setSessionError] = useState<string | null>(null);
   const [showUploadStatusModal, setShowUploadStatusModal] = useState(false);
-  const [localHostParticipantId, setLocalHostParticipantId] = useState<string | null>(null);
-  const [createdInviteParticipantIdByRole, setCreatedInviteParticipantIdByRole] = useState<
-    Partial<Record<'guest' | 'host', string>>
-  >({});
-  const [createdInviteGuestToken, setCreatedInviteGuestToken] = useState<string | null>(null);
   const [claimedGuestParticipantId, setClaimedGuestParticipantId] = useState<string | null>(null);
   const [guestClaimReady, setGuestClaimReady] = useState(
     !isGuestStudioFlow || !requestedGuestToken
   );
-  const [trackIdByKind, setTrackIdByKind] = useState<Partial<Record<RecorderKind, string>>>({});
-  const [recoveredNextSeqByTrack, setRecoveredNextSeqByTrack] = useState<Record<string, number>>({});
-  const [recoveryReadyByTrack, setRecoveryReadyByTrack] = useState<Record<string, boolean>>({});
-  const [recorderError, setRecorderError] = useState<string | null>(null);
-  const registeringKindsRef = useRef<Set<RecorderKind>>(new Set());
-  const recoveringTrackIdsRef = useRef<Set<string>>(new Set());
-  const latestChunkSeqByTrackRef = useRef<Map<string, number>>(new Map());
-  const prevGuestStoppedAtRef = useRef<string | undefined>(undefined);
   // U1: stopped_uploading phase — room stays alive after stop until all leave or 10-min timeout
   const [stoppedUploadingPhase, setStoppedUploadingPhase] = useState(false);
   const dwellTimerRef = useRef<number | null>(null);
-  // U3: layout mode — switches to screen_share_dominant when screen share is active
-  const [studioLayoutMode, setStudioLayoutMode] = useState<'grid' | 'screen_share_dominant'>('grid');
-  // P2: timestamp when recording started, broadcast by host via LiveKit data channel.
-  // Guests receive it and include it in finalizeTrack so the transcode worker can
-  // compute expected_duration_ms and flag deviations >5s.
-  const [sessionStartedAt, setSessionStartedAt] = useState<string | null>(null);
-  // Actual time the local MediaRecorder first started — more accurate than sessionStartedAt
-  // for guests who join slightly after the session begins.
-  const [actualRecorderStartedAt, setActualRecorderStartedAt] = useState<string | null>(null);
 
   // P3/U2: stream quality probe — detects black video / silent audio on join
   const { probe: probeStreamQuality, result: streamQualityResult } = useStreamQualityProbe();
@@ -597,32 +108,25 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         ? '⚠ No microphone detected — your recording will have no audio.'
         : null
     : null;
-  const [showMeetSelfPreview, setShowMeetSelfPreview] = useState(true);
-  const [meetSelfPreviewExpanded, setMeetSelfPreviewExpanded] = useState(false);
-  const [meetStageFit, setMeetStageFit] = useState<'contain' | 'cover'>('contain');
-  const [showMeetPeoplePanel, setShowMeetPeoplePanel] = useState(true);
-  const [showMeetViewMenu, setShowMeetViewMenu] = useState(false);
-  const [meetContextMenu, setMeetContextMenu] = useState<{
-    x: number;
-    y: number;
-    tileKey: string;
-    isMain: boolean;
-  } | null>(null);
   const meetStageRef = useRef<HTMLDivElement | null>(null);
-  const hostParticipantEnsureRef = useRef<Promise<string | null> | null>(null);
-
-  // ===== LiveKit state =====
-  const [room, setRoom] = useState<Room | null>(null);
-  const roomRef = useRef<Room | null>(null);
-
-  const [livekitStatus, setLivekitStatus] = useState<ConnectionStatus>('idle');
-  const [livekitError, setLivekitError] = useState<string | null>(null);
-  const [remoteParticipants, setRemoteParticipants] = useState<RemoteParticipant[]>([]);
-
-  const [isMicEnabled, setIsMicEnabled] = useState(false);
-  const [isCameraEnabled, setIsCameraEnabled] = useState(false);
-  const [isScreenSharing, setIsScreenSharing] = useState(false);
-  const isRecording = !!recordingSession?.startedAt && !recordingSession?.stoppedAt;
+  const {
+    showMeetSelfPreview,
+    setShowMeetSelfPreview,
+    meetSelfPreviewExpanded,
+    setMeetSelfPreviewExpanded,
+    meetStageFit,
+    setMeetStageFit,
+    showMeetPeoplePanel,
+    setShowMeetPeoplePanel,
+    showMeetViewMenu,
+    setShowMeetViewMenu,
+    meetContextMenu,
+    openMeetContextMenu,
+    closeMeetContextMenu,
+    toggleMeetFullscreen,
+  } = useMeetStageUi({
+    stageRef: meetStageRef,
+  });
   const chunkUploadProtocol: ChunkUploadProtocol = 'presigned_url';
   const chunkUploadQueue = useChunkUploadQueue({
     enabled: sessionMode === 'studio',
@@ -630,34 +134,55 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     concurrency: 2,
     maxRetries: 8,
   });
-
-  const localCameraTrack =
-    room?.localParticipant.getTrackPublication(Track.Source.Camera)?.track ?? null;
-  const localMicTrack =
-    room?.localParticipant.getTrackPublication(Track.Source.Microphone)?.track ?? null;
-  const localScreenTrack =
-    room?.localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track ?? null;
-
-  const syncParticipants = useCallback((activeRoom: Room) => {
-    setRemoteParticipants(Array.from(activeRoom.remoteParticipants.values()));
-  }, []);
-
-  const cleanupLiveKitRoom = useCallback((activeRoom?: Room | null) => {
-    const r = activeRoom ?? roomRef.current;
-    if (!r) return;
-    try {
-      r.removeAllListeners();
-      r.disconnect();
-    } catch {
-      // ignore
-    }
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      cleanupLiveKitRoom();
-    };
-  }, [cleanupLiveKitRoom]);
+  const hasLocalQueueWork =
+    sessionMode === 'studio' &&
+    (chunkUploadQueue.stats.pending > 0 || chunkUploadQueue.stats.processing > 0);
+  const {
+    recordingSession,
+    setRecordingSession,
+    recordingProgress,
+    setRecordingProgress,
+    canControlRecording,
+    setCanControlRecording,
+    sessionBusy,
+    setSessionBusy,
+    sessionError,
+    setSessionError,
+  } = useStudioSessionState({
+    sessionMode,
+    requestedStudioRole,
+    recordingId,
+    guestClaimReady,
+    hasLocalQueueWork,
+    stoppedUploadingPhase,
+    showUploadStatusModal,
+  });
+  const isRecording = !!recordingSession?.startedAt && !recordingSession?.stoppedAt;
+  const {
+    inviteRole,
+    setInviteRole,
+    inviteEmail,
+    setInviteEmail,
+    inviteNotice,
+    setInviteNotice,
+    copyState,
+    setCopyState,
+    localHostParticipantId,
+    createdInviteParticipantIdByRole,
+    createdInviteGuestToken,
+    inviteLink,
+    ensureLocalHostParticipantId,
+    handleCopyInviteLink,
+    handleInviteByEmail,
+  } = useStudioInviteControls({
+    sessionMode,
+    requestedStudioRole,
+    recordingId,
+    displayName,
+    profileName: profile?.name,
+    recordingSessionHostParticipantId: recordingSession?.hostParticipantId ?? null,
+    onError: setSessionError,
+  });
 
   useEffect(() => {
     if (sessionMode === 'studio' && requestedStudioRole === 'guest') {
@@ -667,86 +192,6 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     setApiAuthMode('default');
     return () => setApiAuthMode('default');
   }, [requestedStudioRole, sessionMode]);
-
-  const refreshRecordingSession = useCallback(async () => {
-    if (sessionMode !== 'studio') return;
-    if (requestedStudioRole === 'guest' && !guestClaimReady) return;
-
-    try {
-      const res = await RecordingsAPI.getSession(recordingId);
-      setRecordingSession(res.session);
-      setCanControlRecording(requestedStudioRole === 'guest' ? false : res.canControl);
-      setSessionError(null);
-    } catch (err) {
-      setSessionError((err as Error)?.message ?? 'Failed to refresh recording session.');
-    }
-  }, [guestClaimReady, recordingId, requestedStudioRole, sessionMode]);
-
-  const refreshRecordingProgress = useCallback(async () => {
-    if (sessionMode !== 'studio') return;
-    if (requestedStudioRole === 'guest' && !guestClaimReady) return;
-    try {
-      const progress = await RecordingsAPI.getProgress(recordingId);
-      setRecordingProgress(progress);
-    } catch {
-      // keep UI resilient; session/queue UI still functions without progress payload
-    }
-  }, [guestClaimReady, recordingId, requestedStudioRole, sessionMode]);
-
-  const hasLocalQueueWork =
-    sessionMode === 'studio' &&
-    (chunkUploadQueue.stats.pending > 0 || chunkUploadQueue.stats.processing > 0);
-  const hasBackendPendingFromProgress = (recordingProgress?.participants ?? []).some(
-    (participant) => participant.state === 'uploading' || participant.state === 'action required'
-  );
-  const shouldPollDuringHostHandoff =
-    sessionMode === 'studio' && canControlRecording && !!recordingSession?.stoppedAt;
-  const shouldPollStudioSession =
-    sessionMode === 'studio' &&
-    (!recordingSession?.stoppedAt ||
-      isRecording ||
-      hasLocalQueueWork ||
-      showUploadStatusModal ||
-      shouldPollDuringHostHandoff);
-  const shouldPollStudioProgress =
-    sessionMode === 'studio' &&
-    (!recordingSession?.stoppedAt ||
-      isRecording ||
-      stoppedUploadingPhase ||      // U5: always poll during stopped_uploading phase
-      hasLocalQueueWork ||
-      hasBackendPendingFromProgress ||
-      showUploadStatusModal ||
-      shouldPollDuringHostHandoff);
-
-  useEffect(() => {
-    if (sessionMode !== 'studio') return;
-    void refreshRecordingSession();
-    if (!shouldPollStudioSession) return;
-
-    const timer = window.setInterval(() => {
-      void refreshRecordingSession();
-    }, 5000);
-
-    return () => window.clearInterval(timer);
-  }, [
-    refreshRecordingSession,
-    requestedStudioRole,
-    sessionMode,
-    shouldPollStudioSession,
-  ]);
-
-  useEffect(() => {
-    if (sessionMode !== 'studio') return;
-    void refreshRecordingProgress();
-    if (!shouldPollStudioProgress) return;
-
-    // Poll faster during processing so UI reflects pipeline completion sooner.
-    const progressPollMs = recordingProgress?.projectState === 'processing' ? 1000 : 3000;
-    const timer = window.setInterval(() => {
-      void refreshRecordingProgress();
-    }, progressPollMs);
-    return () => window.clearInterval(timer);
-  }, [refreshRecordingProgress, sessionMode, shouldPollStudioProgress, recordingProgress?.projectState]);
 
   useEffect(() => {
     if (sessionMode === 'studio') {
@@ -768,556 +213,66 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
   }, [displayName, profile?.email, profile?.name]);
 
   useEffect(() => {
-    setTrackIdByKind({});
-    setRecoveredNextSeqByTrack({});
-    setRecoveryReadyByTrack({});
-    setRecorderError(null);
-    setCreatedInviteGuestToken(null);
     setClaimedGuestParticipantId(null);
     setGuestJoinError(null);
     setGuestEmail('');
     setGuestPreJoinStep(isGuestStudioFlow ? 'welcome' : 'prejoin');
     setGuestClaimReady(!isGuestStudioFlow || !requestedGuestToken);
-    registeringKindsRef.current.clear();
-    recoveringTrackIdsRef.current.clear();
-    latestChunkSeqByTrackRef.current.clear();
     setShowStudioInvitePanel(true);
-    setCreatedInviteParticipantIdByRole({});
-    setLocalHostParticipantId(null);
   }, [isGuestStudioFlow, recordingId, requestedGuestToken]);
 
   const shouldRunStudioPreJoinChecks =
     sessionMode === 'studio' && (!isGuestStudioFlow || guestPreJoinStep === 'prejoin');
-
-  const stopPreJoinPreview = useCallback(() => {
-    if (preJoinStreamRef.current) {
-      preJoinStreamRef.current.getTracks().forEach((track) => track.stop());
-      preJoinStreamRef.current = null;
-    }
-    setPreJoinPreviewStream(null);
-  }, []);
-
-  const enumerateDevices = useCallback(async () => {
-    if (!navigator.mediaDevices?.enumerateDevices) return;
-    const allDevices = await navigator.mediaDevices.enumerateDevices();
-
-    const cameras: DeviceOption[] = [];
-    const microphones: DeviceOption[] = [];
-    const speakers: DeviceOption[] = [];
-
-    allDevices.forEach((device) => {
-      if (device.kind === 'videoinput') {
-        cameras.push({
-          id: device.deviceId,
-          label: device.label || `Camera ${cameras.length + 1}`,
-        });
-      } else if (device.kind === 'audioinput') {
-        microphones.push({
-          id: device.deviceId,
-          label: device.label || `Microphone ${microphones.length + 1}`,
-        });
-      } else if (device.kind === 'audiooutput') {
-        speakers.push({
-          id: device.deviceId,
-          label: device.label || `Speaker ${speakers.length + 1}`,
-        });
-      }
-    });
-
-    setCameraDevices(cameras);
-    setMicDevices(microphones);
-    setSpeakerDevices(speakers);
-    setSelectedCameraId((prev) => prev || cameras[0]?.id || '');
-    setSelectedMicId((prev) => prev || microphones[0]?.id || '');
-    setSelectedSpeakerId((prev) => prev || speakers[0]?.id || '');
-  }, []);
-
-  const startPreJoinPreview = useCallback(async () => {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setPreJoinStatus('error');
-      setPreJoinError('Camera and microphone are not supported in this browser.');
-      return;
-    }
-
-    setPreJoinError(null);
-    setPreJoinStatus('starting');
-    stopPreJoinPreview();
-
-    try {
-      const constraints: MediaStreamConstraints = {
-        video: selectedCameraId ? { deviceId: { exact: selectedCameraId } } : true,
-        audio: selectedMicId ? { deviceId: { exact: selectedMicId } } : true,
-      };
-
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      preJoinStreamRef.current = stream;
-      setPreJoinPreviewStream(stream);
-      setPreJoinMicEnabled(stream.getAudioTracks().some((track) => track.enabled));
-      setPreJoinCamEnabled(stream.getVideoTracks().some((track) => track.enabled));
-      setPreJoinStatus('ready');
-      await enumerateDevices();
-    } catch (err: any) {
-      setPreJoinStatus('error');
-      setPreJoinError(err?.message ?? 'Could not start camera/microphone preview.');
-    }
-  }, [enumerateDevices, selectedCameraId, selectedMicId, stopPreJoinPreview]);
-
-  useEffect(() => {
-    if (sessionMode === 'studio' && showPreJoin && !shouldRunStudioPreJoinChecks) {
-      stopPreJoinPreview();
-      return;
-    }
-    if (!showPreJoin) {
-      if (sessionMode !== 'meet') {
-        stopPreJoinPreview();
-      }
-      return;
-    }
-
-    startPreJoinPreview();
-    return () => {
-      stopPreJoinPreview();
-    };
-  }, [
+  const {
+    active,
+    fallbackNotice,
+    isConnected,
+    join,
+    leaveAndReset,
+    recordingStreams,
+    sessionStartedAt,
+    studioLayoutMode,
+    broadcastSessionStart,
+    broadcastRemoveParticipant,
+  } = useStudioConnectionCoordinator({
+    recordingId,
     sessionMode,
-    shouldRunStudioPreJoinChecks,
-    showPreJoin,
-    startPreJoinPreview,
-    stopPreJoinPreview,
-  ]);
-
-  useEffect(() => {
-    const element = preJoinVideoRef.current;
-    if (!element) return;
-
-    element.srcObject = preJoinPreviewStream;
-    if (preJoinPreviewStream) {
-      element.play?.().catch(() => {});
-    }
-  }, [preJoinPreviewStream]);
-
-  function togglePreJoinMic() {
-    const stream = preJoinStreamRef.current;
-    if (!stream) return;
-    const next = !preJoinMicEnabled;
-    stream.getAudioTracks().forEach((track) => {
-      track.enabled = next;
-    });
-    setPreJoinMicEnabled(next);
-  }
-
-  function togglePreJoinCam() {
-    const stream = preJoinStreamRef.current;
-    if (!stream) return;
-    const next = !preJoinCamEnabled;
-    stream.getVideoTracks().forEach((track) => {
-      track.enabled = next;
-    });
-    setPreJoinCamEnabled(next);
-  }
-
-  async function livekitJoin(): Promise<boolean> {
-    if (livekitStatus === 'connecting' || livekitStatus === 'connected') return true;
-    setLivekitError(null);
-    setLivekitStatus('connecting');
-
-    try {
-      const { token, wsUrl } = await LiveKitAPI.getToken(recordingId);
-
-      const newRoom = new Room({
-        adaptiveStream: true,
-        dynacast: true,
-      });
-
-      newRoom.on(RoomEvent.Connected, () => {
-        setLivekitStatus('connected');
-      });
-      newRoom.on(RoomEvent.Reconnecting, () => setLivekitStatus('reconnecting'));
-      newRoom.on(RoomEvent.Reconnected, () => setLivekitStatus('connected'));
-      newRoom.on(RoomEvent.Disconnected, () => {
-        setLivekitStatus('idle');
-        setRemoteParticipants([]);
-        setIsMicEnabled(false);
-        setIsCameraEnabled(false);
-        setIsScreenSharing(false);
-        setRoom(null);
-        roomRef.current = null;
-      });
-
-      // P2: receive session_start broadcast from host
-      // U1: receive remove_participant broadcast from host
-      newRoom.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
-        try {
-          const msg = JSON.parse(new TextDecoder().decode(payload)) as Record<string, unknown>;
-          if (msg.type === 'session_start' && typeof msg.startedAt === 'string') {
-            setSessionStartedAt(msg.startedAt);
-          }
-          if (msg.type === 'remove_participant' && typeof msg.participantId === 'string') {
-            // Guest: host removed us — navigate to thanks
-            router.replace(`/studio/${recordingId}/thanks`);
-          }
-        } catch { /* ignore malformed data messages */ }
-      });
-
-      const refresh = () => syncParticipants(newRoom);
-      newRoom.on(RoomEvent.ParticipantConnected, refresh);
-      newRoom.on(RoomEvent.ParticipantDisconnected, refresh);
-      // U3: detect screen share publish/unpublish to switch layout mode
-      newRoom.on(RoomEvent.TrackPublished, (pub) => {
-        refresh();
-        if (pub.source === Track.Source.ScreenShare) {
-          setStudioLayoutMode('screen_share_dominant');
-        }
-      });
-      newRoom.on(RoomEvent.TrackUnpublished, (pub) => {
-        refresh();
-        if (pub.source === Track.Source.ScreenShare) {
-          const anyRemoteScreen = [...newRoom.remoteParticipants.values()].some(
-            (p) => p.getTrackPublication(Track.Source.ScreenShare)?.track != null
-          );
-          const localScreen = newRoom.localParticipant.getTrackPublication(Track.Source.ScreenShare)?.track != null;
-          if (!anyRemoteScreen && !localScreen) {
-            setStudioLayoutMode('grid');
-          }
-        }
-      });
-      newRoom.on(RoomEvent.TrackSubscribed, refresh);
-      newRoom.on(RoomEvent.TrackUnsubscribed, refresh);
-      newRoom.on(RoomEvent.TrackMuted, refresh);
-      newRoom.on(RoomEvent.TrackUnmuted, refresh);
-
-      await newRoom.connect(wsUrl, token);
-      await newRoom.localParticipant.enableCameraAndMicrophone();
-
-      roomRef.current = newRoom;
-      setRoom(newRoom);
-      setIsMicEnabled(true);
-      setIsCameraEnabled(true);
-      syncParticipants(newRoom);
-
-      // P3/U2: probe stream quality once BOTH local cam and mic tracks are published.
-      // We build a combined MediaStream so the probe can check video + audio together.
-      // We wait until both are available before probing.
-      const probeOnLocalTrack = () => {
-        const camPub = newRoom.localParticipant.getTrackPublication(Track.Source.Camera);
-        const micPub = newRoom.localParticipant.getTrackPublication(Track.Source.Microphone);
-        const camTrack = camPub?.track?.mediaStreamTrack;
-        const micTrack = micPub?.track?.mediaStreamTrack;
-        if (camTrack && micTrack) {
-          newRoom.off(RoomEvent.LocalTrackPublished, probeOnLocalTrack);
-          const combined = new MediaStream([camTrack, micTrack]);
-          void probeStreamQuality(combined);
-        }
-      };
-      newRoom.on(RoomEvent.LocalTrackPublished, probeOnLocalTrack);
-      probeOnLocalTrack();
-
-      return true;
-    } catch (err: any) {
-      cleanupLiveKitRoom(roomRef.current);
-      roomRef.current = null;
-      setRoom(null);
-      setLivekitStatus('error');
-      setLivekitError(err?.message ?? 'Failed to join the LiveKit room.');
-      return false;
-    }
-  }
-
-  function livekitLeave() {
-    cleanupLiveKitRoom(roomRef.current);
-    roomRef.current = null;
-    setRoom(null);
-    setRemoteParticipants([]);
-    setIsMicEnabled(false);
-    setIsCameraEnabled(false);
-    setIsScreenSharing(false);
-    setLivekitStatus('idle');
-  }
-
-  async function livekitToggleMic() {
-    const r = roomRef.current;
-    if (!r) return;
-    const next = !isMicEnabled;
-    try {
-      await r.localParticipant.setMicrophoneEnabled(next);
-      setIsMicEnabled(next);
-    } catch (err: any) {
-      setLivekitError(err?.message ?? 'Failed to toggle microphone.');
-    }
-  }
-
-  async function livekitToggleCamera() {
-    const r = roomRef.current;
-    if (!r) return;
-    const next = !isCameraEnabled;
-    try {
-      await r.localParticipant.setCameraEnabled(next);
-      setIsCameraEnabled(next);
-    } catch (err: any) {
-      setLivekitError(err?.message ?? 'Failed to toggle camera.');
-    }
-  }
-
-  async function livekitToggleScreenShare() {
-    const r = roomRef.current;
-    if (!r) return;
-    const next = !isScreenSharing;
-    try {
-      await r.localParticipant.setScreenShareEnabled(next);
-      setIsScreenSharing(next);
-      // U3: update layout mode based on local screen share state
-      if (next) {
-        setStudioLayoutMode('screen_share_dominant');
-      } else {
-        const anyRemoteScreen = [...r.remoteParticipants.values()].some(
-          (p) => p.getTrackPublication(Track.Source.ScreenShare)?.track != null
-        );
-        if (!anyRemoteScreen) setStudioLayoutMode('grid');
-      }
-    } catch (err) {
-      setLivekitError((err as Error)?.message ?? 'Failed to toggle screen share.');
-    }
-  }
-
-  const livekitTiles = useMemo<Tile[]>(() => {
-    return remoteParticipants.flatMap((p) => {
-      const label = p.name || p.identity || 'Guest';
-      const micPublication = p.getTrackPublication(Track.Source.Microphone);
-      const micTrack = micPublication?.track ?? null;
-      const micOff = !micTrack || !!micPublication?.isMuted;
-      const screenAudio = getTrack(p, Track.Source.ScreenShareAudio);
-      const cameraTrack = getTrack(p, Track.Source.Camera);
-      const screenTrack = getTrack(p, Track.Source.ScreenShare);
-
-      const tiles: Tile[] = [];
-      if (screenTrack) {
-        tiles.push({
-          key: `${p.sid}-screen`,
-          label,
-          badge: 'Screen',
-          video: livekitSource(screenTrack),
-          audio: screenAudio || micTrack ? livekitSource(screenAudio || micTrack) : undefined,
-          micOff,
-        });
-      }
-      if (cameraTrack) {
-        tiles.push({
-          key: `${p.sid}-camera`,
-          label,
-          badge: 'Camera',
-          video: livekitSource(cameraTrack),
-          audio: micTrack ? livekitSource(micTrack) : undefined,
-          micOff,
-        });
-      }
-      if (!cameraTrack && !screenTrack) {
-        tiles.push({
-          key: `${p.sid}-audio`,
-          label,
-          badge: 'Audio only',
-          video: livekitSource(null),
-          audio: micTrack ? livekitSource(micTrack) : undefined,
-          micOff,
-        });
-      }
-
-      return tiles;
-    });
-  }, [remoteParticipants]);
-
-  const livekitPeers = useMemo(
-    () =>
-      remoteParticipants.map((p) => ({
-        id: p.sid,
-        label: p.name || p.identity || 'Guest',
-      })),
-    [remoteParticipants]
-  );
-
-  // ===== Mesh state =====
-  const mesh = useMeshRoom({
-    roomId: recordingId,
-    maxPeers: meshMaxPeers,
-    role: requestedStudioRole ?? 'host',
+    requestedStudioRole,
+    meshMaxPeers,
+    allowStudioMeshFallback,
+    probeStreamQuality,
+    onGuestRemoved: () => {
+      router.replace(`/studio/${recordingId}/thanks`);
+    },
   });
 
-  const meshTiles = useMemo<Tile[]>(() => {
-    return mesh.remotePeers.flatMap((peer) => {
-      const shortId = peer.peerId.slice(0, 6);
-      const label = `${peer.role === 'host' ? 'Host' : 'Guest'} · ${shortId}`;
-      const micStream = peer.cameraStream;
-      const hasAudio = micStream?.getAudioTracks().length;
-      const audioSource: MediaSource | undefined = hasAudio
-        ? mediaSource(micStream ?? null)
-        : undefined;
-      const tiles: Tile[] = [];
+  const shouldMaintainPreJoinPreview =
+    (sessionMode === 'studio' && showPreJoin && shouldRunStudioPreJoinChecks) ||
+    (sessionMode === 'meet' && !isConnected);
 
-      if (peer.screenStream) {
-        tiles.push({
-          key: `${peer.peerId}-screen`,
-          label,
-          badge: 'Screen',
-          video: mediaSource(peer.screenStream),
-          audio: audioSource,
-        });
-      }
-
-      if (peer.cameraStream) {
-        const hasVideo = peer.cameraStream.getVideoTracks().length > 0;
-        if (hasVideo) {
-          tiles.push({
-            key: `${peer.peerId}-camera`,
-            label,
-            badge: 'Camera',
-            video: mediaSource(peer.cameraStream),
-            audio: audioSource,
-          });
-        } else if (audioSource) {
-          tiles.push({
-            key: `${peer.peerId}-audio`,
-            label,
-            badge: 'Audio only',
-            video: mediaSource(null),
-            audio: audioSource,
-          });
-        }
-      }
-
-      return tiles;
-    });
-  }, [mesh.remotePeers]);
-
-  const meshPeers = useMemo(
-    () =>
-      mesh.remotePeers.map((peer) => ({
-        id: peer.peerId,
-        label: `${peer.role === 'host' ? 'Host' : 'Guest'} · ${peer.peerId.slice(0, 6)}`,
-      })),
-    [mesh.remotePeers]
-  );
-
-  const livekitCameraStream = useMemo(() => {
-    const camMST = (localCameraTrack as any)?.mediaStreamTrack as MediaStreamTrack | undefined;
-    const micMST = (localMicTrack as any)?.mediaStreamTrack as MediaStreamTrack | undefined;
-    if (!camMST || camMST.readyState !== 'live') return null;
-    const tracks: MediaStreamTrack[] = [camMST];
-    if (micMST && micMST.readyState === 'live') tracks.push(micMST);
-    return new MediaStream(tracks);
-  }, [localCameraTrack, localMicTrack]);
-  const livekitMicStream = useMemo(
-    () => livekitTrackToStream(localMicTrack),
-    [localMicTrack]
-  );
-  const livekitScreenStream = useMemo(() => {
-    const screenMST = (localScreenTrack as any)?.mediaStreamTrack as MediaStreamTrack | undefined;
-    const micMST = (localMicTrack as any)?.mediaStreamTrack as MediaStreamTrack | undefined;
-    if (!screenMST || screenMST.readyState !== 'live') return null;
-    const tracks: MediaStreamTrack[] = [screenMST];
-    if (micMST && micMST.readyState === 'live') tracks.push(micMST);
-    return new MediaStream(tracks);
-  }, [localScreenTrack, localMicTrack]);
-
-  const meshCameraStream = useMemo(
-    () => selectTracksAsStream(mesh.localStream, 'video'),
-    [mesh.localStream]
-  );
-  const meshMicStream = useMemo(
-    () => selectTracksAsStream(mesh.localStream, 'audio'),
-    [mesh.localStream]
-  );
-  const meshScreenStream = useMemo(
-    () => mesh.localScreenStream ?? null,
-    [mesh.localScreenStream]
-  );
-
-  const recordingStreams = useMemo<Record<RecorderKind, MediaStream | null>>(
-    () =>
-      engine === 'livekit'
-        ? {
-            video: livekitCameraStream,
-            audio: livekitMicStream,
-            screen: livekitScreenStream,
-          }
-        : {
-            video: meshCameraStream,
-            audio: meshMicStream,
-            screen: meshScreenStream,
-          },
-    [
-      engine,
-      livekitCameraStream,
-      livekitMicStream,
-      livekitScreenStream,
-      meshCameraStream,
-      meshMicStream,
-      meshScreenStream,
-    ]
-  );
-
-  const ensureLocalHostParticipantId = useCallback(async () => {
-    if (sessionMode !== 'studio' || requestedStudioRole === 'guest') return null;
-    if (recordingSession?.hostParticipantId) {
-      setLocalHostParticipantId(recordingSession.hostParticipantId);
-      return recordingSession.hostParticipantId;
-    }
-    if (localHostParticipantId) return localHostParticipantId;
-    if (hostParticipantEnsureRef.current) {
-      return hostParticipantEnsureRef.current;
-    }
-
-    const resolvePromise = (async () => {
-      const listed = await ParticipantsAPI.list(recordingId);
-      const existingHost = listed.participants.find((participant) => participant.role === 'host');
-      if (existingHost) {
-        setLocalHostParticipantId(existingHost.id);
-        return existingHost.id;
-      }
-
-      const created = await ParticipantsAPI.create(recordingId, {
-        role: 'host',
-        displayName: displayName?.trim() || profile?.name?.trim() || 'Host',
-      });
-      setLocalHostParticipantId(created.participant.id);
-      setCreatedInviteParticipantIdByRole((prev) => ({
-        ...prev,
-        host: prev.host ?? created.participant.id,
-      }));
-      return created.participant.id;
-    })();
-
-    hostParticipantEnsureRef.current = resolvePromise;
-    try {
-      return await resolvePromise;
-    } finally {
-      if (hostParticipantEnsureRef.current === resolvePromise) {
-        hostParticipantEnsureRef.current = null;
-      }
-    }
-  }, [
-    displayName,
-    localHostParticipantId,
-    profile?.name,
-    recordingId,
-    recordingSession?.hostParticipantId,
-    requestedStudioRole,
-    sessionMode,
-  ]);
-
-  useEffect(() => {
-    if (sessionMode !== 'studio' || requestedStudioRole === 'guest') return;
-    if (recordingSession?.hostParticipantId) {
-      setLocalHostParticipantId(recordingSession.hostParticipantId);
-      return;
-    }
-    void ensureLocalHostParticipantId().catch((err) => {
-      setSessionError((err as Error)?.message ?? 'Failed to resolve host participant.');
-    });
-  }, [
-    ensureLocalHostParticipantId,
-    recordingSession?.hostParticipantId,
-    requestedStudioRole,
-    sessionMode,
-  ]);
+  const {
+    previewVideoRef: preJoinVideoRef,
+    preJoinStatus,
+    preJoinError,
+    preJoinMicEnabled,
+    preJoinCamEnabled,
+    preJoinPreviewStream,
+    cameraDevices,
+    micDevices,
+    speakerDevices,
+    selectedCameraId,
+    selectedMicId,
+    selectedSpeakerId,
+    setSelectedCameraId,
+    setSelectedMicId,
+    setSelectedSpeakerId,
+    startPreJoinPreview,
+    stopPreJoinPreview,
+    togglePreJoinMic,
+    togglePreJoinCam,
+  } = useStudioDevices({
+    previewEnabled: shouldMaintainPreJoinPreview,
+  });
 
   const effectiveRequestedParticipantId =
     requestedStudioRole === 'guest' && requestedGuestToken
@@ -1331,287 +286,25 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
         localHostParticipantId ??
         createdInviteParticipantIdByRole.host ??
         null;
-
-  useEffect(() => {
-    if (sessionMode !== 'studio' || !isRecording) return;
-    if (requestedStudioRole === 'guest' && !guestClaimReady) return;
-    if (!recorderParticipantId) return;
-
-    const kinds = Object.keys(recordingStreams) as RecorderKind[];
-
-    kinds.forEach((kind) => {
-      const stream = recordingStreams[kind];
-      if (!stream) return;
-      if (trackIdByKind[kind]) return;
-      if (registeringKindsRef.current.has(kind)) return;
-
-      registeringKindsRef.current.add(kind);
-      void StudioRecordingAPI.registerTrack(recordingId, {
-        participantId: recorderParticipantId,
-        kind,
-      })
-        .then((res) => {
-          setTrackIdByKind((prev) => {
-            if (prev[kind]) return prev;
-            return { ...prev, [kind]: res.track.id };
-          });
-          setRecorderError(null);
-        })
-        .catch((err) => {
-          setRecorderError((err as Error)?.message ?? `Could not register ${kind} track.`);
-        })
-        .finally(() => {
-          registeringKindsRef.current.delete(kind);
-        });
-    });
-  }, [
-    guestClaimReady,
-    isRecording,
-    recorderParticipantId,
-    recordingId,
-    recordingStreams,
-    requestedStudioRole,
+  const {
+    recorderError,
+    finalizeTrackCaptures,
+    hasRegisteredTracks,
+  } = useStudioRecording({
     sessionMode,
-    trackIdByKind,
-  ]);
-
-  const rollingRecorderSources = useMemo<RollingRecorderSource[]>(() => {
-    const kinds: RecorderKind[] = ['audio', 'video', 'screen'];
-    const sources: RollingRecorderSource[] = [];
-
-    kinds.forEach((kind) => {
-      const stream = recordingStreams[kind];
-      const trackId = trackIdByKind[kind];
-      if (!stream || !trackId) return;
-      sources.push({
-        kind,
-        trackId,
-        stream,
-      });
-    });
-
-    return sources;
-  }, [recordingStreams, trackIdByKind]);
-
-  const recoverTrackChunkState = useCallback(
-    async (trackId: string) => {
-      if (!trackId || recoveringTrackIdsRef.current.has(trackId)) return;
-      recoveringTrackIdsRef.current.add(trackId);
-
-      try {
-        const response = await StudioRecordingAPI.getTrackChunkRecovery(recordingId, trackId);
-        const highestExistingSeq = Math.max(0, Math.floor(response.recovery.highestExistingSeq));
-        const highestContiguousUploadedSeq = Math.max(
-          0,
-          Math.floor(response.recovery.highestContiguousUploadedSeq)
-        );
-        const nextSeq = Math.max(1, Math.floor(response.recovery.nextSeq));
-
-        setRecoveredNextSeqByTrack((prev) =>
-          prev[trackId] === nextSeq ? prev : { ...prev, [trackId]: nextSeq }
-        );
-        setRecoveryReadyByTrack((prev) => (prev[trackId] ? prev : { ...prev, [trackId]: true }));
-
-        await chunkUploadQueue.reconcileTrackRecovery({
-          recordingId,
-          trackId,
-          highestExistingSeq,
-          highestContiguousUploadedSeq,
-        });
-
-        setRecorderError((prev) => {
-          if (!prev) return prev;
-          if (!prev.includes('recover track chunk state')) return prev;
-          return null;
-        });
-      } catch (err) {
-        setRecoveryReadyByTrack((prev) => ({ ...prev, [trackId]: false }));
-        setRecorderError(
-          (err as Error)?.message ?? `Failed to recover track chunk state for ${trackId}.`
-        );
-      } finally {
-        recoveringTrackIdsRef.current.delete(trackId);
-      }
-    },
-    [chunkUploadQueue, recordingId]
-  );
-
-  useEffect(() => {
-    if (sessionMode !== 'studio' || !isRecording) return;
-
-    const trackIds = Array.from(new Set(rollingRecorderSources.map((source) => source.trackId)));
-    trackIds.forEach((trackId) => {
-      if (recoveryReadyByTrack[trackId]) return;
-      void recoverTrackChunkState(trackId);
-    });
-  }, [isRecording, recoverTrackChunkState, recoveryReadyByTrack, rollingRecorderSources, sessionMode]);
-
-  useEffect(() => {
-    if (sessionMode !== 'studio') return;
-    const onOnline = () => {
-      if (!isRecording) return;
-      const trackIds = Array.from(new Set(rollingRecorderSources.map((source) => source.trackId)));
-      trackIds.forEach((trackId) => {
-        void recoverTrackChunkState(trackId);
-      });
-    };
-    window.addEventListener('online', onOnline);
-    return () => {
-      window.removeEventListener('online', onOnline);
-    };
-  }, [isRecording, recoverTrackChunkState, rollingRecorderSources, sessionMode]);
-
-  const recoveredRollingRecorderSources = useMemo(
-    () => rollingRecorderSources.filter((source) => recoveryReadyByTrack[source.trackId]),
-    [recoveryReadyByTrack, rollingRecorderSources]
-  );
-
-  const onChunkEmitted = useCallback(
-    (chunk: RollingRecorderChunk) => {
-      const previous = latestChunkSeqByTrackRef.current.get(chunk.trackId) ?? 0;
-      if (chunk.seq > previous) {
-        latestChunkSeqByTrackRef.current.set(chunk.trackId, chunk.seq);
-      }
-
-      void chunkUploadQueue
-        .enqueue({
-          recordingId,
-          trackId: chunk.trackId,
-          seq: chunk.seq,
-          kind: chunk.kind,
-          protocol: chunkUploadProtocol,
-          blob: chunk.blob,
-          bytes: chunk.bytes,
-          emittedAt: chunk.emittedAt,
-        })
-        .catch((err) => {
-          setRecorderError((err as Error)?.message ?? 'Failed to enqueue chunk upload.');
-        });
-    },
-    [chunkUploadProtocol, chunkUploadQueue, recordingId]
-  );
-
-  const finalizeTrackCaptures = useCallback(async () => {
-    if (sessionMode !== 'studio') return;
-    const trackIds = Array.from(
-      new Set(Object.values(trackIdByKind).filter((value): value is string => !!value))
-    );
-    if (trackIds.length === 0) return;
-
-    const captureClosedAt = new Date().toISOString();
-    // P2: use actual MediaRecorder start time when available (more accurate for guests
-    // who join a few seconds after the session begins), falling back to the broadcast
-    // session start time from the host.
-    const startedAt = actualRecorderStartedAt ?? sessionStartedAt ?? recordingSession?.startedAt ?? undefined;
-    await Promise.all(
-      trackIds.map(async (trackId) => {
-        const observedFinalSeq = latestChunkSeqByTrackRef.current.get(trackId) ?? 0;
-        const recoveredNextSeq = recoveredNextSeqByTrack[trackId];
-        const recoveredFinalSeq =
-          typeof recoveredNextSeq === 'number' && Number.isFinite(recoveredNextSeq)
-            ? Math.max(0, Math.floor(recoveredNextSeq) - 1)
-            : 0;
-        const finalSeq = Math.max(observedFinalSeq, recoveredFinalSeq);
-        await StudioRecordingAPI.finalizeTrack(recordingId, trackId, {
-          finalSeq,
-          captureClosedAt,
-          recordingStartedAt: startedAt,
-        });
-      })
-    );
-  }, [actualRecorderStartedAt, recordingId, recoveredNextSeqByTrack, recordingSession?.startedAt, sessionMode, sessionStartedAt, trackIdByKind]);
-
-  // Auto-finalize guest tracks when the host stops the session.
-  // Guests never call handleToggleRecordingSession, so this is the only place
-  // finalization is triggered for them.
-  //
-  // Race condition guard: prevGuestStoppedAtRef is only updated AFTER we confirm
-  // trackIdByKind is non-empty. If stoppedAt fires before tracks finish registering
-  // (async API calls), the ref stays unconsumed so the next effect run (triggered
-  // by trackIdByKind becoming populated) can still proceed with finalization.
-  useEffect(() => {
-    if (sessionMode !== 'studio' || requestedStudioRole !== 'guest') return;
-    const stoppedAt = recordingSession?.stoppedAt;
-    const prev = prevGuestStoppedAtRef.current;
-    // Only fire on the transition from no stoppedAt → stoppedAt
-    if (!stoppedAt || prev === stoppedAt) return;
-    // Wait until track IDs are available before consuming the transition.
-    // If tracks aren't registered yet, the ref stays unconsumed so this effect
-    // re-fires (via trackIdByKind dep) once registration completes.
-    if (Object.keys(trackIdByKind).length === 0) return;
-    prevGuestStoppedAtRef.current = stoppedAt;
-    const timer = window.setTimeout(() => {
-      void finalizeTrackCaptures().catch(() => {});
-    }, 500);
-    return () => window.clearTimeout(timer);
-  }, [finalizeTrackCaptures, recordingSession?.stoppedAt, requestedStudioRole, sessionMode, trackIdByKind]);
-
-  useRollingChunkRecorder({
-    enabled:
-      sessionMode === 'studio' &&
-      isRecording &&
-      !!recorderParticipantId &&
-      recoveredRollingRecorderSources.length > 0,
-    timesliceMs: 4000,
-    sources: recoveredRollingRecorderSources,
-    initialNextSeqByTrack: recoveredNextSeqByTrack,
-    onChunk: onChunkEmitted,
-    onError: setRecorderError,
-    onStart: setActualRecorderStartedAt,
+    requestedStudioRole,
+    guestClaimReady,
+    recordingId,
+    recorderParticipantId,
+    recordingStreams,
+    isRecording,
+    recordingSessionStartedAt: recordingSession?.startedAt,
+    recordingSessionStoppedAt: recordingSession?.stoppedAt,
+    sessionStartedAt,
+    chunkUploadProtocol,
+    chunkUploadQueue,
+    resetKey: `${recordingId}:${requestedGuestToken ?? ''}:${isGuestStudioFlow ? 'guest' : 'default'}`,
   });
-
-  const active = engine === 'livekit'
-    ? {
-        status: livekitStatus,
-        error: livekitError,
-        isMicEnabled,
-        isCameraEnabled,
-        isScreenSharing,
-        localVideo: livekitSource(localCameraTrack),
-        localScreen: livekitSource(localScreenTrack),
-        tiles: livekitTiles,
-        peers: livekitPeers,
-        join: livekitJoin,
-        leave: livekitLeave,
-        toggleMic: livekitToggleMic,
-        toggleCamera: livekitToggleCamera,
-        toggleScreen: livekitToggleScreenShare,
-      }
-    : {
-        status: mesh.status as ConnectionStatus,
-        error: mesh.error,
-        isMicEnabled: !mesh.isMicMuted,
-        isCameraEnabled: !mesh.isCameraOff,
-        isScreenSharing: mesh.isScreenSharing,
-        localVideo: mediaSource(mesh.localStream),
-        localScreen: mediaSource(mesh.localScreenStream),
-        tiles: meshTiles,
-        peers: meshPeers,
-        join: async () => {
-          await mesh.join();
-          return true;
-        },
-        leave: mesh.leave,
-        toggleMic: mesh.toggleMic,
-        toggleCamera: mesh.toggleCamera,
-        toggleScreen: mesh.isScreenSharing ? mesh.stopScreenShare : mesh.startScreenShare,
-      };
-
-  const isConnected = active.status === 'connected' || active.status === 'reconnecting';
-
-  useEffect(() => {
-    if (sessionMode !== 'meet') return;
-    if (isConnected) return;
-    if (preJoinPreviewStream) return;
-    startPreJoinPreview();
-  }, [isConnected, preJoinPreviewStream, sessionMode, startPreJoinPreview]);
-
-  useEffect(() => {
-    if (sessionMode !== 'meet') return;
-    if (!isConnected) return;
-    if (!preJoinPreviewStream) return;
-    stopPreJoinPreview();
-  }, [isConnected, preJoinPreviewStream, sessionMode, stopPreJoinPreview]);
 
   useEffect(() => {
     if (!pinnedTileKey) return;
@@ -1627,96 +320,41 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     }
   }, [active.tiles, pinnedTileKey, sessionMode]);
 
-  const hasLocalPublishedVideo = active.localVideo.kind === 'livekit'
-    ? !!active.localVideo.track
-    : !!active.localVideo.stream;
-
-  const meetLocalTile = useMemo<Tile>(
-    () => ({
-      key: 'meet-local-camera',
-      label: displayName || 'You',
-      badge: 'You',
-      video: hasLocalPublishedVideo ? active.localVideo : mediaSource(preJoinPreviewStream),
-      muted: true,
-    }),
-    [active.localVideo, displayName, hasLocalPublishedVideo, preJoinPreviewStream]
-  );
-
-  const hasLocalScreenTrack = active.localScreen.kind === 'livekit'
-    ? !!active.localScreen.track
-    : !!active.localScreen.stream;
-
-  const meetLocalScreenTile = useMemo<Tile | null>(
+  const {
+    meetLocalTile,
+    meetMainTile,
+    hasRemoteStage,
+    meetVisibleSecondaryTiles,
+    meetPeople,
+  } = useMemo(
     () =>
-      hasLocalScreenTrack
-        ? {
-            key: 'meet-local-screen',
-            label: displayName || 'You',
-            badge: 'Screen',
-            video: active.localScreen,
-            muted: true,
-          }
-        : null,
-    [active.localScreen, displayName, hasLocalScreenTrack]
+      buildMeetViewModel({
+        displayName,
+        active,
+        preJoinPreviewStream,
+        pinnedTileKey,
+        showMeetSelfPreview,
+      }),
+    [active, displayName, pinnedTileKey, preJoinPreviewStream, showMeetSelfPreview]
   );
-
-  const meetAllTiles = useMemo<Tile[]>(
-    () => [meetLocalTile, ...(meetLocalScreenTile ? [meetLocalScreenTile] : []), ...active.tiles],
-    [active.tiles, meetLocalScreenTile, meetLocalTile]
-  );
-
-  const defaultMeetMainTile = useMemo<Tile>(() => {
-    const screenTile = meetAllTiles.find((tile) => tile.badge === 'Screen');
-    return screenTile ?? active.tiles[0] ?? meetLocalTile;
-  }, [active.tiles, meetAllTiles, meetLocalTile]);
-
-  const meetMainTile = useMemo<Tile>(() => {
-    if (pinnedTileKey) {
-      const pinned = meetAllTiles.find((tile) => tile.key === pinnedTileKey);
-      if (pinned) return pinned;
-    }
-    return defaultMeetMainTile;
-  }, [defaultMeetMainTile, meetAllTiles, pinnedTileKey]);
-
-  const hasRemoteStage = active.tiles.length > 0;
-  const meetSecondaryTiles = useMemo<Tile[]>(
-    () => meetAllTiles.filter((tile) => tile.key !== meetMainTile.key),
-    [meetAllTiles, meetMainTile.key]
-  );
-
-  const meetVisibleSecondaryTiles = useMemo<Tile[]>(
+  const meetHeaderViewModel = useMemo(
     () =>
-      meetSecondaryTiles.filter(
-        (tile) => showMeetSelfPreview || tile.key !== meetLocalTile.key
-      ),
-    [meetLocalTile.key, meetSecondaryTiles, showMeetSelfPreview]
-  );
-
-  const meetPeople = useMemo(
-    () => {
-      const remotePrimaryTile = new Map<string, string>();
-      active.tiles.forEach((tile) => {
-        if (!remotePrimaryTile.has(tile.label)) {
-          remotePrimaryTile.set(tile.label, tile.key);
-        }
-      });
-
-      return [
-        {
-          id: 'local',
-          label: displayName || 'You',
-          role: 'You',
-          tileKey: meetLocalTile.key,
-        },
-        ...active.peers.map((peer) => ({
-          id: peer.id,
-          label: peer.label,
-          role: 'Guest',
-          tileKey: remotePrimaryTile.get(peer.label) ?? null,
-        })),
-      ];
-    },
-    [active.peers, active.tiles, displayName, meetLocalTile.key]
+      buildMeetHeaderViewModel({
+        status: active.status,
+        participantCount: active.peers.length + 1,
+        showPeoplePanel: showMeetPeoplePanel,
+        stageFit: meetStageFit,
+        showSelfPreview: showMeetSelfPreview,
+        selfPreviewExpanded: meetSelfPreviewExpanded,
+      }),
+    [
+      active.peers.length,
+      active.status,
+      meetSelfPreviewExpanded,
+      meetStageFit,
+      showMeetPeoplePanel,
+      showMeetSelfPreview,
+    ]
   );
 
   async function handleJoin(): Promise<boolean> {
@@ -1724,38 +362,11 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       stopPreJoinPreview();
     }
 
-    if (engine === 'livekit') {
-      const ok = await livekitJoin();
-      if (!ok) {
-        const canFallbackToMesh = sessionMode === 'meet' || allowStudioMeshFallback;
-        if (!canFallbackToMesh) {
-          setFallbackNotice('LiveKit connection failed. Retry to rejoin. Mesh fallback is disabled in studio mode.');
-          return false;
-        }
-
-        setFallbackNotice('LiveKit connection failed. Switching to mesh fallback.');
-        setEngine('mesh');
-        try {
-          await mesh.join();
-          return true;
-        } catch {
-          if (sessionMode === 'meet') {
-            startPreJoinPreview();
-          }
-          return false;
-        }
-      }
-      return true;
+    const joined = await join();
+    if (!joined && sessionMode === 'meet') {
+      startPreJoinPreview();
     }
-    try {
-      await mesh.join();
-      return true;
-    } catch {
-      if (sessionMode === 'meet') {
-        startPreJoinPreview();
-      }
-      return false;
-    }
+    return joined;
   }
 
   async function handleJoinFromPreJoin() {
@@ -1817,15 +428,6 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     setGuestPreJoinStep('prejoin');
   }
 
-  useEffect(() => {
-    if (sessionMode !== 'studio') return;
-    if (allowStudioMeshFallback) return;
-    if (engine === 'mesh') {
-      setEngine('livekit');
-      setFallbackNotice('Studio mode requires LiveKit. Rejoining with LiveKit.');
-    }
-  }, [allowStudioMeshFallback, engine, sessionMode]);
-
   async function handleLeave() {
     if (sessionMode === 'studio' && canControlRecording && isRecording && !sessionBusy) {
       setSessionBusy(true);
@@ -1844,11 +446,9 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     }
 
     setPinnedTileKey(null);
-    active.leave();
-    setEngine('livekit');
-    setFallbackNotice(null);
+    leaveAndReset();
     if (sessionMode === 'studio' && (requestedStudioRole === 'guest' || !!claimedGuestParticipantId)) {
-      if (Object.keys(trackIdByKind).length > 0) {
+      if (hasRegisteredTracks) {
         try {
           await finalizeTrackCaptures();
         } catch {
@@ -1884,10 +484,8 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       setCanControlRecording(response.canControl);
 
       // P2: host broadcasts startedAt so all participants can include it in finalizeTrack
-      if (!wasRecording && response.session.startedAt && roomRef.current) {
-        const msg = JSON.stringify({ type: 'session_start', startedAt: response.session.startedAt });
-        void roomRef.current.localParticipant.publishData(new TextEncoder().encode(msg), { reliable: true });
-        setSessionStartedAt(response.session.startedAt);
+      if (!wasRecording && response.session.startedAt) {
+        await broadcastSessionStart(response.session.startedAt);
       }
 
       if (wasRecording) {
@@ -1909,81 +507,12 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
 
   // U1: host removes a participant — broadcasts data message so guest navigates to thanks
   async function handleRemoveParticipant(participantId: string) {
-    if (!roomRef.current) return;
-    const msg = JSON.stringify({ type: 'remove_participant', participantId });
-    await roomRef.current.localParticipant.publishData(new TextEncoder().encode(msg), { reliable: true });
+    await broadcastRemoveParticipant(participantId);
   }
 
   function togglePin(tileKey: string) {
     setPinnedTileKey((prev) => (prev === tileKey ? null : tileKey));
   }
-
-  function openMeetContextMenu(
-    event: React.MouseEvent<HTMLElement>,
-    tileKey: string,
-    isMain: boolean
-  ) {
-    event.preventDefault();
-    setMeetContextMenu({
-      x: event.clientX,
-      y: event.clientY,
-      tileKey,
-      isMain,
-    });
-  }
-
-  function closeMeetContextMenu() {
-    setMeetContextMenu(null);
-  }
-
-  async function toggleMeetFullscreen() {
-    const stageElement = meetStageRef.current;
-    if (!stageElement) return;
-
-    try {
-      if (document.fullscreenElement) {
-        await document.exitFullscreen();
-      } else {
-        await stageElement.requestFullscreen();
-      }
-    } catch {
-      // ignore fullscreen errors
-    }
-  }
-
-  useEffect(() => {
-    if (!meetContextMenu) return;
-
-    const onPointerDown = () => setMeetContextMenu(null);
-    const onEsc = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setMeetContextMenu(null);
-      }
-    };
-
-    window.addEventListener('pointerdown', onPointerDown);
-    window.addEventListener('keydown', onEsc);
-    return () => {
-      window.removeEventListener('pointerdown', onPointerDown);
-      window.removeEventListener('keydown', onEsc);
-    };
-  }, [meetContextMenu]);
-
-  useEffect(() => {
-    if (!showMeetViewMenu) return;
-
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (!target) return;
-      if (target.closest('[data-meet-view-menu-root]')) return;
-      setShowMeetViewMenu(false);
-    };
-
-    window.addEventListener('pointerdown', onPointerDown);
-    return () => {
-      window.removeEventListener('pointerdown', onPointerDown);
-    };
-  }, [showMeetViewMenu]);
 
   useEffect(() => {
     if (sessionMode === 'studio' && !showPreJoin && active.status === 'idle') {
@@ -2038,116 +567,48 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     sessionMode,
   ]);
 
-  const inviteLink =
-    typeof window !== 'undefined'
-      ? buildStudioInviteLink({
-          origin: window.location.origin,
-          recordingId,
-          role: inviteRole,
-          participantId: createdInviteParticipantIdByRole[inviteRole] ?? null,
-          guestToken: inviteRole === 'guest' ? createdInviteGuestToken : null,
-        })
-      : '';
-
   const localStudioRole: 'host' | 'guest' = canControlRecording ? 'host' : 'guest';
   const localStudioRoleLabel = localStudioRole === 'host' ? 'Host' : 'Guest';
   const studioUiAccess = deriveStudioUiAccess(localStudioRole);
-  const localParticipantProgress = progressParticipants.find((participant) =>
-    recorderParticipantId
-      ? participant.participantId === recorderParticipantId
-      : effectiveRequestedParticipantId
-        ? participant.participantId === effectiveRequestedParticipantId
-        : participant.role === 'host'
-  );
-  const localQueueState = deriveGuestUploadState({
-    pendingUploads: chunkUploadQueue.stats.pending + chunkUploadQueue.stats.processing,
-    failedUploads: chunkUploadQueue.stats.failed,
-  });
-  const localUploadComplete = localParticipantProgress
-    ? localParticipantProgress.state === 'upload complete'
-    : localQueueState === 'upload complete';
-  const uploadCompletion = useMemo(() => {
-    const participantsWithUploads = progressParticipants;
-    const hasBackendPendingUploads = participantsWithUploads.some(
-      (participant) => participant.state === 'uploading'
-    );
-    const hasLocalPendingUploads =
-      chunkUploadQueue.stats.pending > 0 || chunkUploadQueue.stats.processing > 0;
-    const participantsTotal =
-      recordingProgress?.summary.participantsTotal ?? participantsWithUploads.length;
-    const participantsComplete =
-      recordingProgress?.summary.participantsComplete ??
-      participantsWithUploads.filter((participant) => participant.state === 'upload complete').length;
-    const participantsUploading =
-      recordingProgress?.summary.participantsUploading ??
-      participantsWithUploads.filter((participant) => participant.state === 'uploading').length;
-    const actionRequiredParticipants =
-      recordingProgress?.summary.actionRequiredParticipants ??
-      participantsWithUploads.filter((participant) => participant.state === 'action required').length;
-    const uploadsComplete =
-      recordingProgress?.studio.canOpenProject ??
-      (!!recordingSession?.stoppedAt && participantsTotal > 0 && participantsComplete >= participantsTotal);
-
-    return {
-      participantsTotal,
-      participantsComplete,
-      participantsUploading,
-      actionRequiredParticipants,
-      keepPageOpen: recordingProgress?.studio.keepPageOpen ?? (hasLocalPendingUploads || hasBackendPendingUploads),
-      uploadsComplete,
-    };
-  }, [
-    chunkUploadQueue.stats.pending,
-    chunkUploadQueue.stats.processing,
-    progressParticipants,
-    recordingProgress?.studio.canOpenProject,
-    recordingProgress?.studio.keepPageOpen,
-    recordingProgress?.summary.actionRequiredParticipants,
-    recordingProgress?.summary.participantsComplete,
-    recordingProgress?.summary.participantsTotal,
-    recordingProgress?.summary.participantsUploading,
-    recordingSession?.stoppedAt,
-  ]);
-  const hasPendingUploads = uploadCompletion.keepPageOpen;
-  const canOpenProject = recordingProgress?.studio.canOpenProject ?? uploadCompletion.uploadsComplete;
-  const studioState: ConsumerRecordingState =
-    recordingProgress?.studioState ??
-    (isRecording ? 'recording' : canOpenProject ? 'upload complete' : 'uploading');
-  const projectState: ConsumerRecordingState =
-    recordingProgress?.projectState ??
-    (canOpenProject ? 'processing' : studioState);
-  const hostStudioLifecyclePhase = useMemo(
+  const {
+    localParticipantProgress,
+    localQueueState,
+    localUploadComplete,
+    uploadCompletion,
+    hasPendingUploads,
+    canOpenProject,
+    studioState,
+    projectState,
+    hostStudioLifecyclePhase,
+    hostUploadOverlayOpen,
+    uploadStatusState,
+  } = useMemo(
     () =>
-      deriveHostStudioPhase({
-        canControlRecording: localStudioRole === 'host',
-        showPreJoin,
+      deriveStudioUploadState({
+        progressParticipants,
+        recordingProgress,
+        recordingSessionStoppedAt: recordingSession?.stoppedAt,
         isRecording,
+        localStudioRole,
+        showPreJoin,
         sessionBusy,
-        sessionStopped: !!recordingSession?.stoppedAt,
-        studioState,
-        projectState,
+        recorderParticipantId,
+        effectiveRequestedParticipantId,
+        chunkUploadStats: chunkUploadQueue.stats,
       }),
     [
+      chunkUploadQueue.stats,
+      effectiveRequestedParticipantId,
       isRecording,
       localStudioRole,
-      projectState,
+      progressParticipants,
+      recorderParticipantId,
+      recordingProgress,
       recordingSession?.stoppedAt,
       sessionBusy,
       showPreJoin,
-      studioState,
     ]
   );
-  const hostUploadOverlayOpen =
-    localStudioRole === 'host' &&
-    hostStudioLifecyclePhase !== null &&
-    hostStudioLifecyclePhase !== 'host_prepared' &&
-    hostStudioLifecyclePhase !== 'recording_active';
-  const uploadStatusState: ConsumerRecordingState =
-    localStudioRole === 'host'
-      ? hostStudioLifecyclePhase === 'project_processing' || hostStudioLifecyclePhase === 'project_ready'
-        ? projectState
-        : studioState
-      : localParticipantProgress?.state ?? localQueueState;
   const uploadOverlayOpen =
     localStudioRole === 'host'
       ? hostUploadOverlayOpen
@@ -2194,1056 +655,221 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
     sessionMode,
   ]);
 
-  async function ensureInviteParticipantId(role: 'guest' | 'host') {
-    const existing = createdInviteParticipantIdByRole[role];
-    if (existing) {
-      return {
-        participantId: existing,
-        guestToken: role === 'guest' ? createdInviteGuestToken ?? undefined : undefined,
-      };
-    }
-
-    if (role === 'host') {
-      const hostId = await ensureLocalHostParticipantId();
-      if (!hostId) {
-        throw new Error('Host participant is not available.');
-      }
-      setCreatedInviteParticipantIdByRole((prev) => ({ ...prev, host: hostId }));
-      return { participantId: hostId };
-    }
-
-    const result = await ParticipantsAPI.create(recordingId, {
-      role,
-      displayName: `Guest ${Date.now()}`,
-    });
-    const participantId = result.participant.id;
-    const guestToken = tokenFromMagicLink(result.magicLink);
-    setCreatedInviteParticipantIdByRole((prev) => ({ ...prev, [role]: participantId }));
-    setCreatedInviteGuestToken(guestToken);
-    return { participantId, guestToken: guestToken ?? undefined };
-  }
-
-  async function handleCopyInviteLink() {
-    if (typeof window === 'undefined') return;
-    try {
-      const invite = await ensureInviteParticipantId(inviteRole);
-      const link = buildStudioInviteLink({
-        origin: window.location.origin,
-        recordingId,
-        role: inviteRole,
-        participantId: invite.participantId,
-        guestToken: inviteRole === 'guest' ? invite.guestToken ?? null : null,
-      });
-      await navigator.clipboard.writeText(link);
-      setCopyState('copied');
-      setInviteNotice(null);
-    } catch {
-      setCopyState('error');
-      setInviteNotice('Could not create/copy invite link.');
-    }
-  }
-
-  function handleInviteByEmail() {
-    if (!inviteEmail.trim()) {
-      setInviteNotice('Enter an email to send invite.');
-      return;
-    }
-    setInviteNotice('Email invite API is not wired yet. Link sharing is active.');
-  }
-
-  const studioCanvasTiles = useMemo<Tile[]>(() => {
-    const tiles: Tile[] = [];
-
-    tiles.push({
-      key: 'studio-local-camera',
-      label: displayName || 'You',
-      badge: 'Camera',
-      video: active.localVideo,
-      muted: true,
-      micOff: !active.isMicEnabled,
-    });
-
-    if (active.localScreen.kind === 'livekit' ? !!active.localScreen.track : !!active.localScreen.stream) {
-      tiles.push({
-        key: 'studio-local-screen',
-        label: `${displayName || 'You'} (Screen)`,
-        badge: 'Screen',
-        video: active.localScreen,
-        muted: true,
-        micOff: !active.isMicEnabled,
-      });
-    }
-
-    tiles.push(...active.tiles);
-    return tiles;
-  }, [active.isMicEnabled, active.localScreen, active.localVideo, active.tiles, displayName]);
-
   if (showPreJoin && sessionMode === 'studio') {
     const isGuestWelcomeStep = isGuestStudioFlow && guestPreJoinStep === 'welcome';
     const guestNameMissing = isGuestStudioFlow && displayName.trim().length === 0;
 
     if (isGuestWelcomeStep) {
       return (
-        <main className={`${spaceGrotesk.className} studio-shell-background min-h-screen text-slate-100`}>
-          <div className="mx-auto flex min-h-screen w-full max-w-[980px] flex-col px-6 py-6">
-            <header className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <Link href="/" className="studio-control-surface rounded-full px-3 py-1.5 text-slate-300 hover:text-slate-100">
-                  ←
-                </Link>
-                <p className="text-2xl font-semibold tracking-[0.2em]">STUDIO CAST</p>
-              </div>
-            </header>
-
-            <section className="flex flex-1 items-center justify-center py-10">
-              <div className="studio-panel-surface w-full max-w-2xl rounded-3xl p-10">
-                <span className="inline-flex rounded-full border border-violet-400/40 bg-violet-500/10 px-4 py-2 text-sm text-violet-100">
-                  Guest Invite
-                </span>
-                <h1 className="mt-5 text-5xl font-semibold leading-tight">
-                  Join this recording as a guest
-                </h1>
-                <p className="mt-4 text-xl text-slate-300">
-                  You are joining as a guest participant. No account login is required for this invite.
-                </p>
-                <p className="mt-2 text-base text-slate-400">
-                  Continue to enter your details, run device checks, and join the studio session.
-                </p>
-
-                {!requestedGuestToken && (
-                  <p className="mt-5 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-                    Guest invite token is missing. Ask host for a fresh invite link.
-                  </p>
-                )}
-
-                <button
-                  type="button"
-                  onClick={handleGuestWelcomeContinue}
-                  disabled={!requestedGuestToken}
-                  className="mt-7 w-full rounded-xl bg-[var(--workspace-purple)] px-4 py-3 text-xl font-semibold text-white hover:brightness-110 disabled:opacity-60"
-                >
-                  Continue as guest
-                </button>
-              </div>
-            </section>
-          </div>
-        </main>
+        <div className={spaceGrotesk.className}>
+          <StudioGuestWelcome
+            hasGuestToken={!!requestedGuestToken}
+            onContinue={handleGuestWelcomeContinue}
+          />
+        </div>
       );
     }
 
     return (
-      <main className={`${spaceGrotesk.className} studio-shell-background min-h-screen text-slate-100`}>
-        <div className="mx-auto flex min-h-screen w-full max-w-[1450px] flex-col px-6 py-6">
-          <header className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Link href="/" className="studio-control-surface rounded-full px-3 py-1.5 text-slate-300 hover:text-slate-100">
-                ←
-              </Link>
-              <p className="text-2xl font-semibold tracking-[0.2em]">STUDIO CAST</p>
-              <span className="text-slate-600">|</span>
-              <p className="text-xl text-slate-300">{displayName || 'Host'}&apos;s Studio</p>
-            </div>
-            <button
-              type="button"
-              className="studio-control-surface rounded-xl px-4 py-2 text-sm text-slate-200"
-            >
-              Get help
-            </button>
-          </header>
-
-          <section className="flex flex-1 items-center py-10">
-            <div className="grid w-full items-start gap-12 xl:grid-cols-[minmax(0,1fr)_420px]">
-              <div className="max-w-xl space-y-6">
-                <span className="inline-flex rounded-full border border-rose-400/40 bg-rose-500/10 px-4 py-2 text-sm text-rose-200">
-                  REC
-                </span>
-                <p className="text-2xl text-slate-400">
-                  {isGuestStudioFlow
-                    ? 'You are about to join this studio as a guest'
-                    : `You're about to join ${displayName || 'your'} studio`}
-                </p>
-                <h1 className="text-6xl font-semibold leading-tight">Let&apos;s check your cam and mic</h1>
-
-                <div className="space-y-3">
-                  <label className="studio-input-surface flex items-center gap-2 rounded-xl px-4 py-3">
-                    <input
-                      type="text"
-                      value={displayName}
-                      onChange={(event) => setDisplayName(event.target.value)}
-                      className="min-w-0 flex-1 bg-transparent text-xl outline-none placeholder:text-slate-500"
-                      placeholder={isGuestStudioFlow ? 'Your name (required)' : 'Your display name'}
-                    />
-                    <span className="rounded-lg border border-white/10 bg-white/8 px-3 py-1 text-sm text-slate-200">{localStudioRoleLabel}</span>
-                  </label>
-
-                  {isGuestStudioFlow && (
-                    <label className="studio-input-surface flex items-center gap-2 rounded-xl px-4 py-3">
-                      <input
-                        type="email"
-                        value={guestEmail}
-                        onChange={(event) => setGuestEmail(event.target.value)}
-                        className="min-w-0 flex-1 bg-transparent text-xl outline-none placeholder:text-slate-500"
-                        placeholder="Email (optional)"
-                      />
-                    </label>
-                  )}
-
-                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    <button
-                      type="button"
-                      onClick={() => setUsingHeadphones(false)}
-                      className={`rounded-xl px-4 py-3 text-base ${
-                        !usingHeadphones
-                          ? 'border border-violet-400/30 bg-violet-500/12 text-white'
-                          : 'studio-control-surface text-slate-300'
-                      }`}
-                    >
-                      I am not using headphones
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setUsingHeadphones(true)}
-                      className={`rounded-xl px-4 py-3 text-base ${
-                        usingHeadphones
-                          ? 'border border-violet-400/30 bg-violet-500/12 text-white'
-                          : 'studio-control-surface text-slate-300'
-                      }`}
-                    >
-                      I am using headphones
-                    </button>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={handleJoinFromPreJoin}
-                    disabled={preJoinStatus !== 'ready' || joiningFromPreJoin || guestNameMissing}
-                    className="w-full rounded-xl bg-[var(--workspace-purple)] px-4 py-3 text-xl font-semibold text-white hover:brightness-110 disabled:opacity-60"
-                  >
-                    {joiningFromPreJoin
-                      ? 'Joining studio...'
-                      : isGuestStudioFlow
-                        ? 'Join as guest'
-                        : 'Join studio'}
-                  </button>
-
-                  <p className="text-lg text-slate-400">
-                    {isGuestStudioFlow
-                      ? 'Joining as guest participant'
-                      : `You are joining as a ${localStudioRole === 'host' ? 'host' : 'guest'}`}
-                  </p>
-                  {guestJoinError && (
-                    <p className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-                      {guestJoinError}
-                    </p>
-                  )}
-                  {preJoinError && (
-                    <p className="rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
-                      {preJoinError}
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              <div className="studio-panel-surface rounded-3xl p-4">
-                <div className="relative overflow-hidden rounded-2xl bg-black">
-                  <video ref={preJoinVideoRef} autoPlay playsInline muted className="aspect-video w-full object-cover" />
-                  <div className="studio-chip-surface absolute left-3 top-3 rounded-full px-3 py-1 text-xs text-slate-100">
-                    720p / 30fps
-                  </div>
-                  <div className="absolute inset-x-0 bottom-4 flex items-center justify-center gap-2">
-                    <button
-                      type="button"
-                      onClick={togglePreJoinMic}
-                      className={`rounded-full px-3 py-1 text-sm ${
-                        preJoinMicEnabled ? 'studio-chip-surface text-slate-100' : 'bg-rose-500 text-white'
-                      }`}
-                    >
-                      {preJoinMicEnabled ? 'Mic' : 'Mic off'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={togglePreJoinCam}
-                      className={`rounded-full px-3 py-1 text-sm ${
-                        preJoinCamEnabled ? 'studio-chip-surface text-slate-100' : 'bg-rose-500 text-white'
-                      }`}
-                    >
-                      {preJoinCamEnabled ? 'Cam' : 'Cam off'}
-                    </button>
-                  </div>
-                </div>
-
-                <div className="mt-3 space-y-2">
-                  <label className="studio-input-surface block rounded-xl px-3 py-2 text-sm">
-                    <span className="mb-1 block text-xs text-slate-400">Camera</span>
-                    <select
-                      value={selectedCameraId}
-                      onChange={(event) => setSelectedCameraId(event.target.value)}
-                      className="w-full bg-transparent outline-none"
-                    >
-                      {cameraDevices.length === 0 && <option value="">Default camera</option>}
-                      {cameraDevices.map((device) => (
-                        <option key={device.id} value={device.id}>
-                          {device.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="studio-input-surface block rounded-xl px-3 py-2 text-sm">
-                    <span className="mb-1 block text-xs text-slate-400">Microphone</span>
-                    <select
-                      value={selectedMicId}
-                      onChange={(event) => setSelectedMicId(event.target.value)}
-                      className="w-full bg-transparent outline-none"
-                    >
-                      {micDevices.length === 0 && <option value="">Default microphone</option>}
-                      {micDevices.map((device) => (
-                        <option key={device.id} value={device.id}>
-                          {device.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <label className="studio-input-surface block rounded-xl px-3 py-2 text-sm">
-                    <span className="mb-1 block text-xs text-slate-400">Speaker</span>
-                    <select
-                      value={selectedSpeakerId}
-                      onChange={(event) => setSelectedSpeakerId(event.target.value)}
-                      className="w-full bg-transparent outline-none"
-                    >
-                      {speakerDevices.length === 0 && <option value="">Default speakers</option>}
-                      {speakerDevices.map((device) => (
-                        <option key={device.id} value={device.id}>
-                          {device.label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  <button
-                    type="button"
-                    onClick={startPreJoinPreview}
-                    className="studio-control-surface w-full rounded-xl px-3 py-2 text-sm text-slate-200"
-                  >
-                    {preJoinStatus === 'starting' ? 'Refreshing preview...' : 'Refresh preview'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </section>
-        </div>
-      </main>
+      <div className={spaceGrotesk.className}>
+        <StudioPreJoinSetup
+          isGuestStudioFlow={isGuestStudioFlow}
+          displayName={displayName}
+          studioOwnerLabel={displayName || 'Host'}
+          guestEmail={guestEmail}
+          localStudioRole={localStudioRole}
+          localStudioRoleLabel={localStudioRoleLabel}
+          usingHeadphones={usingHeadphones}
+          joiningFromPreJoin={joiningFromPreJoin}
+          guestNameMissing={guestNameMissing}
+          guestJoinError={guestJoinError}
+          preJoinError={preJoinError}
+          previewVideoRef={preJoinVideoRef}
+          preJoinMicEnabled={preJoinMicEnabled}
+          preJoinCamEnabled={preJoinCamEnabled}
+          preJoinStatus={preJoinStatus}
+          cameraDevices={cameraDevices}
+          micDevices={micDevices}
+          speakerDevices={speakerDevices}
+          selectedCameraId={selectedCameraId}
+          selectedMicId={selectedMicId}
+          selectedSpeakerId={selectedSpeakerId}
+          onDisplayNameChange={setDisplayName}
+          onGuestEmailChange={setGuestEmail}
+          onSetUsingHeadphones={setUsingHeadphones}
+          onJoin={handleJoinFromPreJoin}
+          onTogglePreJoinMic={togglePreJoinMic}
+          onTogglePreJoinCam={togglePreJoinCam}
+          onSelectedCameraIdChange={setSelectedCameraId}
+          onSelectedMicIdChange={setSelectedMicId}
+          onSelectedSpeakerIdChange={setSelectedSpeakerId}
+          onRefreshPreview={startPreJoinPreview}
+        />
+      </div>
     );
   }
 
   if (!showPreJoin && sessionMode === 'studio') {
-    const progressPeople =
-      progressParticipants.map((participant) => {
-        const pct = participant.progressPct;
-        const showProgressBar = participant.state !== 'recording' || pct > 0;
-        const note = participant.blockedReason ?? toConsumerStateLabel(participant.state);
-        return {
-          id: participant.participantId,
-          label: participant.displayName || participant.participantId.slice(0, 8),
-          role: participant.role === 'host' ? 'Host' : 'Guest',
-          percent: pct,
-          note,
-          showProgressBar,
-        };
-      }) ?? [];
-    const people =
-      progressPeople.length > 0
-        ? progressPeople
-        : [
-              {
-                id: 'local',
-                label: displayName || 'You',
-                role: localStudioRoleLabel,
-                percent: 0,
-                note: isRecording ? 'Recording...' : 'Waiting for upload...',
-                showProgressBar: !isRecording,
-              },
-              ...active.peers.map((peer) => ({
-                id: peer.id,
-                label: peer.label,
-                role: 'Guest',
-                percent: 0,
-                note: 'Connected',
-                showProgressBar: false,
-              })),
-          ];
-    // U3: split tiles into screen share and webcam groups for layout switching
-    const screenTiles = studioCanvasTiles.filter((t) => t.key.includes('screen'));
-    const webcamTiles = studioCanvasTiles.filter((t) => !t.key.includes('screen'));
-    const isScreenShareDominant = studioLayoutMode === 'screen_share_dominant' && screenTiles.length > 0;
-    const visibleTiles = studioCanvasTiles;
-    const tileCount = visibleTiles.length;
-    const stageGridClass =
-      tileCount >= 4
-        ? 'xl:grid-cols-4 md:grid-cols-2 auto-rows-fr'
-        : tileCount === 3
-          ? 'xl:grid-cols-3 md:grid-cols-2 auto-rows-fr'
-          : tileCount === 2
-            ? 'md:grid-cols-2 auto-rows-fr'
-            : 'grid-cols-1 auto-rows-fr';
-    const shouldFillTiles = true;
-    const tileClassName = 'h-full min-h-0 rounded-2xl border-violet-400/60 bg-black';
-    const queueTotalBytes = chunkUploadQueue.stats.bytesTotal;
-    const queueUploadedPercent =
-      queueTotalBytes === 0
-        ? 0
-        : Math.min(
-            100,
-            Math.round(
-              ((chunkUploadQueue.stats.bytesUploaded + chunkUploadQueue.stats.bytesProcessing) * 100) /
-                queueTotalBytes
-            )
-          );
-    const progressUploadedPercent =
-      progressParticipants.length > 0
-        ? Math.round(
-            progressParticipants.reduce((sum, participant) => sum + participant.progressPct, 0) /
-              progressParticipants.length
-          )
-        : null;
-    const uploadedPercent = Math.max(progressUploadedPercent ?? 0, queueUploadedPercent);
-    const hasLiveUploadActivity =
-      chunkUploadQueue.stats.completed > 0 ||
-      chunkUploadQueue.stats.processing > 0 ||
-      chunkUploadQueue.stats.pending > 0 ||
-      uploadedPercent > 0;
-    const localParticipantId = recorderParticipantId ?? effectiveRequestedParticipantId;
-    // B3: guard against null localParticipantId — fall back to filtering by role
-    // B2: during live recording, intersect with LiveKit peers so disconnected guests don't ghost
-    const liveParticipantIds = new Set(active.peers.map((p) => p.id));
-    const remoteProgressParticipants = progressParticipants.filter(
-      (p) =>
-        (localParticipantId ? p.participantId !== localParticipantId : p.role !== 'host') &&
-        (isRecording ? liveParticipantIds.has(p.participantId) : true)
-    );
-    const livePeopleForPanel = [
-      {
-        id: 'local-live',
-        label: displayName || 'You',
-        role: localStudioRoleLabel,
-        percent: uploadedPercent,
-        note: isRecording && !hasLiveUploadActivity
-          ? 'Recording...'
-          : hasLiveUploadActivity
-            ? `${uploadedPercent}% uploaded${isRecording ? ' (recording)' : ''}`
-            : 'Waiting...',
-        showProgressBar: hasLiveUploadActivity,
-      },
-      // Use backend participant data (role + upload progress) when available;
-      // fall back to live-presence peers (no role/progress info) before first poll.
-      ...(remoteProgressParticipants.length > 0
-        ? remoteProgressParticipants.map((p) => {
-            const isParticipantRecording = p.state === 'recording';
-            return {
-              id: p.participantId,
-              label: p.displayName || p.participantId.slice(0, 8),
-              role: p.role === 'host' ? 'Host' : 'Guest',
-              percent: p.progressPct,
-              note: isParticipantRecording && p.progressPct === 0
-                ? 'Recording...'
-                : p.progressPct > 0
-                  ? `${p.progressPct}% uploaded${isParticipantRecording ? ' (recording)' : ''}`
-                  : (p.blockedReason ?? toConsumerStateLabel(p.state)),
-              showProgressBar: p.progressPct > 0,
-            };
-          })
-        : active.peers.map((peer) => ({
-            id: peer.id,
-            label: peer.label,
-            role: 'Guest',
-            percent: 0,
-            note: 'Connected',
-            showProgressBar: false,
-          }))),
-    ];
-    const shouldUseLivePresence = !recordingSession?.stoppedAt;
-    const peopleForPanel = shouldUseLivePresence
-      ? livePeopleForPanel
-      : progressPeople.length > 0
-        ? progressPeople
-        : people.map((person, index) =>
-            index === 0
-              ? {
-                  ...person,
-                  percent: uploadedPercent,
-                  note: `${uploadedPercent}% uploaded`,
-                  showProgressBar: uploadedPercent > 0,
-                }
-              : person
-          );
-    const hostShouldShowUploadChip =
-      (isRecording && hasLiveUploadActivity) ||
-      (hostStudioLifecyclePhase !== null && hostStudioLifecyclePhase !== 'recording_active') ||
-      (!!recordingSession?.stoppedAt && !canOpenProject);
-    const showUploadChip =
-      localStudioRole === 'host'
-        ? hostShouldShowUploadChip
-        : isRecording || hasPendingUploads || (!!recordingSession?.stoppedAt && !localUploadComplete);
-    const uploadChipLabel =
-      localStudioRole === 'host'
-        ? isRecording && hasLiveUploadActivity
-          ? `↑ ${uploadedPercent}% Uploading...`
-          : hostStudioLifecyclePhase === 'stop_requested'
-          ? 'Stopping...'
-          : hostStudioLifecyclePhase === 'uploading_after_stop'
-            ? `↑ ${uploadedPercent}% Uploading...`
-            : hostStudioLifecyclePhase === 'studio_upload_complete'
-              ? '✓ Upload complete'
-              : hostStudioLifecyclePhase === 'project_processing'
-                ? '→ Processing'
-                : hostStudioLifecyclePhase === 'project_ready'
-                  ? '✓ Ready'
-                : !!recordingSession?.stoppedAt && !canOpenProject
-                  ? `↑ ${uploadedPercent}% Uploading...`
-                  : null
-        : localQueueState === 'action required'
-          ? 'Action required'
-          : `↑ ${uploadedPercent}% Uploading...`;
-    const recordingSeconds = recordingSession?.startedAt
-      ? Math.max(0, Math.floor((Date.now() - new Date(recordingSession.startedAt).getTime()) / 1000))
-      : 0;
-    const recordingClock = `${String(Math.floor(recordingSeconds / 60)).padStart(2, '0')}:${String(
-      recordingSeconds % 60
-    ).padStart(2, '0')}`;
-    const isMicOff = !active.isMicEnabled;
-    const isCamOff = !active.isCameraEnabled;
-    const shouldReserveUploadBarSpace = localStudioRole === 'host' && uploadOverlayOpen;
-    const floatingUploadLayout = {
-      leftInset: 54,
-      rightInset: showStudioPeoplePanel ? 510 : 170,
-      bottomInset: 150,
-    };
+    const {
+      screenTiles,
+      webcamTiles,
+      visibleTiles,
+      isScreenShareDominant,
+      stageGridClass,
+      shouldFillTiles,
+      tileClassName,
+      peopleForPanel,
+      showUploadChip,
+      uploadChipLabel,
+      recordingClock,
+      isMicOff,
+      isCamOff,
+      shouldReserveUploadBarSpace,
+      floatingUploadLayout,
+      uploadSummary,
+      uploadKeepPageOpenHint,
+      uploadCanDismiss,
+    } = buildStudioRouteViewModel({
+      displayName,
+      active,
+      studioLayoutMode,
+      progressParticipants,
+      recorderParticipantId,
+      effectiveRequestedParticipantId,
+      isRecording,
+      localStudioRole,
+      localStudioRoleLabel,
+      localQueueState,
+      localUploadComplete,
+      hasPendingUploads,
+      canOpenProject,
+      hostStudioLifecyclePhase,
+      recordingSessionStartedAt: recordingSession?.startedAt,
+      recordingSessionStoppedAt: recordingSession?.stoppedAt,
+      showStudioPeoplePanel,
+      uploadOverlayOpen,
+      showUploadStatusModal,
+      uploadCompletion,
+      chunkUploadStats: chunkUploadQueue.stats,
+    });
 
     return (
       <main className={`${spaceGrotesk.className} studio-shell-background h-screen overflow-hidden text-slate-100`}>
         <div className="mx-auto flex h-full w-full max-w-[1600px] flex-col px-5 py-4">
-          <header className="studio-panel-surface flex items-center justify-between rounded-2xl px-4 py-3">
-            <div className="flex min-w-0 items-center gap-3">
-              <Link href="/" className="studio-control-surface rounded-full p-1 text-slate-300 hover:text-white">
-                ←
-              </Link>
-              <p className="text-xl font-semibold tracking-[0.2em] text-slate-100">STUDIO CAST</p>
-              <span className="text-slate-600">|</span>
-              <p className="truncate text-base text-slate-400">{displayName || 'Host'} KUMAR&apos;s Studio</p>
-              <p className="truncate text-xl font-semibold text-slate-100">Untitled Recording</p>
-            </div>
+          <StudioHeaderBar
+            displayName={displayName}
+            recordingTitle="Untitled Recording"
+            isRecording={isRecording}
+            recordingClock={recordingClock}
+            showUploadChip={showUploadChip}
+            uploadChipLabel={uploadChipLabel}
+            canUseBroadcastControls={studioUiAccess.canUseBroadcastControls}
+            canSendInvites={studioUiAccess.canSendInvites}
+            onOpenInviteModal={() => {
+              setIsInviteModalOpen(true);
+              setShowAddParticipantPanel(false);
+              setInviteNotice(null);
+              setCopyState('idle');
+            }}
+          />
 
-            <div className="flex items-center gap-2">
-              {isRecording && (
-                <span className="rounded-full bg-rose-500/20 px-3 py-1 text-sm font-semibold text-rose-200">
-                  REC {recordingClock}
-                </span>
-              )}
-              {showUploadChip && (
-                <span className="rounded-2xl bg-violet-500/35 px-4 py-2 text-sm font-semibold text-violet-100">
-                  {uploadChipLabel}
-                </span>
-              )}
-              {studioUiAccess.canUseBroadcastControls && (
-                <button
-                  type="button"
-                  className="studio-control-surface flex items-center rounded-2xl px-4 py-2 text-sm font-medium"
-                >
-                  <span className="mr-1.5 text-lg">+</span>
-                  Live stream
-                </button>
-              )}
-              <button
-                type="button"
-                className="studio-control-surface flex h-10 w-10 items-center justify-center rounded-2xl text-sm"
-              >
-                ?
-              </button>
-              <button
-                type="button"
-                className="studio-control-surface flex h-10 w-10 items-center justify-center rounded-2xl text-sm"
-              >
-                ⚙
-              </button>
-              {studioUiAccess.canSendInvites && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsInviteModalOpen(true);
-                    setShowAddParticipantPanel(false);
-                    setInviteNotice(null);
-                    setCopyState('idle');
-                  }}
-                  className="studio-control-surface rounded-2xl px-4 py-2 text-sm font-medium"
-                >
-                  Invite
-                </button>
-              )}
-            </div>
-          </header>
-
-          {/* P3/U2: persistent stream quality warning banner */}
-          {streamWarning && (
-            <div className="mb-2 rounded-lg border border-amber-500/60 bg-amber-500/15 px-3 py-2 text-xs text-amber-200">
-              {streamWarning}
-            </div>
-          )}
-          {/* U1: stopped_uploading phase banner */}
-          {stoppedUploadingPhase && (
-            <div className="mb-2 rounded-lg border border-violet-500/40 bg-violet-500/10 px-3 py-2 text-xs text-violet-200">
-              {localStudioRole === 'host'
-                ? '● Recording stopped — uploads in progress. Keep this page open. You can remove participants once their uploads are complete.'
-                : '● Recording complete — your uploads are in progress. You may leave when ready.'}
-            </div>
-          )}
-          {(fallbackNotice || sessionError || recorderError || chunkUploadQueue.lastError || active.error) && (
-            <div className="mt-3 space-y-2">
-              {fallbackNotice && (
-                <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                  {fallbackNotice}
-                </p>
-              )}
-              {sessionError && (
-                <p className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                  {sessionError}
-                </p>
-              )}
-              {recorderError && (
-                <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                  {recorderError}
-                </p>
-              )}
-              {chunkUploadQueue.lastError && (
-                <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                  Upload queue: {chunkUploadQueue.lastError}
-                </p>
-              )}
-              {active.error && (
-                <p className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-                  {active.error}
-                </p>
-              )}
-            </div>
-          )}
+          <StudioStatusBanners
+            streamWarning={streamWarning}
+            stoppedUploadingPhase={stoppedUploadingPhase}
+            localStudioRole={localStudioRole}
+            fallbackNotice={fallbackNotice}
+            sessionError={sessionError}
+            recorderError={recorderError}
+            chunkUploadError={chunkUploadQueue.lastError}
+            activeError={active.error}
+          />
 
           <div className="mt-3 flex min-h-0 flex-1 gap-4">
             <section className="flex min-h-0 flex-1 flex-col rounded-3xl border border-[color:var(--workspace-border)] bg-[rgba(12,14,18,0.72)] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.02)]">
               <div className={`flex min-h-0 flex-1 gap-3 ${shouldReserveUploadBarSpace ? 'mb-20' : ''}`}>
                 {studioUiAccess.canSendInvites && showStudioInvitePanel && (
-                  <aside className="studio-panel-surface hidden w-[400px] shrink-0 rounded-3xl p-6 xl:flex xl:flex-col">
-                    <div className="mb-8 flex items-start justify-between">
-                      <h2 className="max-w-[260px] text-[44px] font-semibold leading-[0.98] text-slate-100">
-                        Invite someone to join remotely
-                      </h2>
-                      <button
-                        type="button"
-                        onClick={() => setShowStudioInvitePanel(false)}
-                        className="rounded-full border border-slate-700 p-2 text-sm text-slate-300 hover:border-slate-500"
-                        aria-label="Close invite panel"
-                      >
-                        ×
-                      </button>
-                    </div>
-                    <div className="grid grid-cols-[minmax(0,1fr)_86px_104px] gap-2">
-                      <input
-                        type="text"
-                        readOnly
-                        value={inviteLink}
-                        className="studio-input-surface min-w-0 truncate rounded-xl px-3 py-2 text-sm text-slate-300"
-                      />
-                      <select
-                        value={inviteRole}
-                        onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
-                        className="studio-input-surface rounded-xl px-2 py-2 text-sm"
-                      >
-                        <option value="guest">Guest</option>
-                      </select>
-                      <button
-                        type="button"
-                        onClick={handleCopyInviteLink}
-                        className="rounded-xl bg-[var(--workspace-purple)] px-2 py-2 text-sm font-semibold text-white hover:brightness-110"
-                      >
-                        {copyState === 'copied' ? 'Copied' : 'Copy link'}
-                      </button>
-                    </div>
-                    <div className="my-10 flex items-center gap-3 text-slate-500">
-                      <div className="h-px flex-1 bg-white/10" />
-                      <span className="rounded-full border border-white/12 px-3 py-1 text-[11px] uppercase tracking-[0.18em]">New</span>
-                      <div className="h-px flex-1 bg-white/10" />
-                    </div>
-                    <p className="text-4xl font-semibold leading-tight text-slate-100">Record someone next to you</p>
-                    <button
-                      type="button"
-                      className="studio-control-surface mt-6 rounded-xl px-4 py-3 text-lg font-medium text-slate-100"
-                    >
-                      Add an in-person guest <span className="ml-1 text-lime-300">⚡</span>
-                    </button>
-                  </aside>
+                  <StudioInviteSidePanel
+                    inviteLink={inviteLink}
+                    inviteRole={inviteRole}
+                    copyState={copyState}
+                    onInviteRoleChange={setInviteRole}
+                    onCopyLink={handleCopyInviteLink}
+                    onClose={() => setShowStudioInvitePanel(false)}
+                  />
                 )}
 
-                <div className="studio-stage-surface flex min-h-0 flex-1 rounded-3xl p-2">
-                  {/* U3: screen_share_dominant layout — one large screen + webcam thumbnail row */}
-                  {isScreenShareDominant ? (
-                    <div className="flex h-full w-full flex-col gap-2">
-                      <div className="min-h-0 flex-1">
-                        <ParticipantTile
-                          key={screenTiles[0]!.key}
-                          tile={screenTiles[0]!}
-                          className="h-full w-full rounded-2xl bg-black"
-                          showPin={false}
-                          isPinned={false}
-                          onPin={() => {}}
-                          fill
-                          showBadge={false}
-                        />
-                      </div>
-                      {webcamTiles.length > 0 && (
-                        <div className="flex shrink-0 gap-2 overflow-x-auto">
-                          {webcamTiles.map((tile) => {
-                            const isLocalStudioTile = tile.key === 'studio-local-camera';
-                            return (
-                              <div key={tile.key} className="h-24 w-32 shrink-0">
-                                <ParticipantTile
-                                  tile={tile}
-                                  className="h-full w-full rounded-xl bg-black"
-                                  showPin={false}
-                                  isPinned={false}
-                                  onPin={() => {}}
-                                  micPublishEnabled={isLocalStudioTile ? active.isMicEnabled : undefined}
-                                  onTogglePublishMic={isLocalStudioTile ? active.toggleMic : undefined}
-                                  fill
-                                  showBadge={false}
-                                />
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div
-                      className={`grid h-full w-full gap-3 ${
-                        studioUiAccess.canSendInvites && showStudioInvitePanel ? 'mx-auto max-w-[980px]' : ''
-                      } ${stageGridClass}`}
-                    >
-                      {visibleTiles.map((tile) => {
-                        const isLocalStudioTile =
-                          tile.key === 'studio-local-camera' || tile.key === 'studio-local-screen';
-                        return (
-                          <ParticipantTile
-                            key={tile.key}
-                            tile={tile}
-                            className={tileClassName}
-                            showPin
-                            isPinned={pinnedTileKey === tile.key}
-                            onPin={() => togglePin(tile.key)}
-                            micPublishEnabled={isLocalStudioTile ? active.isMicEnabled : undefined}
-                            onTogglePublishMic={isLocalStudioTile ? active.toggleMic : undefined}
-                            fill={shouldFillTiles}
-                            showBadge={false}
-                          />
-                        );
-                      })}
-                      {visibleTiles.length === 0 && (
-                        <div className="flex aspect-[4/3] items-center justify-center rounded-xl border border-dashed border-slate-700 bg-black/40 text-sm text-slate-500">
-                          Waiting for camera feed...
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
+                <StudioStageArea
+                  isScreenShareDominant={isScreenShareDominant}
+                  screenTiles={screenTiles}
+                  webcamTiles={webcamTiles}
+                  visibleTiles={visibleTiles}
+                  stageGridClass={stageGridClass}
+                  centerConstrained={studioUiAccess.canSendInvites && showStudioInvitePanel}
+                  tileClassName={tileClassName}
+                  pinnedTileKey={pinnedTileKey}
+                  shouldFillTiles={shouldFillTiles}
+                  localMicEnabled={active.isMicEnabled}
+                  onToggleLocalMic={active.toggleMic}
+                  onTogglePin={togglePin}
+                />
               </div>
 
-              <footer className="mt-4 flex justify-center">
-                <div className="studio-panel-muted flex flex-wrap items-start justify-center gap-3 rounded-2xl px-4 py-3">
-                  {localStudioRole === 'host' && (
-                    <>
-                      <div className="flex flex-col items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={handleToggleRecordingSession}
-                          disabled={!canControlRecording || sessionBusy}
-                          className={`rounded-xl px-5 py-2.5 text-base font-semibold text-white ${
-                            isRecording ? 'bg-rose-500' : 'bg-rose-500/90'
-                          } disabled:opacity-60`}
-                        >
-                          {sessionBusy ? (isRecording ? 'Stopping...' : 'Starting...') : isRecording ? 'Stop' : 'Record'}
-                        </button>
-                        <span className="text-[10px] text-slate-400">{isRecording ? 'Stop' : 'Start'}</span>
-                      </div>
+              <StudioControlBar
+                showRecordButton={localStudioRole === 'host'}
+                canControlRecording={canControlRecording}
+                sessionBusy={sessionBusy}
+                isRecording={isRecording}
+                isMicOff={isMicOff}
+                isCamOff={isCamOff}
+                isScreenSharing={active.isScreenSharing}
+                onToggleRecordingSession={handleToggleRecordingSession}
+                onToggleMic={active.toggleMic}
+                onToggleCamera={active.toggleCamera}
+                onToggleScreen={active.toggleScreen}
+                onLeave={handleLeave}
+              />
 
-                      <div className="h-12 w-px bg-slate-700/70" />
-                    </>
-                  )}
-
-                  <div className="flex flex-col items-center gap-1">
-                    <button
-                      type="button"
-                      className="studio-control-surface flex h-12 w-12 items-center justify-center rounded-xl text-slate-100"
-                    >
-                      <StudioControlIcon kind="mark" />
-                    </button>
-                    <span className="text-[10px] text-slate-400">Mark Clip</span>
-                  </div>
-
-                  <div className="flex flex-col items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={active.toggleMic}
-                      className={`flex h-12 w-12 items-center justify-center rounded-xl ${
-                        isMicOff ? 'border border-rose-500/40 bg-rose-500/20 text-rose-300' : 'studio-control-surface text-slate-100'
-                      }`}
-                    >
-                      <StudioControlIcon kind="mic" off={isMicOff} />
-                    </button>
-                    <span className="text-[10px] text-slate-400">Mic</span>
-                  </div>
-
-                  <div className="flex flex-col items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={active.toggleCamera}
-                      className={`flex h-12 w-12 items-center justify-center rounded-xl ${
-                        isCamOff ? 'border border-rose-500/40 bg-rose-500/20 text-rose-300' : 'studio-control-surface text-slate-100'
-                      }`}
-                    >
-                      <StudioControlIcon kind="cam" off={isCamOff} />
-                    </button>
-                    <span className="text-[10px] text-slate-400">Cam</span>
-                  </div>
-
-                  <div className="flex flex-col items-center gap-1">
-                    <button type="button" className="studio-control-surface flex h-12 w-12 items-center justify-center rounded-xl text-slate-100">
-                      <StudioControlIcon kind="speaker" />
-                    </button>
-                    <span className="text-[10px] text-slate-400">Speaker</span>
-                  </div>
-                  <div className="flex flex-col items-center gap-1">
-                    <button type="button" className="studio-control-surface flex h-12 w-12 items-center justify-center rounded-xl text-slate-100">
-                      <StudioControlIcon kind="react" />
-                    </button>
-                    <span className="text-[10px] text-slate-400">React</span>
-                  </div>
-                  <div className="flex flex-col items-center gap-1">
-                    <button type="button" className="studio-control-surface flex h-12 w-12 items-center justify-center rounded-xl text-slate-100">
-                      <StudioControlIcon kind="raise" />
-                    </button>
-                    <span className="text-[10px] text-slate-400">Raise</span>
-                  </div>
-                  <div className="flex flex-col items-center gap-1">
-                    <button type="button" className="studio-control-surface flex h-12 w-12 items-center justify-center rounded-xl text-slate-100">
-                      <StudioControlIcon kind="layout" />
-                    </button>
-                    <span className="text-[10px] text-slate-400">Layout</span>
-                  </div>
-                  <div className="flex flex-col items-center gap-1">
-                    <button type="button" className="studio-control-surface flex h-12 w-12 items-center justify-center rounded-xl text-slate-100">
-                      <StudioControlIcon kind="script" />
-                    </button>
-                    <span className="text-[10px] text-slate-400">Script</span>
-                  </div>
-                  <div className="flex flex-col items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={active.toggleScreen}
-                      className={`flex h-12 w-12 items-center justify-center rounded-xl ${
-                        active.isScreenSharing
-                          ? 'border border-cyan-400/60 bg-cyan-500/20 text-cyan-100'
-                          : 'studio-control-surface text-slate-100'
-                      }`}
-                    >
-                      <StudioControlIcon kind="share" />
-                    </button>
-                    <span className="text-[10px] text-slate-400">Share</span>
-                  </div>
-                  <div className="flex flex-col items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={handleLeave}
-                      disabled={sessionBusy}
-                      className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#4b1f2a] text-rose-100 hover:bg-[#5f2735] disabled:opacity-60"
-                    >
-                      <StudioControlIcon kind="leave" />
-                    </button>
-                    <span className="text-[10px] text-slate-400">Leave</span>
-                  </div>
-                </div>
-              </footer>
-
-              {chunkUploadQueue.stats.failed > 0 && (
-                <div className="mt-2 flex items-center justify-center">
-                  <button
-                    type="button"
-                    onClick={() => void chunkUploadQueue.retryFailed()}
-                    className="rounded border border-amber-600/70 px-2 py-1 text-[10px] text-amber-300 hover:bg-amber-800/20"
-                  >
-                    Retry failed uploads
-                  </button>
-                </div>
-              )}
+              <StudioRetryUploadsButton
+                failedCount={chunkUploadQueue.stats.failed}
+                onRetry={() => chunkUploadQueue.retryFailed()}
+              />
             </section>
 
-            <div className="flex">
-              {showStudioPeoplePanel && (
-                <aside className="studio-panel-surface w-[336px] rounded-3xl p-4">
-                  <div className="flex items-center justify-between">
-                    <h2 className="text-5xl font-semibold leading-none text-slate-100">People</h2>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowStudioPeoplePanel(false);
-                        setShowAddParticipantPanel(false);
-                      }}
-                      className="rounded-full border border-slate-700 p-2 text-sm text-slate-400 hover:border-slate-500"
-                    >
-                      ×
-                    </button>
-                  </div>
-
-                  <div className="studio-panel-muted mt-4 rounded-xl p-3">
-                    <div className="flex items-center justify-between">
-                      <p className="text-sm text-slate-300">Recording info</p>
-                      <span className="text-slate-500">⌄</span>
-                    </div>
-                  </div>
-
-                  <div className="mt-4 space-y-3">
-                    {peopleForPanel.map((person) => (
-                      <div key={person.id} className="studio-panel-muted rounded-xl p-3">
-                        <div className="flex items-start gap-3">
-                          <div className="h-14 w-14 rounded-md border border-white/10 bg-slate-900/80" />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center justify-between gap-2">
-                              <p className="truncate text-xl font-semibold text-slate-100">{person.label}</p>
-                              {isRecording && (
-                                <span className="rounded bg-rose-500/20 px-2 py-0.5 text-[11px] text-rose-200">REC</span>
-                              )}
-                            </div>
-                            <p className="text-sm text-slate-400">{person.role}</p>
-                            <p className="text-xs text-slate-500">{person.note}</p>
-                          </div>
-                        </div>
-                        {person.showProgressBar ? (
-                          <div className="mt-3 h-1.5 w-full rounded-full bg-white/8">
-                            <div
-                              className="h-full rounded-full bg-emerald-300/90"
-                              style={{ width: `${Math.max(person.percent, 5)}%` }}
-                            />
-                          </div>
-                        ) : (
-                          <div className="mt-3 h-1.5 w-full rounded-full bg-white/6" />
-                        )}
-                        {/* U1: Remove button for host during stopped_uploading phase */}
-                        {stoppedUploadingPhase && studioUiAccess.canManageParticipants && person.id !== 'local-live' && person.role !== 'Host' && (
-                          <button
-                            type="button"
-                            onClick={() => void handleRemoveParticipant(person.id)}
-                            className="mt-2 w-full rounded border border-red-500/40 px-2 py-1 text-[11px] text-red-300 hover:bg-red-500/10"
-                          >
-                            Remove
-                          </button>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-
-                  {studioUiAccess.canManageParticipants && showAddParticipantPanel && (
-                    <div className="studio-panel-muted mt-4 rounded-xl p-3">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsInviteModalOpen(true);
-                          setInviteNotice(null);
-                          setCopyState('idle');
-                          setShowAddParticipantPanel(false);
-                        }}
-                        className="studio-control-surface w-full rounded-xl px-4 py-3 text-left hover:bg-white/8"
-                      >
-                        <p className="text-lg font-semibold text-slate-100">Remote guest</p>
-                        <p className="text-sm text-slate-400">Send a link to someone joining from another device</p>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowStudioInvitePanel(true);
-                          setShowAddParticipantPanel(false);
-                        }}
-                        className="mt-3 w-full rounded-xl px-1 py-1 text-left"
-                      >
-                        <p className="text-lg font-medium text-slate-200">
-                          In-person guest <span className="ml-1 text-lime-300">⚡</span>
-                        </p>
-                        <p className="text-sm text-slate-400">Someone recording next to you on the same device</p>
-                      </button>
-                    </div>
-                  )}
-
-                  {studioUiAccess.canManageParticipants && (
-                    <button
-                      type="button"
-                      onClick={() => setShowAddParticipantPanel((prev) => !prev)}
-                      className="studio-control-surface mt-4 w-full rounded-xl px-3 py-2.5 text-lg text-slate-100"
-                    >
-                      + Add participant
-                    </button>
-                  )}
-                </aside>
-              )}
-
-              <div className="studio-panel-muted ml-3 flex w-[88px] shrink-0 flex-col items-center justify-center gap-5 rounded-[30px] py-7">
-                <button
-                  type="button"
-                  onClick={() =>
-                    setShowStudioPeoplePanel((prev) => {
-                      const next = !prev;
-                      if (!next) {
-                        setShowAddParticipantPanel(false);
-                      }
-                      return next;
-                    })
+            <StudioPeopleSidebar
+              showPanel={showStudioPeoplePanel}
+              showAddParticipantPanel={showAddParticipantPanel}
+              canManageParticipants={studioUiAccess.canManageParticipants}
+              isRecording={isRecording}
+              stoppedUploadingPhase={stoppedUploadingPhase}
+              people={peopleForPanel}
+              onClosePanel={() => {
+                setShowStudioPeoplePanel(false);
+                setShowAddParticipantPanel(false);
+              }}
+              onTogglePanel={() =>
+                setShowStudioPeoplePanel((prev) => {
+                  const next = !prev;
+                  if (!next) {
+                    setShowAddParticipantPanel(false);
                   }
-                  className={`flex w-[70px] flex-col items-center rounded-[24px] px-2 py-3 text-[13px] font-medium transition-colors ${
-                    showStudioPeoplePanel
-                      ? 'border border-violet-400/30 bg-violet-500/15 text-white'
-                      : 'bg-transparent text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  <span className="mb-1">
-                    <StudioSidebarIcon kind="people" />
-                  </span>
-                  People
-                </button>
-                <button
-                  type="button"
-                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-slate-400 transition-colors hover:text-slate-200"
-                >
-                  <StudioSidebarIcon kind="chat" />
-                  Chat
-                </button>
-                <button
-                  type="button"
-                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-slate-400 transition-colors hover:text-slate-200"
-                >
-                  <StudioSidebarIcon kind="brand" />
-                  Brand
-                </button>
-                <button
-                  type="button"
-                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-slate-400 transition-colors hover:text-slate-200"
-                >
-                  <StudioSidebarIcon kind="text" />
-                  Text
-                </button>
-                <button
-                  type="button"
-                  className="flex w-[70px] flex-col items-center gap-1 rounded-[20px] px-2 py-1.5 text-[13px] font-medium text-slate-400 transition-colors hover:text-slate-200"
-                >
-                  <StudioSidebarIcon kind="media" />
-                  Media
-                </button>
-              </div>
-            </div>
+                  return next;
+                })
+              }
+              onToggleAddParticipantPanel={() => setShowAddParticipantPanel((prev) => !prev)}
+              onOpenInviteModal={() => {
+                setIsInviteModalOpen(true);
+                setInviteNotice(null);
+                setCopyState('idle');
+                setShowAddParticipantPanel(false);
+              }}
+              onShowInPersonGuestPanel={() => {
+                setShowStudioInvitePanel(true);
+                setShowAddParticipantPanel(false);
+              }}
+              onRemoveParticipant={(participantId) => {
+                void handleRemoveParticipant(participantId);
+              }}
+            />
           </div>
         </div>
 
@@ -3254,28 +880,9 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           state={uploadStatusState}
           variant={localStudioRole === 'host' ? 'floating' : 'modal'}
           floatingLayout={localStudioRole === 'host' ? floatingUploadLayout : undefined}
-          summary={
-            uploadCompletion.participantsTotal > 0
-              ? {
-                  participantsTotal: uploadCompletion.participantsTotal,
-                  participantsComplete: uploadCompletion.participantsComplete,
-                  participantsUploading: uploadCompletion.participantsUploading,
-                  actionRequiredParticipants: uploadCompletion.actionRequiredParticipants,
-                }
-              : undefined
-          }
-          keepPageOpenHint={
-            localStudioRole === 'host'
-              ? uploadCompletion.keepPageOpen
-              : showUploadStatusModal
-          }
-          canDismiss={
-            localStudioRole === 'host'
-              ? hostStudioLifecyclePhase === 'studio_upload_complete' ||
-                hostStudioLifecyclePhase === 'project_processing' ||
-                hostStudioLifecyclePhase === 'project_ready'
-              : true
-          }
+          summary={uploadSummary}
+          keepPageOpenHint={uploadKeepPageOpenHint}
+          canDismiss={uploadCanDismiss}
           onClose={() => {
             if (localStudioRole !== 'host') {
               setShowUploadStatusModal(false);
@@ -3290,99 +897,23 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
           }}
         />
 
-        {studioUiAccess.canSendInvites && isInviteModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
-            <div className="studio-panel-surface w-full max-w-[760px] rounded-3xl p-6 shadow-2xl">
-              <div className="mb-4 flex items-center justify-between">
-                <h3 className="text-4xl font-semibold text-slate-100">Invite people</h3>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsInviteModalOpen(false);
-                    setInviteNotice(null);
-                    setCopyState('idle');
-                  }}
-                  className="rounded-full border border-slate-600 p-2 text-sm text-slate-300 hover:border-slate-400"
-                >
-                  ×
-                </button>
-              </div>
-              <p className="text-base text-slate-400">
-                Invite people to join your recording session.{' '}
-                <span className="text-[#b692ff]">About studio roles</span>
-              </p>
-
-              <div className="mt-6 space-y-3">
-                <p className="text-2xl font-semibold text-slate-100">Share a link</p>
-                <p className="text-sm text-slate-400">Copy the link below and share with others.</p>
-                <div className="grid gap-2 md:grid-cols-[1fr_108px_120px]">
-                  <input
-                    type="text"
-                    readOnly
-                    value={inviteLink}
-                    className="studio-input-surface rounded-xl px-3 py-3 text-sm text-slate-100"
-                  />
-                  <select
-                    value={inviteRole}
-                    onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
-                    className="studio-input-surface rounded-xl px-3 py-3 text-sm text-slate-100"
-                  >
-                    <option value="guest">Guest</option>
-                  </select>
-                  <button
-                    type="button"
-                    onClick={handleCopyInviteLink}
-                    className="rounded-xl bg-[var(--workspace-purple)] px-3 py-3 text-sm font-semibold text-white hover:brightness-110"
-                  >
-                    {copyState === 'copied' ? 'Copied' : 'Copy link'}
-                  </button>
-                </div>
-              </div>
-
-              <div className="my-5 flex items-center gap-3">
-                <div className="h-px flex-1 bg-white/10" />
-                <span className="text-slate-400">Or</span>
-                <div className="h-px flex-1 bg-white/10" />
-              </div>
-
-              <div className="space-y-3">
-                <p className="text-2xl font-semibold text-slate-100">Invite via email</p>
-                <p className="text-sm text-slate-400">
-                  An email with instructions on how to join will be sent to all invitees.
-                </p>
-                <div className="grid gap-2 md:grid-cols-[1fr_108px_120px]">
-                  <input
-                    type="email"
-                    value={inviteEmail}
-                    onChange={(event) => setInviteEmail(event.target.value)}
-                    placeholder="example@email.com"
-                    className="studio-input-surface rounded-xl px-3 py-3 text-sm text-slate-100 placeholder:text-slate-500"
-                  />
-                  <select
-                    value={inviteRole}
-                    onChange={(event) => setInviteRole(event.target.value as 'guest' | 'host')}
-                    className="studio-input-surface rounded-xl px-3 py-3 text-sm text-slate-100"
-                  >
-                    <option value="guest">Guest</option>
-                  </select>
-                  <button
-                    type="button"
-                    onClick={handleInviteByEmail}
-                    className="rounded-xl bg-[var(--workspace-purple)] px-3 py-3 text-sm font-semibold text-white hover:brightness-110"
-                  >
-                    Send invite
-                  </button>
-                </div>
-              </div>
-
-              {inviteNotice && (
-                <p className="mt-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
-                  {inviteNotice}
-                </p>
-              )}
-            </div>
-          </div>
-        )}
+        <StudioInviteModal
+          open={studioUiAccess.canSendInvites && isInviteModalOpen}
+          inviteLink={inviteLink}
+          inviteRole={inviteRole}
+          inviteEmail={inviteEmail}
+          inviteNotice={inviteNotice}
+          copyState={copyState}
+          onInviteRoleChange={setInviteRole}
+          onInviteEmailChange={setInviteEmail}
+          onCopyLink={handleCopyInviteLink}
+          onSendInvite={handleInviteByEmail}
+          onClose={() => {
+            setIsInviteModalOpen(false);
+            setInviteNotice(null);
+            setCopyState('idle');
+          }}
+        />
       </main>
     );
   }
@@ -3394,110 +925,41 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
       </div>
 
       <div className="mx-auto flex h-full w-full max-w-[1700px] flex-col px-4 py-4">
-        <header className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/90 bg-[#12151c]/80 px-4 py-3">
-          <div className="flex items-center gap-3">
-            <Link href="/" className="rounded-full border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:text-white">
-              Back
-            </Link>
-            <div>
-              <p className="text-base font-semibold">Meet</p>
-              <p className="font-mono text-[11px] text-slate-500">roomId: {recordingId}</p>
-            </div>
-          </div>
+        <MeetHeaderBar
+          recordingId={recordingId}
+          statusLabel={meetHeaderViewModel.statusLabel}
+          participantCount={meetHeaderViewModel.participantCount}
+          showViewMenu={showMeetViewMenu}
+          fitLabel={meetHeaderViewModel.fitLabel}
+          showPeopleLabel={meetHeaderViewModel.showPeopleLabel}
+          hasRemoteStage={hasRemoteStage}
+          selfPreviewLabel={meetHeaderViewModel.selfPreviewLabel}
+          showSelfPreviewSizeAction={meetHeaderViewModel.showSelfPreviewSizeAction}
+          selfPreviewSizeLabel={meetHeaderViewModel.selfPreviewSizeLabel}
+          onToggleViewMenu={() => setShowMeetViewMenu((prev) => !prev)}
+          onToggleFit={() => {
+            setMeetStageFit((prev) => (prev === 'contain' ? 'cover' : 'contain'));
+            setShowMeetViewMenu(false);
+          }}
+          onToggleFullscreen={async () => {
+            await toggleMeetFullscreen();
+            setShowMeetViewMenu(false);
+          }}
+          onTogglePeoplePanel={() => {
+            setShowMeetPeoplePanel((prev) => !prev);
+            setShowMeetViewMenu(false);
+          }}
+          onToggleSelfPreview={() => {
+            setShowMeetSelfPreview((prev) => !prev);
+            setShowMeetViewMenu(false);
+          }}
+          onToggleSelfPreviewSize={() => {
+            setMeetSelfPreviewExpanded((prev) => !prev);
+            setShowMeetViewMenu(false);
+          }}
+        />
 
-          <div className="flex items-center gap-2">
-            <span className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-[11px] text-slate-300">
-              {active.status === 'idle' && 'Not connected'}
-              {active.status === 'connecting' && 'Connecting'}
-              {active.status === 'reconnecting' && 'Reconnecting'}
-              {active.status === 'connected' && 'Live'}
-              {active.status === 'error' && 'Error'}
-            </span>
-            <span className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-[11px] text-slate-300">
-              Participants: {active.peers.length + 1}
-            </span>
-            <div className="relative" data-meet-view-menu-root>
-              <button
-                type="button"
-                onClick={() => setShowMeetViewMenu((prev) => !prev)}
-                className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-[11px] text-slate-300 hover:border-slate-500"
-              >
-                View ▾
-              </button>
-
-              {showMeetViewMenu && (
-                <div className="absolute right-0 top-10 z-40 w-52 rounded-xl border border-slate-700 bg-[#1b1e24] p-1 shadow-2xl">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMeetStageFit((prev) => (prev === 'contain' ? 'cover' : 'contain'));
-                      setShowMeetViewMenu(false);
-                    }}
-                    className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-700/60"
-                  >
-                    {meetStageFit === 'contain' ? 'Fill screen' : 'Fit screen'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      await toggleMeetFullscreen();
-                      setShowMeetViewMenu(false);
-                    }}
-                    className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-700/60"
-                  >
-                    Full screen
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowMeetPeoplePanel((prev) => !prev);
-                      setShowMeetViewMenu(false);
-                    }}
-                    className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-700/60"
-                  >
-                    {showMeetPeoplePanel ? 'Hide people' : 'Show people'}
-                  </button>
-                  {hasRemoteStage && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowMeetSelfPreview((prev) => !prev);
-                        setShowMeetViewMenu(false);
-                      }}
-                      className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-700/60"
-                    >
-                      {showMeetSelfPreview ? 'Hide self' : 'Show self'}
-                    </button>
-                  )}
-                  {hasRemoteStage && showMeetSelfPreview && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMeetSelfPreviewExpanded((prev) => !prev);
-                        setShowMeetViewMenu(false);
-                      }}
-                      className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-700/60"
-                    >
-                      {meetSelfPreviewExpanded ? 'Minimize self' : 'Maximize self'}
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </header>
-
-        {fallbackNotice && (
-          <p className="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-xs text-amber-200">
-            {fallbackNotice}
-          </p>
-        )}
-
-        {active.error && (
-          <p className="mt-3 rounded-xl border border-red-500/40 bg-red-500/10 px-4 py-2 text-xs text-red-200">
-            {active.error}
-          </p>
-        )}
+        <MeetStatusBanners fallbackNotice={fallbackNotice} activeError={active.error} />
 
         <section
           ref={meetStageRef}
@@ -3505,278 +967,51 @@ export default function StudioRecordingPage({ params }: StudioPageProps) {
             showMeetPeoplePanel ? 'lg:grid-cols-[minmax(0,1fr)_320px]' : 'lg:grid-cols-1'
           }`}
         >
-          <div className="relative h-full min-h-0 overflow-hidden rounded-[22px] border border-slate-800 bg-black">
-            <div
-              className="h-full w-full"
-              onContextMenu={(event) =>
-                openMeetContextMenu(event, meetMainTile.key, true)
-              }
-            >
-              <ParticipantTile
-                tile={meetMainTile}
-                className="h-full w-full rounded-none border-transparent bg-black"
-                fit={meetStageFit}
-                fill
-                showBadge={meetMainTile.badge === 'Screen'}
-              />
-            </div>
+          <MeetStageArea
+            meetMainTile={meetMainTile}
+            meetStageFit={meetStageFit}
+            pinnedTileKey={pinnedTileKey}
+            meetVisibleSecondaryTiles={meetVisibleSecondaryTiles}
+            meetLocalTileKey={meetLocalTile.key}
+            meetSelfPreviewExpanded={meetSelfPreviewExpanded}
+            onOpenMainContextMenu={(event) => openMeetContextMenu(event, meetMainTile.key, true)}
+            onOpenSecondaryContextMenu={(event, tileKey) => openMeetContextMenu(event, tileKey, false)}
+          />
 
-            {pinnedTileKey && (
-              <div className="absolute left-4 top-4 z-20 rounded-full border border-cyan-300/40 bg-cyan-500/20 px-3 py-1 text-[11px] text-cyan-100">
-                Pinned
-              </div>
-            )}
-
-            {meetVisibleSecondaryTiles.length > 0 && (
-              <div className="absolute bottom-4 right-4 z-20 flex max-w-[60%] gap-2 overflow-x-auto pb-1">
-                {meetVisibleSecondaryTiles.slice(0, 5).map((tile) => (
-                  <div
-                    key={tile.key}
-                    className={`shrink-0 ${
-                      meetSelfPreviewExpanded && tile.key === meetLocalTile.key
-                        ? 'w-[34vw] min-w-[280px] max-w-[540px]'
-                        : 'w-56 md:w-64'
-                    }`}
-                    onContextMenu={(event) =>
-                      openMeetContextMenu(event, tile.key, false)
-                    }
-                  >
-                    <ParticipantTile
-                      tile={tile}
-                      className="w-full rounded-xl border-slate-600 bg-black"
-                      fit="cover"
-                      showBadge={tile.badge === 'Screen'}
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {showMeetPeoplePanel && (
-            <aside className="hidden h-full min-h-0 rounded-[22px] border border-slate-800 bg-[#181b22] p-4 lg:block">
-              <div className="flex items-center justify-between">
-                <h2 className="text-3xl font-semibold text-slate-100">People</h2>
-                <button
-                  type="button"
-                  onClick={() => setShowMeetPeoplePanel(false)}
-                  className="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-300"
-                >
-                  ×
-                </button>
-              </div>
-
-              <div className="mt-4">
-                <button
-                  type="button"
-                  className="w-full rounded-full bg-sky-600/80 px-4 py-2 text-left text-sm font-semibold text-sky-100 hover:bg-sky-500/80"
-                >
-                  + Add people
-                </button>
-              </div>
-
-              <div className="mt-3">
-                <input
-                  type="text"
-                  placeholder="Search for people"
-                  className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
-                />
-              </div>
-
-              <div className="mt-4 rounded-xl border border-slate-700 bg-slate-900/70">
-                <div className="border-b border-slate-700 px-3 py-2 text-xs uppercase tracking-wide text-slate-400">
-                  In the meeting
-                </div>
-                <ul className="max-h-[50vh] overflow-y-auto">
-                  {meetPeople.map((person) => (
-                    <li
-                      key={person.id}
-                      className="flex items-center justify-between border-b border-slate-800 px-3 py-3 last:border-b-0"
-                    >
-                      <div className="flex min-w-0 items-center gap-3">
-                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-700 text-xs font-semibold text-slate-200">
-                          {person.label.charAt(0).toUpperCase()}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-slate-100">
-                            {person.label}
-                          </p>
-                          <p className="text-xs text-slate-400">
-                            {person.role}
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        className="rounded-full border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:border-cyan-300/50"
-                        onClick={() => {
-                          if (!person.tileKey) return;
-                          togglePin(person.tileKey);
-                        }}
-                        disabled={!person.tileKey}
-                      >
-                        Pin
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </aside>
-          )}
+          <MeetPeoplePanel
+            open={showMeetPeoplePanel}
+            people={meetPeople}
+            onClose={() => setShowMeetPeoplePanel(false)}
+            onPin={togglePin}
+          />
         </section>
 
-        <footer className="mt-4 flex justify-center pb-2">
-          <div className="flex flex-wrap items-center justify-center gap-2 rounded-full border border-slate-800/90 bg-[#141821]/95 px-3 py-2">
-            <button
-              type="button"
-              onClick={active.toggleMic}
-              disabled={!isConnected}
-              className={`rounded-full px-4 py-2 text-sm font-medium ${
-                active.isMicEnabled
-                  ? 'bg-slate-800 text-slate-100'
-                  : 'bg-rose-500/20 text-rose-200'
-              } disabled:opacity-50`}
-            >
-              {active.isMicEnabled ? 'Mic on' : 'Mic off'}
-            </button>
-
-            <button
-              type="button"
-              onClick={active.toggleCamera}
-              disabled={!isConnected}
-              className={`rounded-full px-4 py-2 text-sm font-medium ${
-                active.isCameraEnabled
-                  ? 'bg-slate-800 text-slate-100'
-                  : 'bg-rose-500/20 text-rose-200'
-              } disabled:opacity-50`}
-            >
-              {active.isCameraEnabled ? 'Camera on' : 'Camera off'}
-            </button>
-
-            <button
-              type="button"
-              onClick={active.toggleScreen}
-              disabled={!isConnected}
-              className={`rounded-full px-4 py-2 text-sm font-medium ${
-                active.isScreenSharing
-                  ? 'bg-cyan-500/20 text-cyan-200'
-                  : 'bg-slate-800 text-slate-100'
-              } disabled:opacity-50`}
-            >
-              {active.isScreenSharing ? 'Stop sharing' : 'Share screen'}
-            </button>
-
-            <button
-              type="button"
-              onClick={isConnected ? handleLeave : handleJoin}
-              disabled={!isConnected && active.status === 'connecting'}
-              className={`rounded-full px-5 py-2 text-sm font-semibold ${
-                isConnected
-                  ? 'bg-rose-500 text-white hover:bg-rose-400'
-                  : 'bg-emerald-500 text-white hover:bg-emerald-400'
-              } disabled:opacity-60`}
-            >
-              {isConnected ? 'Leave' : active.status === 'connecting' ? 'Joining...' : 'Join'}
-            </button>
-          </div>
-        </footer>
+        <MeetControlBar
+          isConnected={isConnected}
+          isJoining={active.status === 'connecting'}
+          micEnabled={active.isMicEnabled}
+          cameraEnabled={active.isCameraEnabled}
+          screenSharing={active.isScreenSharing}
+          onToggleMic={active.toggleMic}
+          onToggleCamera={active.toggleCamera}
+          onToggleScreen={active.toggleScreen}
+          onJoinLeave={isConnected ? handleLeave : handleJoin}
+        />
       </div>
 
-      {meetContextMenu && (
-        <div
-          className="fixed z-[80] min-w-52 rounded-xl border border-slate-700 bg-[#1b1e24] p-1 shadow-2xl"
-          style={{ left: meetContextMenu.x, top: meetContextMenu.y }}
-          onPointerDown={(event) => event.stopPropagation()}
-          onClick={(event) => event.stopPropagation()}
-        >
-          {meetContextMenu.isMain ? (
-            <>
-              {pinnedTileKey === meetContextMenu.tileKey ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPinnedTileKey(null);
-                    closeMeetContextMenu();
-                  }}
-                  className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-700/60"
-                >
-                  Unpin from screen
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPinnedTileKey(meetContextMenu.tileKey);
-                    closeMeetContextMenu();
-                  }}
-                  className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-700/60"
-                >
-                  Pin to screen
-                </button>
-              )}
-              {meetContextMenu.tileKey === meetLocalTile.key && hasRemoteStage && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPinnedTileKey(null);
-                    closeMeetContextMenu();
-                  }}
-                  className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-700/60"
-                >
-                  Show in a tile
-                </button>
-              )}
-            </>
-          ) : (
-            <button
-              type="button"
-              onClick={() => {
-                setPinnedTileKey(meetContextMenu.tileKey);
-                closeMeetContextMenu();
-              }}
-              className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-700/60"
-            >
-              Pin to screen
-            </button>
-          )}
-
-          {meetContextMenu.tileKey === meetLocalTile.key && !meetContextMenu.isMain && (
-            <>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowMeetSelfPreview(false);
-                  closeMeetContextMenu();
-                }}
-                className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-700/60"
-              >
-                Minimize
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setMeetSelfPreviewExpanded((prev) => !prev);
-                  closeMeetContextMenu();
-                }}
-                className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-700/60"
-              >
-                {meetSelfPreviewExpanded ? 'Normal size' : 'Maximize preview'}
-              </button>
-            </>
-          )}
-
-          <button
-            type="button"
-            onClick={async () => {
-              await toggleMeetFullscreen();
-              closeMeetContextMenu();
-            }}
-            className="block w-full rounded-lg px-3 py-2 text-left text-sm text-slate-200 hover:bg-slate-700/60"
-          >
-            Full screen
-          </button>
-        </div>
-      )}
+      <MeetContextMenu
+        menu={meetContextMenu}
+        pinnedTileKey={pinnedTileKey}
+        meetLocalTileKey={meetLocalTile.key}
+        hasRemoteStage={hasRemoteStage}
+        meetSelfPreviewExpanded={meetSelfPreviewExpanded}
+        onPin={(tileKey) => setPinnedTileKey(tileKey)}
+        onUnpin={() => setPinnedTileKey(null)}
+        onHideSelfPreview={() => setShowMeetSelfPreview(false)}
+        onToggleSelfPreviewSize={() => setMeetSelfPreviewExpanded((prev) => !prev)}
+        onToggleFullscreen={toggleMeetFullscreen}
+        onClose={closeMeetContextMenu}
+      />
     </main>
   );
 }

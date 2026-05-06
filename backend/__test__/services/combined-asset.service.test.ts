@@ -55,6 +55,10 @@ function makeParticipantRow(args: {
   };
 }
 
+function stubRecordingLookup(restores: Array<() => void>, startedAt: Date | null = null) {
+  restores.push(stubMethod(prisma.recording, 'findUnique', async () => ({ started_at: startedAt })));
+}
+
 test('combined reconcile is idempotent when ready fingerprint matches', async () => {
   const restores: Array<() => void> = [];
   let upsertCalled = false;
@@ -91,9 +95,9 @@ test('combined reconcile is idempotent when ready fingerprint matches', async ()
           failed_at: null,
           failure_reason: null,
           metadata_json: {
-            // fingerprint format: "${mode}:${id}:${updatedAtIso}:${audioStorageKey??''}"
-            // mode default changed to side_by_side in BRD-11; trailing ':' = empty audioStorageKey
-            sourceFingerprint: 'side_by_side:asset-part-1:2026-03-09T10:00:00.000Z:',
+            // fingerprint format: "${mode}:${id}:${updatedAtIso}:${audioStorageKey??''}:${startOffsetSec}"
+            // mode default changed to side_by_side in BRD-11; empty audio key means "::0.000".
+            sourceFingerprint: 'side_by_side:asset-part-1:2026-03-09T10:00:00.000Z::0.000',
           },
           export_set_json: ['mp4', 'wav', 'mp4_captions'],
         })
@@ -102,6 +106,7 @@ test('combined reconcile is idempotent when ready fingerprint matches', async ()
     // track.findMany is called before the fingerprint early-return check (code order).
     // Return [] — no separate audio tracks, matches the empty audioStorageKey in the fingerprint.
     restores.push(stubMethod(prisma.track, 'findMany', async () => []));
+    stubRecordingLookup(restores);
     restores.push(
       stubMethod(prisma.combined_asset, 'upsert', async () => {
         upsertCalled = true;
@@ -155,6 +160,7 @@ test('combined reconcile composes and marks ready', async () => {
     restores.push(stubMethod(prisma.combined_asset, 'findUnique', async () => null));
     // Audio tracks query added in BRD-11 for mixing separate audio into combined video.
     restores.push(stubMethod(prisma.track, 'findMany', async () => []));
+    stubRecordingLookup(restores);
     restores.push(stubMethod(prisma.combined_asset, 'create', async () => ({ id: 'combined-1' }) as any));
     restores.push(
       stubMethod(prisma.combined_asset, 'upsert', async (args: any) => {
@@ -229,6 +235,7 @@ test('combined reconcile marks failed and leaves participant assets untouched on
     restores.push(stubMethod(prisma.combined_asset, 'findUnique', async () => null));
     // Audio tracks query added in BRD-11; no audio tracks in test setup.
     restores.push(stubMethod(prisma.track, 'findMany', async () => []));
+    stubRecordingLookup(restores);
     restores.push(stubMethod(prisma.combined_asset, 'create', async () => ({ id: 'combined-1' }) as any));
     restores.push(stubMethod(prisma.combined_asset, 'upsert', async () => ({} as any)));
     restores.push(
@@ -374,12 +381,16 @@ test('combined reconcile recomposes when existing is ready but mode changed (sta
           failed_at: null,
           failure_reason: null,
           // Stale fingerprint from old concat_all mode — current mode is side_by_side
-          metadata_json: { sourceFingerprint: 'concat_all:asset-part-1:2026-03-09T10:00:00.000Z:|asset-part-2:2026-03-09T10:00:01.000Z:' },
+          metadata_json: {
+            sourceFingerprint:
+              'concat_all:asset-part-1:2026-03-09T10:00:00.000Z::0.000|asset-part-2:2026-03-09T10:00:01.000Z::0.000',
+          },
           export_set_json: ['mp4', 'wav'],
         })
       )
     );
     restores.push(stubMethod(prisma.track, 'findMany', async () => []));
+    stubRecordingLookup(restores);
     restores.push(
       stubMethod(prisma.combined_asset, 'updateMany', async (args: any) => {
         claimArgs = args;

@@ -157,7 +157,7 @@ function buildParticipantMasterMetadata(args: {
   metadata?: Record<string, unknown>;
 }) {
   return {
-    selectionRule: 'video_then_screen_then_audio',
+    selectionRule: 'screen_then_video_then_audio',
     sourceTrackId: args.masterTrack.id,
     sourceKind: args.masterTrack.kind,
     sourceTrackCount: args.trackCount,

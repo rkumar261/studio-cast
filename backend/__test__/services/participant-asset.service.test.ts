@@ -96,7 +96,7 @@ test('participant asset processing/failed transitions are explicit', async () =>
   }
 });
 
-test('participant master selection is stable and prefers camera video over screen/audio', () => {
+test('participant master selection is stable and prefers screen over camera video/audio', () => {
   const selected = selectParticipantMasterTrack([
     {
       id: 'track-audio',
@@ -115,7 +115,7 @@ test('participant master selection is stable and prefers camera video over scree
     },
   ]);
 
-  assert.equal(selected?.id, 'track-video');
+  assert.equal(selected?.id, 'track-screen');
 });
 
 test('participant master reconcile does not let a non-canonical track overwrite the participant asset', async () => {
@@ -218,7 +218,7 @@ test('participant master reconcile promotes the canonical source track with stab
 
     assert.equal(upsertArgs.update.state, 'ready');
     assert.equal(upsertArgs.update.storage_key, 'recordings/rec-1/participants/part-1/master.mp4');
-    assert.equal(upsertArgs.update.metadata_json.selectionRule, 'video_then_screen_then_audio');
+    assert.equal(upsertArgs.update.metadata_json.selectionRule, 'screen_then_video_then_audio');
     assert.equal(upsertArgs.update.metadata_json.sourceTrackId, 'track-video');
   } finally {
     for (const restore of restores.reverse()) restore();

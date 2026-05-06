@@ -6,7 +6,7 @@
  * as the first chunk (~4s). Binary byte-concatenation is the correct fix.
  *
  * These tests use real temp files with arbitrary bytes — WebM format validity is
- * irrelevant to testing byte-concatenation correctness; ffmpeg handles that later.
+ * irrelevant to testing byte-concatenation correctness, so media probing is mocked.
  *
  * Uses jest.unstable_mockModule + dynamic import (required for ESM mocking).
  */
@@ -20,6 +20,7 @@ import path from 'node:path';
 // The mock functions are wired up in beforeAll below.
 let mockResolveStorageKeyToLocal: jest.Mock;
 let mockUploadFinalToR2: jest.Mock;
+let mockFfprobeJson: jest.Mock;
 
 // Dynamic import of the module under test — populated in beforeAll.
 let runStitchForTrack: (args: {
@@ -31,6 +32,10 @@ let runStitchForTrack: (args: {
 beforeAll(async () => {
   mockResolveStorageKeyToLocal = jest.fn();
   mockUploadFinalToR2 = jest.fn();
+  mockFfprobeJson = jest.fn(async () => ({
+    streams: [{ codec_type: 'video' }],
+    format: {},
+  }));
 
   jest.unstable_mockModule('../../src/lib/storage.js', () => ({
     resolveStorageKeyToLocal: mockResolveStorageKeyToLocal,
@@ -39,6 +44,9 @@ beforeAll(async () => {
     resolveRawToLocal: jest.fn(),
     uploadRawToR2: jest.fn(),
     buildFinalKey: jest.fn(),
+  }));
+  jest.unstable_mockModule('../../src/lib/ffmpeg.js', () => ({
+    ffprobeJson: mockFfprobeJson,
   }));
 
   const mod = await import('../../src/workers/stitch.runner.js');

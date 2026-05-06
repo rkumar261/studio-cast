@@ -43,7 +43,7 @@ function makeExportArtifact(id: string, type: string, state: string) {
 /**
  * Returns a combined_asset already in ready state whose sourceFingerprint matches
  * a single participant asset (id=asset-1, updatedAt=2026-03-14T10:00:00.000Z,
- * mode=concat_all). This makes reconcileCombinedAssetForRecording skip composition
+ * mode=side_by_side, zero start offset). This makes reconcileCombinedAssetForRecording skip composition
  * and return ok without touching the actual FFmpeg runner.
  */
 function makeReadyCombinedAsset() {
@@ -61,8 +61,8 @@ function makeReadyCombinedAsset() {
     failure_reason: null,
     export_set_json: ['mp4', 'wav'],
     metadata_json: {
-      // BRD-11: default mode changed to side_by_side; trailing ':' = empty audioStorageKey
-      sourceFingerprint: 'side_by_side:asset-part-1:2026-03-14T10:00:00.000Z:',
+      // BRD-11: default mode changed to side_by_side; empty audio key means "::0.000".
+      sourceFingerprint: 'side_by_side:asset-part-1:2026-03-14T10:00:00.000Z::0.000',
     },
   };
 }
